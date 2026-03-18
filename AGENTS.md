@@ -135,6 +135,13 @@
 - 使用 `app.requestSingleInstanceLock()` 保证只运行一个实例，避免重复点 bat 或 HMR 重建时多开窗口；二次启动时聚焦已有窗口。
 - 开发启动：项目根目录双击 `启动开发环境.bat` 或终端执行 `npm run dev`。
 
+### 4.6 设置页拖拽与排序
+
+- **统一用 framer-motion Reorder**：大类列表与子项列表均使用 `Reorder.Group` + `Reorder.Item` + `useDragControls`（手柄拖拽），不再使用 HTML5 拖拽 API 做排序。
+- **大类**：主列表为 `Reorder.Group`，每项为 `CategoryCard`（内为 `Reorder.Item`）；`onReorder` 调用 `setCategories`，同时 `setPresetModal(null)`、`setPresetDropdown(null)` 避免重排后索引错位。
+- **子项**：每个大类内容区内为 `Reorder.Group`，每行为 `SubReminderRow`（`Reorder.Item`）；子项拖拽约束用 `dragConstraintsRef` 指向该大类列表容器。
+- **拖拽时始终在最上层**：子项拖拽时会被下方大类盖住（层叠上下文），因此由父级提升整卡 z-index。`CategoryCard` 用状态 `isChildDragging`，在子项 `onDragStart`/`onDragEnd` 时置 true/false，根 `Reorder.Item` 的 `style.zIndex` 在 `isChildDragging` 时为 1000；大类/子项 `whileDrag` 的 `zIndex` 分别为 1000、9999。
+
 ---
 
 ## 5. 与 Agent 协作时的注意点

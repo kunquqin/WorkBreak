@@ -2,10 +2,10 @@
  * 提醒相关类型与默认值，主进程与渲染进程共用。
  */
 
-/** 子提醒：固定时间（HH:mm）或间隔（分钟）。间隔可设重复次数，null=无限 */
+/** 子提醒：固定时间（HH:mm）或间隔（时/分/秒）。间隔可设重复次数，null=无限 */
 export type SubReminder =
   | { id: string; mode: 'fixed'; time: string; content: string }
-  | { id: string; mode: 'interval'; intervalMinutes: number; content: string; repeatCount: number | null }
+  | { id: string; mode: 'interval'; intervalHours?: number; intervalMinutes: number; intervalSeconds?: number; content: string; repeatCount: number | null }
 
 /** 提醒类型（用户可增删），下含多个子提醒 */
 export interface ReminderCategory {

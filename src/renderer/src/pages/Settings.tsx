@@ -21,6 +21,15 @@ function formatRemaining(remainingMs: number): string {
   return `${m}:${String(sec).padStart(2, '0')}`
 }
 
+/** 时间漏斗图标，用于倒计时区域 */
+function HourglassIcon({ className }: { className?: string }) {
+  return (
+    <svg className={className} width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden>
+      <path d="M6 4h12M6 20h12M6 4l6 8 6-8M6 20l6-8 6 8" />
+    </svg>
+  )
+}
+
 type SubReminderRowProps = {
   item: SubReminder
   categoryIndex: number
@@ -39,6 +48,79 @@ type SubReminderRowProps = {
   dragConstraintsRef: React.RefObject<HTMLElement | null>
   onDragStart?: () => void
   onDragEnd?: () => void
+  repeatDropdown: { categoryIndex: number; itemIndex: number } | null
+  setRepeatDropdown: (v: { categoryIndex: number; itemIndex: number } | null) => void
+}
+
+/** 重复次数控件：输入框（∞ 或数字）+ 加减 + 右侧三角下拉（hover 显），选项为 自定义 / ∞ */
+function RepeatControl({
+  categoryIndex,
+  itemIndex,
+  repeatCount,
+  updateItem,
+  repeatDropdown,
+  setRepeatDropdown,
+}: {
+  categoryIndex: number
+  itemIndex: number
+  repeatCount: number | null
+  updateItem: (ci: number, ii: number, patch: Partial<SubReminder>) => void
+  repeatDropdown: { categoryIndex: number; itemIndex: number } | null
+  setRepeatDropdown: (v: { categoryIndex: number; itemIndex: number } | null) => void
+}) {
+  const isRepeatOpen = repeatDropdown?.categoryIndex === categoryIndex && repeatDropdown?.itemIndex === itemIndex
+  return (
+    <div className="relative flex items-center group flex-shrink-0">
+      {repeatCount === null ? (
+        <input
+          type="text"
+          readOnly
+          value="∞"
+          className="w-10 rounded border border-slate-300 px-1.5 py-1 text-sm text-center bg-white"
+          aria-label="重复次数"
+        />
+      ) : (
+        <input
+          type="number"
+          min={1}
+          max={999}
+          value={repeatCount}
+          onChange={(e) => updateItem(categoryIndex, itemIndex, { repeatCount: Math.max(1, Math.min(999, parseInt(e.target.value, 10) || 1)) })}
+          className="w-10 rounded border border-slate-300 px-1.5 py-1 text-sm text-center"
+          aria-label="重复次数"
+        />
+      )}
+      <button
+        type="button"
+        onClick={() => setRepeatDropdown(isRepeatOpen ? null : { categoryIndex, itemIndex })}
+        className={`flex items-center justify-center rounded p-0.5 text-slate-400 transition-opacity duration-200 ease-out hover:text-slate-600 focus:outline-none ${isRepeatOpen ? 'opacity-100' : 'opacity-0 group-hover:opacity-100'}`}
+        title="重复"
+        aria-label="重复选项"
+      >
+        <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className={`transition-transform duration-200 ${isRepeatOpen ? 'rotate-180' : ''}`}>
+          <polyline points="6 9 12 15 18 9" />
+        </svg>
+      </button>
+      {isRepeatOpen && (
+        <div className="absolute top-full right-0 mt-1 z-10 bg-white border border-slate-200 rounded-lg shadow-lg py-1 min-w-[100px]">
+          <button
+            type="button"
+            className="w-full text-left px-3 py-1.5 text-sm hover:bg-slate-100"
+            onClick={() => { updateItem(categoryIndex, itemIndex, { repeatCount: repeatCount ?? 1 }); setRepeatDropdown(null) }}
+          >
+            自定义
+          </button>
+          <button
+            type="button"
+            className="w-full text-left px-3 py-1.5 text-sm hover:bg-slate-100"
+            onClick={() => { updateItem(categoryIndex, itemIndex, { repeatCount: null }); setRepeatDropdown(null) }}
+          >
+            ∞
+          </button>
+        </div>
+      )}
+    </div>
+  )
 }
 
 function SubReminderRow({
@@ -59,10 +141,56 @@ function SubReminderRow({
   dragConstraintsRef,
   onDragStart,
   onDragEnd,
+  repeatDropdown,
+  setRepeatDropdown,
 }: SubReminderRowProps) {
   const controls = useDragControls()
+  const presetAreaRef = useRef<HTMLDivElement>(null)
+  const repeatAreaRef = useRef<HTMLDivElement>(null)
   const countdownKey = `${categoryId}_${item.id}`
   const cd = countdowns.find((c) => c.key === countdownKey)
+  const isPresetOpen = presetDropdown?.categoryIndex === categoryIndex && presetDropdown?.itemIndex === itemIndex
+  const isRepeatOpen = repeatDropdown?.categoryIndex === categoryIndex && repeatDropdown?.itemIndex === itemIndex
+
+  /** 进度条剩余比例 0~1；结束/暂停/重置时为 1（全绿） */
+  const progressRatio = (() => {
+    if (!cd) return 1
+    if (cd.type === 'fixed') {
+      const totalMs = 24 * 3600 * 1000
+      if (cd.remainingMs <= 0) return 1
+      return Math.min(1, cd.remainingMs / totalMs)
+    }
+    const totalMs = item.mode === 'interval'
+      ? ((item.intervalHours ?? 0) * 3600 + item.intervalMinutes * 60 + (item.intervalSeconds ?? 0)) * 1000
+      : 0
+    if (totalMs <= 0) return 1
+    if (cd.remainingMs <= 0) return 1
+    if (cd.repeatCount != null && cd.firedCount != null && cd.firedCount >= cd.repeatCount) return 1
+    return Math.min(1, cd.remainingMs / totalMs)
+  })()
+
+  useEffect(() => {
+    if (!isPresetOpen) return
+    const onMouseDown = (e: MouseEvent) => {
+      if (presetAreaRef.current && !presetAreaRef.current.contains(e.target as Node)) {
+        setPresetDropdown(null)
+      }
+    }
+    document.addEventListener('mousedown', onMouseDown)
+    return () => document.removeEventListener('mousedown', onMouseDown)
+  }, [isPresetOpen, setPresetDropdown])
+
+  useEffect(() => {
+    if (!isRepeatOpen) return
+    const onMouseDown = (e: MouseEvent) => {
+      if (repeatAreaRef.current && !repeatAreaRef.current.contains(e.target as Node)) {
+        setRepeatDropdown(null)
+      }
+    }
+    document.addEventListener('mousedown', onMouseDown)
+    return () => document.removeEventListener('mousedown', onMouseDown)
+  }, [isRepeatOpen, setRepeatDropdown])
+
   return (
     <Reorder.Item
       value={item}
@@ -74,7 +202,7 @@ function SubReminderRow({
       transition={{ type: 'tween', ease: [0.32, 0.72, 0, 1], duration: 0.12 }}
       dragTransition={{ bounceStiffness: 400, bounceDamping: 40 }}
       style={{ position: 'relative' }}
-      className="flex flex-nowrap items-center gap-2 p-3 rounded-lg bg-slate-50 transition-colors"
+      className="flex flex-col gap-1.5 p-3 rounded-lg bg-slate-50 transition-colors"
       onDragStart={onDragStart}
       onDragEnd={onDragEnd}
       whileDrag={{
@@ -84,6 +212,7 @@ function SubReminderRow({
         zIndex: 9999,
       }}
     >
+      <div className="flex flex-nowrap items-center gap-2">
       <div
         className="min-w-[1.5rem] w-6 flex-shrink-0 flex items-center justify-center cursor-grab active:cursor-grabbing select-none"
         style={{ touchAction: 'none' }}
@@ -100,76 +229,85 @@ function SubReminderRow({
         </span>
       </div>
       {item.mode === 'fixed' ? (
-        <>
-          <input
-            type="time"
-            value={item.time}
-            onChange={(e) => updateItem(categoryIndex, itemIndex, { time: e.target.value })}
-            className="rounded border border-slate-300 px-2 py-1 text-sm"
-          />
-          <span className="text-slate-500 text-sm">固定时间</span>
-          {cd && cd.type === 'fixed' && (
-            <span className="text-slate-600 text-sm whitespace-nowrap">
-              下次 {item.time} 还有 {formatRemaining(cd.remainingMs)}
-            </span>
-          )}
-        </>
+        <input
+          type="time"
+          value={item.time}
+          onChange={(e) => updateItem(categoryIndex, itemIndex, { time: e.target.value })}
+          className="rounded border border-slate-300 px-2 py-1 text-sm"
+        />
       ) : (
         <>
+          <div className="flex items-center gap-2 shrink-0 ml-3">
+          <span className="text-slate-500 text-sm shrink-0">倒计时</span>
           <input
             type="number"
-            min={1}
-            max={120}
-            value={item.intervalMinutes}
-            onChange={(e) => updateItem(categoryIndex, itemIndex, { intervalMinutes: Math.max(1, parseInt(e.target.value, 10) || 1) })}
-            className="w-16 rounded border border-slate-300 px-2 py-1 text-sm text-right"
+            min={0}
+            max={23}
+            value={item.intervalHours ?? 0}
+            onChange={(e) => updateItem(categoryIndex, itemIndex, { intervalHours: Math.max(0, Math.min(23, parseInt(e.target.value, 10) || 0)) })}
+            className="w-12 rounded border border-slate-300 px-1.5 py-1 text-sm text-right"
           />
-          <span className="text-slate-500 text-sm">分钟间隔</span>
-          <div className="flex items-center gap-1">
-            <select
-              value={item.repeatCount === null ? 'infinite' : 'n'}
-              onChange={(e) => updateItem(categoryIndex, itemIndex, { repeatCount: e.target.value === 'infinite' ? null : (item.repeatCount ?? 1) })}
-              className="rounded border border-slate-300 px-2 py-1 text-sm"
-            >
-              <option value="infinite">无限重复</option>
-              <option value="n">×次重复</option>
-            </select>
-            {item.repeatCount !== null && (
-              <input
-                type="number"
-                min={1}
-                max={999}
-                value={item.repeatCount}
-                onChange={(e) => updateItem(categoryIndex, itemIndex, { repeatCount: Math.max(1, parseInt(e.target.value, 10) || 1) })}
-                className="w-14 rounded border border-slate-300 px-1 py-1 text-sm text-right"
-              />
-            )}
-          </div>
-          {cd && cd.type === 'interval' && (
-            <span className="text-slate-600 text-sm whitespace-nowrap">
-              剩余 {formatRemaining(cd.remainingMs)}
-              {cd.repeatCount != null && cd.firedCount != null && ` (第${cd.firedCount + 1}/${cd.repeatCount}次)`}
+          <span className="text-slate-500 text-sm shrink-0">时</span>
+          <input
+            type="number"
+            min={0}
+            max={59}
+            value={item.intervalMinutes}
+            onChange={(e) => updateItem(categoryIndex, itemIndex, { intervalMinutes: Math.max(0, Math.min(59, parseInt(e.target.value, 10) || 0)) })}
+            className="w-12 rounded border border-slate-300 px-1.5 py-1 text-sm text-right"
+          />
+          <span className="text-slate-500 text-sm shrink-0">分</span>
+          <input
+            type="number"
+            min={0}
+            max={59}
+            value={item.intervalSeconds ?? 0}
+            onChange={(e) => updateItem(categoryIndex, itemIndex, { intervalSeconds: Math.max(0, Math.min(59, parseInt(e.target.value, 10) || 0)) })}
+            className="w-12 rounded border border-slate-300 px-1.5 py-1 text-sm text-right"
+          />
+          <span className="text-slate-500 text-sm shrink-0">秒</span>
+          <div ref={repeatAreaRef} className="flex items-center gap-1.5">
+            <span className="flex items-center justify-center text-slate-500 shrink-0" title="重复次数" aria-hidden>
+              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                <path d="M17 1l4 4-4 4" />
+                <path d="M3 11V9a4 4 0 014-4h14" />
+                <path d="M7 23l-4-4 4-4" />
+                <path d="M21 13v2a4 4 0 01-4 4H3" />
+              </svg>
             </span>
-          )}
+            <RepeatControl
+              categoryIndex={categoryIndex}
+              itemIndex={itemIndex}
+              repeatCount={item.repeatCount}
+              updateItem={updateItem}
+              repeatDropdown={repeatDropdown}
+              setRepeatDropdown={setRepeatDropdown}
+            />
+          </div>
+          </div>
         </>
       )}
-      <input
-        type="text"
-        value={item.content}
-        onChange={(e) => updateItem(categoryIndex, itemIndex, { content: e.target.value })}
-        placeholder="提醒内容"
-        className="flex-1 min-w-0 rounded border border-slate-300 px-2 py-1 text-sm"
-      />
-      <div className="relative">
+      <div ref={presetAreaRef} className="relative flex flex-1 min-w-0 items-center group">
+        <input
+          type="text"
+          value={item.content}
+          onChange={(e) => updateItem(categoryIndex, itemIndex, { content: e.target.value })}
+          placeholder="提醒内容"
+          className="w-full min-w-0 rounded border border-slate-300 pl-2 pr-8 py-1 text-sm"
+        />
         <button
           type="button"
-          onClick={() => setPresetDropdown(presetDropdown?.categoryIndex === categoryIndex && presetDropdown?.itemIndex === itemIndex ? null : { categoryIndex, itemIndex })}
-          className="rounded border border-slate-300 px-2 py-1 text-sm bg-white hover:bg-slate-50"
+          onClick={() => setPresetDropdown(isPresetOpen ? null : { categoryIndex, itemIndex })}
+          className={`absolute right-1.5 flex items-center justify-center rounded p-0.5 text-slate-400 transition-opacity duration-200 ease-out hover:text-slate-600 focus:outline-none ${isPresetOpen ? 'opacity-100' : 'opacity-0 group-hover:opacity-100'}`}
+          title="选预设"
+          aria-label="选预设"
         >
-          选预设
+          <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className={`transition-transform duration-200 ${isPresetOpen ? 'rotate-180' : ''}`}>
+            <polyline points="6 9 12 15 18 9" />
+          </svg>
         </button>
-        {presetDropdown?.categoryIndex === categoryIndex && presetDropdown?.itemIndex === itemIndex && (
-          <div className="absolute top-full left-0 mt-1 z-10 bg-white border border-slate-200 rounded-lg shadow-lg py-1 max-h-48 overflow-auto min-w-[180px]">
+        {isPresetOpen && (
+          <div className="absolute top-full right-0 mt-1 z-10 bg-white border border-slate-200 rounded-lg shadow-lg py-1 max-h-48 overflow-auto min-w-[180px]">
             {getPresets(categoryIndex).map((p, i) => (
               <button
                 key={i}
@@ -208,6 +346,26 @@ function SubReminderRow({
           ⋮⋮
         </span>
       </div>
+      </div>
+      {cd && (
+        <div className="flex flex-col gap-1 pl-8 min-w-0 w-full">
+          {/* 第二行：倒计时时间，位置随进度条边界实时移动 */}
+          <div className="relative h-6 w-full">
+            <div
+              className="absolute flex items-center gap-1.5 text-slate-600 text-sm whitespace-nowrap transition-[left] duration-300 ease-out -translate-x-1/2"
+              style={{ left: `${(1 - progressRatio) * 100}%` }}
+            >
+              <HourglassIcon className="shrink-0 text-slate-500" />
+              <span>{formatRemaining(cd.remainingMs)}</span>
+            </div>
+          </div>
+          {/* 第三行：仅进度条 */}
+          <div className="w-full h-2 rounded-full bg-slate-200 overflow-hidden flex">
+            <div className="bg-slate-200 transition-[width] duration-300 ease-out h-full" style={{ width: `${(1 - progressRatio) * 100}%` }} />
+            <div className="bg-green-500 transition-[width] duration-300 ease-out shrink-0 h-full" style={{ width: `${progressRatio * 100}%` }} />
+          </div>
+        </div>
+      )}
     </Reorder.Item>
   )
 }
@@ -229,6 +387,8 @@ type CategoryCardProps = {
   applyPresetToItem: (ci: number, ii: number, text: string) => void
   presetDropdown: { categoryIndex: number; itemIndex: number } | null
   setPresetDropdown: (v: { categoryIndex: number; itemIndex: number } | null) => void
+  repeatDropdown: { categoryIndex: number; itemIndex: number } | null
+  setRepeatDropdown: (v: { categoryIndex: number; itemIndex: number } | null) => void
   hoverItemHandle: { ci: number; ii: number; side: 'left' | 'right' } | null
   setHoverItemHandle: (v: { ci: number; ii: number; side: 'left' | 'right' } | null) => void
   hoverCategoryHandle: { ci: number; side: 'left' | 'right' } | null
@@ -254,6 +414,8 @@ function CategoryCard(props: CategoryCardProps) {
     applyPresetToItem,
     presetDropdown,
     setPresetDropdown,
+    repeatDropdown,
+    setRepeatDropdown,
     hoverItemHandle,
     setHoverItemHandle,
     hoverCategoryHandle,
@@ -347,6 +509,8 @@ function CategoryCard(props: CategoryCardProps) {
                 applyPresetToItem={applyPresetToItem}
                 presetDropdown={presetDropdown}
                 setPresetDropdown={setPresetDropdown}
+                repeatDropdown={repeatDropdown}
+                setRepeatDropdown={setRepeatDropdown}
                 setPresetModal={setPresetModal}
                 hoverItemHandle={hoverItemHandle}
                 setHoverItemHandle={setHoverItemHandle}
@@ -382,6 +546,7 @@ export function Settings() {
   const [lastSaveClick, setLastSaveClick] = useState<string>('从未')
   const [presetModal, setPresetModal] = useState<{ categoryIndex: number; itemIndex: number | null } | null>(null)
   const [presetDropdown, setPresetDropdown] = useState<{ categoryIndex: number; itemIndex: number } | null>(null)
+  const [repeatDropdown, setRepeatDropdown] = useState<{ categoryIndex: number; itemIndex: number } | null>(null)
   const [editingPresetIndex, setEditingPresetIndex] = useState<number | null>(null)
   const [editingPresetValue, setEditingPresetValue] = useState('')
   const [newPresetValue, setNewPresetValue] = useState('')
@@ -453,6 +618,8 @@ export function Settings() {
     if (presetModal && presetModal.categoryIndex > categoryIndex) setPresetModal({ ...presetModal, categoryIndex: presetModal.categoryIndex - 1 })
     if (presetDropdown?.categoryIndex === categoryIndex) setPresetDropdown(null)
     if (presetDropdown && presetDropdown.categoryIndex > categoryIndex) setPresetDropdown({ ...presetDropdown, categoryIndex: presetDropdown.categoryIndex - 1 })
+    if (repeatDropdown?.categoryIndex === categoryIndex) setRepeatDropdown(null)
+    if (repeatDropdown && repeatDropdown.categoryIndex > categoryIndex) setRepeatDropdown({ ...repeatDropdown, categoryIndex: repeatDropdown.categoryIndex - 1 })
   }
 
   const moveCategory = (fromIndex: number, toIndex: number) => {
@@ -473,6 +640,12 @@ export function Settings() {
       else if (fromIndex < idx && toIndex >= idx) setPresetDropdown({ ...presetDropdown, categoryIndex: idx - 1 })
       else if (fromIndex > idx && toIndex <= idx) setPresetDropdown({ ...presetDropdown, categoryIndex: idx + 1 })
     }
+    if (repeatDropdown !== null) {
+      const idx = repeatDropdown.categoryIndex
+      if (idx === fromIndex) setRepeatDropdown({ ...repeatDropdown, categoryIndex: toIndex })
+      else if (fromIndex < idx && toIndex >= idx) setRepeatDropdown({ ...repeatDropdown, categoryIndex: idx - 1 })
+      else if (fromIndex > idx && toIndex <= idx) setRepeatDropdown({ ...repeatDropdown, categoryIndex: idx + 1 })
+    }
   }
 
   const moveItem = (categoryIndex: number, fromIndex: number, toIndex: number) => {
@@ -487,6 +660,11 @@ export function Settings() {
       if (presetDropdown.itemIndex === fromIndex) setPresetDropdown({ ...presetDropdown, itemIndex: toIndex })
       else if (fromIndex < presetDropdown.itemIndex && toIndex >= presetDropdown.itemIndex) setPresetDropdown({ ...presetDropdown, itemIndex: presetDropdown.itemIndex - 1 })
       else if (fromIndex > presetDropdown.itemIndex && toIndex <= presetDropdown.itemIndex) setPresetDropdown({ ...presetDropdown, itemIndex: presetDropdown.itemIndex + 1 })
+    }
+    if (repeatDropdown?.categoryIndex === categoryIndex) {
+      if (repeatDropdown.itemIndex === fromIndex) setRepeatDropdown({ ...repeatDropdown, itemIndex: toIndex })
+      else if (fromIndex < repeatDropdown.itemIndex && toIndex >= repeatDropdown.itemIndex) setRepeatDropdown({ ...repeatDropdown, itemIndex: repeatDropdown.itemIndex - 1 })
+      else if (fromIndex > repeatDropdown.itemIndex && toIndex <= repeatDropdown.itemIndex) setRepeatDropdown({ ...repeatDropdown, itemIndex: repeatDropdown.itemIndex + 1 })
     }
   }
 
@@ -517,6 +695,15 @@ export function Settings() {
         setPresetDropdown({ ...presetDropdown, itemIndex: presetDropdown.itemIndex + 1 })
       }
     }
+    if (repeatDropdown) {
+      if (repeatDropdown.categoryIndex === fromCi && repeatDropdown.itemIndex === fromIi) {
+        setRepeatDropdown(toCi === fromCi ? { ...repeatDropdown, itemIndex: insertAt } : { categoryIndex: toCi, itemIndex: insertAt })
+      } else if (repeatDropdown.categoryIndex === fromCi && fromIi < repeatDropdown.itemIndex) {
+        setRepeatDropdown({ ...repeatDropdown, itemIndex: repeatDropdown.itemIndex - 1 })
+      } else if (repeatDropdown.categoryIndex === toCi && insertAt <= repeatDropdown.itemIndex) {
+        setRepeatDropdown({ ...repeatDropdown, itemIndex: repeatDropdown.itemIndex + 1 })
+      }
+    }
     if (presetModal?.categoryIndex === fromCi && presetModal.itemIndex === fromIi) {
       setPresetModal(toCi === fromCi ? { ...presetModal, itemIndex: insertAt } : { categoryIndex: toCi, itemIndex: insertAt })
     } else if (presetModal?.categoryIndex === fromCi && fromIi < (presetModal.itemIndex ?? 0)) {
@@ -531,7 +718,7 @@ export function Settings() {
     const newItem: SubReminder =
       mode === 'fixed'
         ? { id: genId(), mode: 'fixed', time: '12:00', content: '' }
-        : { id: genId(), mode: 'interval', intervalMinutes: 30, content: '', repeatCount: null }
+        : { id: genId(), mode: 'interval', intervalHours: 0, intervalMinutes: 30, intervalSeconds: 0, content: '', repeatCount: null }
     const next = settings.reminderCategories.slice()
     next[categoryIndex] = { ...cat, items: [...cat.items, newItem] }
     setCategories(next)
@@ -545,6 +732,8 @@ export function Settings() {
     setCategories(next)
     if (presetDropdown?.categoryIndex === categoryIndex && presetDropdown.itemIndex === itemIndex) setPresetDropdown(null)
     if (presetDropdown?.categoryIndex === categoryIndex && presetDropdown.itemIndex > itemIndex) setPresetDropdown({ ...presetDropdown, itemIndex: presetDropdown.itemIndex - 1 })
+    if (repeatDropdown?.categoryIndex === categoryIndex && repeatDropdown.itemIndex === itemIndex) setRepeatDropdown(null)
+    if (repeatDropdown?.categoryIndex === categoryIndex && repeatDropdown.itemIndex > itemIndex) setRepeatDropdown({ ...repeatDropdown, itemIndex: repeatDropdown.itemIndex - 1 })
   }
 
   const setCategoryPresets = (categoryIndex: number, presets: string[]) => {
@@ -555,6 +744,8 @@ export function Settings() {
     const next = settings.reminderCategories.slice()
     next[categoryIndex] = { ...next[categoryIndex], items }
     setCategories(next)
+    setPresetDropdown(null)
+    setRepeatDropdown(null)
   }
 
   const getPresets = (categoryIndex: number) => settings.reminderCategories[categoryIndex]?.presets ?? []
@@ -645,7 +836,7 @@ export function Settings() {
       </header>
 
       <main className="max-w-5xl mx-auto px-6 py-6 space-y-6">
-        <Reorder.Group axis="y" values={settings.reminderCategories} onReorder={(newOrder) => { setCategories(newOrder); setPresetModal(null); setPresetDropdown(null) }} as="div" className="space-y-6">
+        <Reorder.Group axis="y" values={settings.reminderCategories} onReorder={(newOrder) => { setCategories(newOrder); setPresetModal(null); setPresetDropdown(null); setRepeatDropdown(null) }} as="div" className="space-y-6">
         {settings.reminderCategories.map((cat, realCi) => (
           <CategoryCard
             key={cat.id}
@@ -665,6 +856,8 @@ export function Settings() {
             applyPresetToItem={applyPresetToItem}
             presetDropdown={presetDropdown}
             setPresetDropdown={setPresetDropdown}
+            repeatDropdown={repeatDropdown}
+            setRepeatDropdown={setRepeatDropdown}
             hoverItemHandle={hoverItemHandle}
             setHoverItemHandle={setHoverItemHandle}
             hoverCategoryHandle={hoverCategoryHandle}

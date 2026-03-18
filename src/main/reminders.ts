@@ -77,8 +77,11 @@ function scheduleIntervalReminders() {
   for (const cat of s.reminderCategories) {
     for (const item of cat.items) {
       if (item.mode !== 'interval') continue
-      const min = Math.max(1, item.intervalMinutes)
-      const intervalMs = min * 60 * 1000
+      const h = item.intervalHours ?? 0
+      const m = item.intervalMinutes ?? 0
+      const s = item.intervalSeconds ?? 0
+      const totalSec = Math.max(1, h * 3600 + m * 60 + s)
+      const intervalMs = totalSec * 1000
       const repeatCount = item.repeatCount ?? null
       const key = `${cat.id}_${item.id}`
       const state: IntervalState = {

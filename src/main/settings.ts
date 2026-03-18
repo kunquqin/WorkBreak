@@ -70,11 +70,19 @@ function normalizeCategories(cats: unknown): ReminderCategory[] {
         return { id: i.id, mode: 'fixed' as const, time: (i as { time: string }).time, content: i.content as string }
       }
       if (i.mode === 'interval' && typeof (i as { intervalMinutes: unknown }).intervalMinutes === 'number') {
-        const interval = i as { intervalMinutes: number; repeatCount?: number | null }
+        const interval = i as { intervalMinutes: number; intervalHours?: number; intervalSeconds?: number; repeatCount?: number | null }
         const repeatCount = interval.repeatCount === undefined || interval.repeatCount === null
           ? null
           : Math.max(1, Math.floor(Number(interval.repeatCount)))
-        return { id: i.id, mode: 'interval' as const, intervalMinutes: interval.intervalMinutes, content: i.content as string, repeatCount }
+        return {
+          id: i.id,
+          mode: 'interval' as const,
+          intervalHours: interval.intervalHours,
+          intervalMinutes: interval.intervalMinutes,
+          intervalSeconds: interval.intervalSeconds,
+          content: i.content as string,
+          repeatCount,
+        }
       }
       return null
     }).filter((x): x is SubReminder => x !== null)

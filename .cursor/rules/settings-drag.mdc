@@ -1,0 +1,10 @@
+---
+description: WorkBreak 设置页拖拽排序约定，避免退回 HTML5 DnD 或漏掉层级
+globs: ["src/renderer/src/pages/Settings.tsx"]
+---
+
+# 设置页拖拽与排序
+
+- **排序方案**：大类与子项均使用 framer-motion 的 `Reorder.Group` + `Reorder.Item` + `useDragControls`（仅手柄触发拖拽）。不要用 HTML5 `draggable`/`onDragOver`/`onDrop` 做列表排序，否则会出现抖动、让位不统一、大类放置时子项位移等问题。
+- **拖拽层级**：被拖拽的项必须始终在最上层。子项在另一大类的层叠上下文中会被盖住，因此由 `CategoryCard` 用 `isChildDragging` 在子项拖拽时提升整卡 `zIndex`（如 1000）；子项 `Reorder.Item` 的 `whileDrag.zIndex` 设为较大值（如 9999），大类 `whileDrag.zIndex` 也需足够高（如 1000）。
+- **子项与父通信**：`SubReminderRow` 需支持可选 `onDragStart`/`onDragEnd`，并传给内部 `Reorder.Item`，供 `CategoryCard` 在子项拖起/放下时切换整卡 z-index。
