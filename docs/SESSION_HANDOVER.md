@@ -1,71 +1,75 @@
-# 会话交接（最近一轮：秒表标题、normalization 修复、大类排序迁移）
+# 会话交接（最近一轮：v0.0.7 起止时间窗口与交互优化）
 
 > 下一段「粘贴用交接提示」见文末代码块。
 
-## 1. 本会话做了什么、技术决策摘要
+## 1. 本轮已完成
 
-### 功能与修复
+- **fixed 闹钟支持起始/结束时间窗口**：新增 `startTime`，支持同日与跨天窗口。
+- **单次语义统一**：星期全不勾选显示“单次”，固定闹钟可跑完一次后结束并冻结。
+- **状态细化**：fixed 新增 `pending/running/ended`，未开始显示紫色进度与“未开始”。
+- **新建/编辑弹窗升级**：
+  - 起始/结束双滚轮；
+  - 起始与结束时间各自复位按钮（当前时间、当前+1分钟）；
+  - 起始=结束校验拦截，支持跨天提示；
+  - 时间区加浅色描边；
+  - 提醒内容与重复区对齐修正；
+  - 拆分/休息输入框加宽并居中。
+- **版本发布**：已提交并推送 `main`，标签 `v0.0.7`（commit `626d25f`）。
 
-- **秒表标题**：`SubReminder` stopwatch 变体新增 `content?: string`，`StopwatchReminderRow` 顶部新增标题行（含左右拖拽手柄、删除按钮）。
-- **点击编辑交互**：标题默认显示纯文本（居中），点击进入 `PresetTextField`（含预设增删编辑），失焦 / Enter / 点击外部退出编辑态并自动保存。非编辑态 padding 与 PresetTextField input 的 `pl-2 pr-9` 一致，避免模式切换时文字偏移。
-- **normalization 修复**：`main/settings.ts` 的 `normalizeCategories` 对秒表项只保留 `{ id, mode }` 导致 `content` 在 auto-save hydrate 后丢失。已修复为保留 `content`。
-- **PresetTextField 扩展**：新增 `inputClassName` prop，秒表标题传入 `text-center` 实现居中，不影响闹钟/倒计时。
-- **v0.0.5 标签**：已创建带中文注释的 annotated tag 并推送至远程。
-
-### 上一轮会话遗留（已合入 v0.0.5）
-
-- **大类排序迁移**：Framer Motion `Reorder` → `@dnd-kit/sortable`，解决秒表打点展开后下方卡片重叠。
-- **闹钟星期重复**：`weekdaysEnabled?: boolean[]`，iOS 风格开关，"永不"表示单次触发后停止。
-- **子项增删不重置**：移除 `handleAddSubReminderConfirm` / `handleEditSubReminderConfirm` 中冗余的 `restartReminders()` 调用。
-- **进度条修复**："永不"闹钟的倒计时浮标正确显示剩余时间而非"永不"。
-
-### 技术决策
+## 2. 当前关键决策（已确认）
 
 | 主题 | 决策 |
 |------|------|
-| 秒表标题持久化 | `content?: string` 可选字段；normalization 必须保留 |
-| 标题交互模式 | 点击编辑（非编辑态纯文本），不常驻输入框 |
-| 编辑/非编辑态一致性 | 非编辑态 padding `pl-2 pr-9` 匹配 input，避免文字跳动 |
-| PresetTextField 扩展 | `inputClassName` prop 而非修改基础样式 |
-| 大类 + 子项排序 | 全部 @dnd-kit/sortable，不再使用 Framer Motion |
-| normalizeCategories | 每次给 SubReminder 加字段必须同步更新 normalization |
+| fixed 时间模型 | 从“单时刻”升级为“起始/结束窗口” |
+| 跨天语义 | `start > end` 视为次日结束 |
+| 星期归属 | 按起始日判定 |
+| 全不勾选 | 语义为“单次”而非“永不” |
+| 未开始态 | 紫色进度 + 漏斗文案“未开始” |
 
----
+## 3. 弹窗主题（壁纸）方案状态
 
-## 2. AGENTS.md 更新
+- **方案已定稿（架构层）**：
+  - 系统设置 = 主题工坊（重度编辑：背景/遮罩/文字/排版/预设/批量应用）
+  - 新建/编辑子项页 = 轻量入口（选主题 + 小预览 + 跳转主题工坊）
+- **文档位置**：`docs/POPUP_THEME_PLAN.md`
+- **落地状态**：待开发（未开始编码）
 
-- **4.7**：大类排序从 Framer Motion 改为 @dnd-kit/sortable 的描述已更正
-- **4.8**：补充秒表标题（click-to-edit）、padding 一致性约定
-- **4.4**：新增 normalizeCategories 保全字段的注意事项
-- **2.1**：秒表描述从"无提醒文案"改为"可选标题 `content?: string`"
+## 4. 进度维护机制（后续每个功能都要做）
 
----
+每完成一个功能，必须同步更新以下内容：
 
-## 3. Cursor Rules
+1. `docs/SESSION_HANDOVER.md`
+   - 更新“本轮已完成”
+   - 更新“当前关键决策”
+   - 更新“下一步第一条动作”
+2. 专项方案文档（若有）
+   - 如弹窗主题：更新 `docs/POPUP_THEME_PLAN.md` 的“状态与里程碑”
+3. 版本信息（如已发版）
+   - 写入版本号、commit、tag、push 状态
 
-| 文件 | 变更 |
-|------|------|
-| **`settings-drag.mdc`**（更新） | 大类排序从 Framer Motion 改为 @dnd-kit/sortable |
-| **`normalize-settings.mdc`**（新建） | normalizeCategories 必须保留 SubReminder 各 mode 全部字段 |
-| `settings-sortable.mdc` | 仍适用（子项 dnd-kit 可变高度约定） |
-| `save-and-reset.mdc` | 仍适用（保存 vs 重置、cycleStartAt 约定） |
-| `workbreak.mdc` | 仍适用（preload CJS、仓库约定） |
-
----
-
-## 4. 新会话开头可粘贴的交接提示
+建议更新模板：
 
 ```
-【WorkBreak — 新会话交接】
+### [功能名]
+- 状态：完成 / 进行中 / 阻塞
+- 代码范围：`path1`, `path2`
+- 决策：...
+- 风险：...
+- 下一步：...
+```
 
-请先读 AGENTS.md（尤其 4.4、4.7～4.9）与 docs/SESSION_HANDOVER.md。
+---
 
-- 拖拽排序：大类与子项均用 @dnd-kit/sortable，不再使用 Framer Motion Reorder（会导致动态高度下卡片重叠）。useSortable 要 animateLayoutChanges: () => false，transform 只用 translate3d（sortableTranslateOnly）。
-- 秒表：每条子项状态在 StopwatchReminderRow 的 useState，不用全局 Map。顶部有可选标题（content?: string），采用点击编辑交互（非编辑态纯文本，点击显示 PresetTextField，失焦/Enter 保存）。非编辑态 padding 需与 input 一致（pl-2 pr-9）避免文字偏移。
-- normalizeCategories：main/settings.ts 反序列化时必须保留 SubReminder 各 mode 的全部字段，否则 auto-save hydrate 后新字段会丢失。
-- 闹钟星期重复：weekdaysEnabled?: boolean[]，"永不"（全 false）= 单次触发后停止。
-- 保存设置：只写盘不重启定时器；新建/编辑子项不调用 restartReminders()。
-- 进度条文案：SegmentProgressBars.tsx；truncate 且截断时才 hover 显示绿/蓝气泡。
-- Cursor Rules：settings-drag.mdc、settings-sortable.mdc、normalize-settings.mdc、save-and-reset.mdc。
-- 当前版本：v0.0.5，已推送至 GitHub。
+## 5. 新会话开头可粘贴的交接提示
+
+```
+【WorkBreak — 新会话交接（v0.0.7）】
+
+请先读 AGENTS.md（重点 4.4、4.5、4.7、4.11、4.12）与 docs/SESSION_HANDOVER.md、docs/POPUP_THEME_PLAN.md。
+
+- fixed 已升级为起始/结束时间窗口（支持跨天），全不勾选为“单次”。
+- 新建/编辑弹窗已支持起始/结束双滚轮、复位按钮、跨天提示与起止相等校验。
+- 进度维护为强制流程：每完成一个功能必须更新 SESSION_HANDOVER 与对应专项文档。
+- 弹窗主题（壁纸）方案已定稿，尚未开工编码；按 POPUP_THEME_PLAN 的 V1 顺序推进。
+- 当前远端版本：v0.0.7（commit: 626d25f）。
 ```

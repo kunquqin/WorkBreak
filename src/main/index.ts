@@ -1,6 +1,6 @@
-import { app, BrowserWindow, ipcMain, Notification } from 'electron'
-import { existsSync } from 'node:fs'
-import { dirname, join, resolve } from 'path'
+import { app, BrowserWindow, dialog, ipcMain, Notification, screen, type OpenDialogOptions } from 'electron'
+import { existsSync, readFileSync, readdirSync } from 'node:fs'
+import { dirname, extname, join, resolve } from 'path'
 import { fileURLToPath } from 'url'
 import { createTray, destroyTray } from './tray'
 
@@ -123,6 +123,10 @@ ipcMain.handle('setSettings', (_e, settings: Partial<AppSettings>) => {
 })
 ipcMain.handle('showMainWindow', () => mainWindow?.show())
 ipcMain.handle('getReminderCountdowns', () => getReminderCountdowns())
+ipcMain.handle('getPrimaryDisplaySize', () => {
+  const d = screen.getPrimaryDisplay()
+  return { width: d.bounds.width, height: d.bounds.height }
+})
 ipcMain.handle('resetReminderProgress', (_e, key: string, payload?: import('../shared/settings').ResetIntervalPayload) => {
   resetReminderProgress(key, payload)
 })
@@ -133,3 +137,57 @@ ipcMain.handle('resetAllReminderProgress', () => {
   resetAllReminderProgress()
 })
 ipcMain.handle('restartReminders', () => restartReminders())
+ipcMain.handle('resolvePreviewImageUrl', (_e, rawPath: string) => {
+  const input = String(rawPath ?? '').trim()
+  if (!input) return { success: true as const, url: '' }
+  if (/^(data|https?|file):/i.test(input)) return { success: true as const, url: input }
+  try {
+    if (!existsSync(input)) {
+      return { success: false as const, error: '图片文件不存在' }
+    }
+    const ext = extname(input).toLowerCase()
+    const mime =
+      ext === '.jpg' || ext === '.jpeg' ? 'image/jpeg'
+        : ext === '.png' ? 'image/png'
+          : ext === '.gif' ? 'image/gif'
+            : ext === '.webp' ? 'image/webp'
+              : ext === '.bmp' ? 'image/bmp'
+                : 'application/octet-stream'
+    const base64 = readFileSync(input).toString('base64')
+    return { success: true as const, url: `data:${mime};base64,${base64}` }
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err)
+    return { success: false as const, error: message }
+  }
+})
+ipcMain.handle('pickPopupImageFile', async () => {
+  const win = mainWindow ?? BrowserWindow.getFocusedWindow()
+  const options: OpenDialogOptions = {
+    title: '选择背景图片',
+    properties: ['openFile'],
+    filters: [{ name: 'Images', extensions: ['jpg', 'jpeg', 'png', 'webp', 'gif', 'bmp'] }],
+  }
+  const res = win ? await dialog.showOpenDialog(win, options) : await dialog.showOpenDialog(options)
+  if (res.canceled || res.filePaths.length === 0) return { success: false as const, error: '已取消' }
+  return { success: true as const, path: res.filePaths[0] }
+})
+ipcMain.handle('pickPopupImageFolder', async () => {
+  const win = mainWindow ?? BrowserWindow.getFocusedWindow()
+  const options: OpenDialogOptions = {
+    title: '选择图片文件夹',
+    properties: ['openDirectory'],
+  }
+  const res = win ? await dialog.showOpenDialog(win, options) : await dialog.showOpenDialog(options)
+  if (res.canceled || res.filePaths.length === 0) return { success: false as const, error: '已取消' }
+  const folderPath = res.filePaths[0]
+  try {
+    const files = readdirSync(folderPath)
+      .filter((name) => /\.(jpg|jpeg|png|webp|gif|bmp)$/i.test(name))
+      .map((name) => join(folderPath, name))
+    if (files.length === 0) return { success: false as const, error: '该文件夹内没有可用图片' }
+    return { success: true as const, folderPath, files }
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err)
+    return { success: false as const, error: message }
+  }
+})

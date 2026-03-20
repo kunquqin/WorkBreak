@@ -6,6 +6,6 @@ globs: ["src/renderer/src/pages/Settings.tsx", "src/renderer/src/components/**/*
 # 设置页子项排序（dnd-kit）
 
 - **子项**（闹钟/倒计时/秒表行）排序使用 **`@dnd-kit/sortable`**（`DndContext`、`SortableContext`、`useSortable`），手柄上挂 `listeners`；**不要**对子项再用 Framer `Reorder.Item`，否则可变高度下交换顺序时易出现「卡片相对鼠标跳一截」。
-- **大类**卡片顺序仍用 **Framer `Reorder`**，与子项技术栈可并存。
+- **大类**卡片顺序也使用 **`@dnd-kit/sortable`**，与子项保持同一套拖拽技术栈；不要回退到 Framer `Reorder`。
 - **可变高度**：`useSortable` 勿依赖默认 `CSS.Transform.toString` + 布局动画导致的 **scaleY**（`useDerivedTransform`），否则拖过另一行时卡片会被拉高或压扁。应 **`animateLayoutChanges: () => false`**，且 **`transform` 样式只写 `translate3d(x,y,0)`**（项目内见 `sortableTranslateOnly`）。
 - **外层结构**：带气泡/裁剪的进度条等组件，若需内容溢出可见，外层 `group` 勿与 `overflow-hidden` 同层挡住浮层（参见 `SegmentProgressBars` 的内外层拆分）。

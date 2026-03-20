@@ -1,11 +1,12 @@
-import { useState, useEffect } from 'react'
-import type { SubReminder } from '../types'
+import { useState, useEffect, type CSSProperties } from 'react'
+import type { PopupTheme, SubReminder } from '../types'
 import { WheelColumn, parseTimeHHmm, formatHHmm, WHEEL_VIEW_H } from './TimePickerModal'
 import { StaticSplitPreviewSegment, StaticSinglePreviewBar } from './SegmentProgressBars'
 import { PresetTextField } from './PresetTextField'
 import { WeekdayRepeatControl } from './WeekdayRepeatControl'
 import { ALL_WEEKDAYS_ENABLED } from '../utils/weekdayRepeatUtils'
 import { RepeatCountPicker } from './RepeatCountPicker'
+import { toPreviewImageUrl } from '../utils/popupThemePreview'
 import { buildSplitSchedule } from '../../../shared/splitSchedule'
 
 function hmsToSeconds(h: number, m: number, s: number): number {
@@ -60,6 +61,8 @@ export type AddSubReminderPayload = {
   title?: string
   startTime?: string
   time?: string
+  mainPopupThemeId?: string
+  restPopupThemeId?: string
   /** 闹钟：与 Date.getDay() 一致，长度 7 */
   weekdaysEnabled?: boolean[]
   intervalHours?: number
@@ -78,6 +81,7 @@ export type AddSubReminderModalProps = {
   contentPresets: string[]
   titlePresets: string[]
   restPresets: string[]
+  popupThemes: PopupTheme[]
   onClose: () => void
   onConfirm: (payload: AddSubReminderPayload) => void
   /** 更新主提醒文案预设（闹钟+倒计时共享） */
@@ -94,6 +98,8 @@ export type AddSubReminderModalProps = {
   layout?: 'modal' | 'embedded'
   /** 内联时用于重置表单（如每次打开不同草稿） */
   formInstanceKey?: string
+  /** 跳转到设置页主题工坊（可选） */
+  onOpenThemeStudio?: () => void
 }
 
 export function AddSubReminderModal({
@@ -102,6 +108,7 @@ export function AddSubReminderModal({
   contentPresets,
   titlePresets,
   restPresets,
+  popupThemes,
   onClose,
   onConfirm,
   onContentPresetsChange,
@@ -111,6 +118,7 @@ export function AddSubReminderModal({
   sourceItem,
   layout = 'modal',
   formInstanceKey = '',
+  onOpenThemeStudio,
 }: AddSubReminderModalProps) {
   const getDefaultTitle = (m: 'fixed' | 'interval') => (m === 'fixed' ? '未命名闹钟' : '未命名倒计时')
   const [startH, setStartH] = useState(() => getInitialFixedRangeHM(variant, mode, sourceItem).startH)
@@ -135,8 +143,15 @@ export function AddSubReminderModal({
   const [restContent, setRestContent] = useState('休息一下')
   const [splitErr, setSplitErr] = useState<string | null>(null)
   const [fixedRangeErr, setFixedRangeErr] = useState<string | null>(null)
+  const [mainPopupThemeId, setMainPopupThemeId] = useState('')
+  const [restPopupThemeId, setRestPopupThemeId] = useState('')
   const [weekdaysEnabled, setWeekdaysEnabled] = useState<boolean[]>(() => Array(7).fill(false))
   const [repeatCount, setRepeatCount] = useState<number | null>(1)
+  const mainThemeOptions = popupThemes.filter((t) => t.target === 'main')
+  const restThemeOptions = popupThemes.filter((t) => t.target === 'rest')
+  const defaultMainThemeId = mainThemeOptions[0]?.id ?? ''
+  const defaultRestThemeId = restThemeOptions[0]?.id ?? ''
+  const [previewImageUrlMap, setPreviewImageUrlMap] = useState<Record<string, string>>({})
 
   useEffect(() => {
     if (!open) return
@@ -153,6 +168,10 @@ export function AddSubReminderModal({
       setRestM(rm)
       setRestS(rs)
       setRestContent(sourceItem.restContent ?? '休息一下')
+      if (sourceItem.mode === 'fixed' || sourceItem.mode === 'interval') {
+        setMainPopupThemeId(sourceItem.mainPopupThemeId ?? defaultMainThemeId)
+        setRestPopupThemeId(sourceItem.restPopupThemeId ?? defaultRestThemeId)
+      }
       if (sourceItem.mode === 'fixed') {
         const { h: eh, m: em } = parseTimeHHmm(sourceItem.time)
         const { h: sh, m: sm } = sourceItem.startTime ? parseTimeHHmm(sourceItem.startTime) : { h: eh, m: em }
@@ -204,9 +223,52 @@ export function AddSubReminderModal({
     setRestM(0)
     setRestS(0)
     setRestContent('休息一下')
+    setMainPopupThemeId(defaultMainThemeId)
+    setRestPopupThemeId(defaultRestThemeId)
     setSplitErr(null)
     setFixedRangeErr(null)
-  }, [open, mode, variant, sourceItem?.id, formInstanceKey, layout])
+  }, [open, mode, variant, sourceItem?.id, formInstanceKey, layout, defaultMainThemeId, defaultRestThemeId])
+
+  useEffect(() => {
+    if (!open) return
+    if (!mainThemeOptions.some((t) => t.id === mainPopupThemeId)) {
+      setMainPopupThemeId(defaultMainThemeId)
+    }
+    if (!restThemeOptions.some((t) => t.id === restPopupThemeId)) {
+      setRestPopupThemeId(defaultRestThemeId)
+    }
+  }, [open, mainPopupThemeId, restPopupThemeId, mainThemeOptions, restThemeOptions, defaultMainThemeId, defaultRestThemeId])
+
+  useEffect(() => {
+    if (!open) return
+    const api = window.electronAPI
+    if (!api?.resolvePreviewImageUrl) return
+    const paths = Array.from(
+      new Set(
+        popupThemes
+          .filter((t) => t.backgroundType === 'image')
+          .flatMap((t) => {
+            const paths: string[] = []
+            if ((t.imagePath ?? '').trim()) paths.push((t.imagePath ?? '').trim())
+            if (Array.isArray(t.imageFolderFiles)) {
+              paths.push(...t.imageFolderFiles.filter((p) => typeof p === 'string' && p.trim().length > 0))
+            }
+            return paths
+          })
+      )
+    )
+    let disposed = false
+    void Promise.all(
+      paths.map(async (p) => {
+        const r = await api.resolvePreviewImageUrl(p)
+        return [p, r.success ? r.url : toPreviewImageUrl(p)] as const
+      })
+    ).then((entries) => {
+      if (disposed) return
+      setPreviewImageUrlMap(Object.fromEntries(entries))
+    })
+    return () => { disposed = true }
+  }, [open, popupThemes])
 
   useEffect(() => {
     if (!open) return
@@ -330,6 +392,8 @@ export function AddSubReminderModal({
         title: title.trim() || getDefaultTitle('fixed'),
         startTime,
         time: endTime,
+        ...(mainPopupThemeId ? { mainPopupThemeId } : {}),
+        ...(restPopupThemeId ? { restPopupThemeId } : {}),
         weekdaysEnabled: weekdaysEnabled.slice(),
         content: content.trim() || '提醒',
         splitCount: splitN,
@@ -340,6 +404,8 @@ export function AddSubReminderModal({
       onConfirm({
         mode: 'interval',
         title: title.trim() || getDefaultTitle('interval'),
+        ...(mainPopupThemeId ? { mainPopupThemeId } : {}),
+        ...(restPopupThemeId ? { restPopupThemeId } : {}),
         intervalHours,
         intervalMinutes,
         intervalSeconds,
@@ -543,6 +609,133 @@ export function AddSubReminderModal({
 
           {/* 4. 拆分预览（静态条；保存/开始后的列表进度另算） */}
           <section className="w-full">
+            <h4 className={sectionHeadingClass}>弹窗主题</h4>
+            <div className="space-y-3">
+              <div className="flex flex-wrap items-center gap-2">
+                <span className="text-sm text-slate-600 shrink-0">主弹窗主题</span>
+                <select
+                  value={mainPopupThemeId}
+                  onChange={(e) => setMainPopupThemeId(e.target.value)}
+                  className="min-w-[12rem] flex-1 rounded border border-slate-300 px-2 py-1.5 text-sm"
+                >
+                  {mainThemeOptions.map((t) => (
+                    <option key={t.id} value={t.id}>{t.name}</option>
+                  ))}
+                </select>
+                {onOpenThemeStudio && (
+                  <button
+                    type="button"
+                    onClick={onOpenThemeStudio}
+                    className="rounded border border-slate-300 px-2 py-1 text-xs text-slate-600 hover:bg-slate-50"
+                  >
+                    主题工坊
+                  </button>
+                )}
+              </div>
+              <div className="relative h-24 w-full overflow-hidden rounded border border-slate-200">
+                {(() => {
+                  const th = mainThemeOptions.find((t) => t.id === mainPopupThemeId)
+                  const rawPath = ((th?.imageSourceType === 'folder' ? th?.imageFolderFiles?.[0] : th?.imagePath) ?? '').trim()
+                  const imageUrl = previewImageUrlMap[rawPath] || toPreviewImageUrl(rawPath)
+                  const alignItems: CSSProperties['alignItems'] =
+                    th?.textAlign === 'left' ? 'flex-start' : th?.textAlign === 'right' ? 'flex-end' : 'center'
+                  const bg = th?.backgroundType === 'image' && th?.imagePath
+                    ? `url("${imageUrl}") center / cover no-repeat, ${th.backgroundColor || '#000'}`
+                    : (th?.backgroundColor || '#000')
+                  return (
+                    <>
+                      <div className="absolute inset-0" style={{ background: bg }} />
+                      <div
+                        className="absolute inset-0"
+                        style={{
+                          background: th?.overlayColor || '#000',
+                          opacity: th?.overlayEnabled ? (th?.overlayOpacity ?? 0.45) : 0,
+                        }}
+                      />
+                      <div
+                        className="relative z-[1] flex h-full flex-col justify-center px-3"
+                        style={{ textAlign: (th?.textAlign ?? 'center') as CSSProperties['textAlign'], alignItems }}
+                      >
+                        <div style={{ color: th?.contentColor || '#fff', fontSize: Math.min(20, th?.contentFontSize ?? 18), lineHeight: 1.25, width: '100%' }}>
+                          {content.trim() || '提醒内容预览'}
+                        </div>
+                        <div style={{ color: th?.timeColor || '#e2e8f0', fontSize: Math.min(14, th?.timeFontSize ?? 12), width: '100%' }}>
+                          12:34
+                        </div>
+                      </div>
+                    </>
+                  )
+                })()}
+              </div>
+
+              {splitN > 1 && (
+                <>
+                  <div className="flex flex-wrap items-center gap-2">
+                    <span className="text-sm text-slate-600 shrink-0">休息弹窗主题</span>
+                    <select
+                      value={restPopupThemeId}
+                      onChange={(e) => setRestPopupThemeId(e.target.value)}
+                      className="min-w-[12rem] flex-1 rounded border border-slate-300 px-2 py-1.5 text-sm"
+                    >
+                      {restThemeOptions.map((t) => (
+                        <option key={t.id} value={t.id}>{t.name}</option>
+                      ))}
+                    </select>
+                    {onOpenThemeStudio && (
+                      <button
+                        type="button"
+                        onClick={onOpenThemeStudio}
+                        className="rounded border border-slate-300 px-2 py-1 text-xs text-slate-600 hover:bg-slate-50"
+                      >
+                        主题工坊
+                      </button>
+                    )}
+                  </div>
+                  <div className="relative h-24 w-full overflow-hidden rounded border border-slate-200">
+                    {(() => {
+                      const th = restThemeOptions.find((t) => t.id === restPopupThemeId)
+                      const rawPath = ((th?.imageSourceType === 'folder' ? th?.imageFolderFiles?.[0] : th?.imagePath) ?? '').trim()
+                      const imageUrl = previewImageUrlMap[rawPath] || toPreviewImageUrl(rawPath)
+                      const alignItems: CSSProperties['alignItems'] =
+                        th?.textAlign === 'left' ? 'flex-start' : th?.textAlign === 'right' ? 'flex-end' : 'center'
+                      const bg = th?.backgroundType === 'image' && th?.imagePath
+                        ? `url("${imageUrl}") center / cover no-repeat, ${th.backgroundColor || '#000'}`
+                        : (th?.backgroundColor || '#000')
+                      return (
+                        <>
+                          <div className="absolute inset-0" style={{ background: bg }} />
+                          <div
+                            className="absolute inset-0"
+                            style={{
+                              background: th?.overlayColor || '#000',
+                              opacity: th?.overlayEnabled ? (th?.overlayOpacity ?? 0.45) : 0,
+                            }}
+                          />
+                          <div
+                            className="relative z-[1] flex h-full flex-col justify-center px-3"
+                            style={{ textAlign: (th?.textAlign ?? 'center') as CSSProperties['textAlign'], alignItems }}
+                          >
+                            <div style={{ color: th?.contentColor || '#fff', fontSize: Math.min(20, th?.contentFontSize ?? 18), lineHeight: 1.25, width: '100%' }}>
+                              {restContent.trim() || '休息一下'}
+                            </div>
+                            <div style={{ color: th?.timeColor || '#e2e8f0', fontSize: Math.min(14, th?.timeFontSize ?? 12), width: '100%' }}>
+                              12:34
+                            </div>
+                            <div style={{ color: th?.countdownColor || '#fff', fontSize: Math.min(20, th?.countdownFontSize ?? 18), fontWeight: 700, width: '100%' }}>
+                              5
+                            </div>
+                          </div>
+                        </>
+                      )
+                    })()}
+                  </div>
+                </>
+              )}
+            </div>
+          </section>
+
+          {/* 5. 拆分预览（静态条；保存/开始后的列表进度另算） */}
+          <section className="w-full">
             <h4 className={sectionHeadingClass}>拆分预览</h4>
             <div className="w-full flex items-center gap-1.5 flex-wrap min-h-[1rem]">
               {useSplit && segments.length > 0 ? (
@@ -559,7 +752,7 @@ export function AddSubReminderModal({
             </div>
           </section>
 
-          {/* 5. 拆分配置 */}
+          {/* 6. 拆分配置 */}
           <section className="w-full">
             <h4 className={sectionHeadingClass}>拆分配置</h4>
             <div className="flex w-full flex-col items-center space-y-5">

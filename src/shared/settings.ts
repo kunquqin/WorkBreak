@@ -5,6 +5,39 @@
 /** 大类下仅允许一种子项：闹钟 / 倒计时 / 秒表（无提醒弹窗，仅界面计时） */
 export type CategoryKind = 'alarm' | 'countdown' | 'stopwatch'
 export type SubReminderMode = 'fixed' | 'interval' | 'stopwatch'
+export type PopupThemeTarget = 'main' | 'rest'
+export type PopupBackgroundType = 'solid' | 'image'
+export type PopupTextAlign = 'left' | 'center' | 'right'
+export type PopupImageSourceType = 'single' | 'folder'
+export type PopupFolderPlayMode = 'sequence' | 'random'
+
+export interface PopupTheme {
+  id: string
+  name: string
+  target: PopupThemeTarget
+  backgroundType: PopupBackgroundType
+  backgroundColor: string
+  imageSourceType?: PopupImageSourceType
+  imagePath?: string
+  imageFolderPath?: string
+  imageFolderFiles?: string[]
+  imageFolderPlayMode?: PopupFolderPlayMode
+  imageFolderIntervalSec?: number
+  overlayEnabled: boolean
+  overlayColor: string
+  overlayOpacity: number
+  contentColor: string
+  timeColor: string
+  countdownColor: string
+  contentFontSize: number
+  timeFontSize: number
+  countdownFontSize: number
+  textAlign: PopupTextAlign
+}
+
+export interface AppEntitlements {
+  popupThemeLevel: 'free' | 'pro'
+}
 
 /** 拆分与中间休息（闹钟、倒计时均可选） */
 export interface SplitRestOptions {
@@ -32,8 +65,12 @@ export type SubReminder =
       content: string
       /** 与 Date.getDay() 一致：0=周日…6=周六；缺省表示每天均重复（兼容旧配置） */
       weekdaysEnabled?: boolean[]
+      /** 主弹窗主题 id */
+      mainPopupThemeId?: string
+      /** 休息弹窗主题 id（拆分>1时生效） */
+      restPopupThemeId?: string
     } & SplitRestOptions)
-  | ({ id: string; mode: 'interval'; title?: string; enabled?: boolean; intervalHours?: number; intervalMinutes: number; intervalSeconds?: number; content: string; repeatCount: number | null } & SplitRestOptions)
+  | ({ id: string; mode: 'interval'; title?: string; enabled?: boolean; intervalHours?: number; intervalMinutes: number; intervalSeconds?: number; content: string; repeatCount: number | null; mainPopupThemeId?: string; restPopupThemeId?: string } & SplitRestOptions)
   | { id: string; mode: 'stopwatch'; content?: string }
 
 /** 提醒类型（用户可增删），下含多个子提醒；categoryKind 决定仅闹钟或仅倒计时子项 */
@@ -52,6 +89,8 @@ export interface ReminderCategory {
 export interface AppSettings {
   reminderCategories: ReminderCategory[]
   presetPools: PresetPools
+  popupThemes: PopupTheme[]
+  entitlements: AppEntitlements
 }
 
 export interface PresetPools {
@@ -69,6 +108,8 @@ export interface PresetPools {
 export interface ResetIntervalPayload {
   categoryName: string
   content: string
+  mainPopupThemeId?: string
+  restPopupThemeId?: string
   intervalHours?: number
   intervalMinutes: number
   intervalSeconds?: number
@@ -157,6 +198,54 @@ export function getDefaultPresetPools(): PresetPools {
       '伸个懒腰',
     ],
   }
+}
+
+function defaultMainTheme(): PopupTheme {
+  return {
+    id: 'theme_main_default',
+    name: '主弹窗默认',
+    target: 'main',
+    backgroundType: 'solid',
+    backgroundColor: '#000000',
+    overlayEnabled: false,
+    overlayColor: '#000000',
+    overlayOpacity: 0.45,
+    contentColor: '#ffffff',
+    timeColor: '#e2e8f0',
+    countdownColor: '#ffffff',
+    contentFontSize: 56,
+    timeFontSize: 30,
+    countdownFontSize: 180,
+    textAlign: 'center',
+  }
+}
+
+function defaultRestTheme(): PopupTheme {
+  return {
+    id: 'theme_rest_default',
+    name: '休息弹窗默认',
+    target: 'rest',
+    backgroundType: 'solid',
+    backgroundColor: '#000000',
+    overlayEnabled: false,
+    overlayColor: '#000000',
+    overlayOpacity: 0.4,
+    contentColor: '#ffffff',
+    timeColor: '#cbd5e1',
+    countdownColor: '#ffffff',
+    contentFontSize: 40,
+    timeFontSize: 24,
+    countdownFontSize: 180,
+    textAlign: 'center',
+  }
+}
+
+export function getDefaultPopupThemes(): PopupTheme[] {
+  return [defaultMainTheme(), defaultRestTheme()]
+}
+
+export function getDefaultEntitlements(): AppEntitlements {
+  return { popupThemeLevel: 'free' }
 }
 
 /** 默认提醒分类（对应原吃饭/活动/休息） */

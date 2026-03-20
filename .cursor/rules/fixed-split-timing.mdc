@@ -1,0 +1,12 @@
+---
+description: fixed 拆分休息弹窗与结束态显示约定，避免整分钟轮询漏触发与结束态抖动
+globs: ["src/main/reminders.ts", "src/renderer/src/pages/Settings.tsx", "src/renderer/src/components/SegmentProgressBars.tsx"]
+---
+
+# fixed 拆分时序与结束态
+
+- **休息弹窗调度**：fixed 的拆分休息开始弹窗与休息结束倒计时都应基于**绝对时间**进行 `setTimeout` 预调度，不要依赖“整分钟轮询 + 命中窗口”。
+- **立即补调度**：应用启动后、以及用户点击 fixed 的「启动/重置」后，需立即执行一次 fixed 检查以建立新周期定时器，避免下一整分前漏触发。
+- **重启清理状态**：fixed 启动/重置时，必须同时清理 `fixedSingleShotState` 与该 key 的休息相关 timeout/去重状态，避免新周期沿用旧周期标记。
+- **结束态冻结**：单次 fixed（`weekdaysEnabled` 全 false）进入 ended 后，渲染层不能继续用 `Date.now()` 驱动总时长；应冻结进度条，避免分段长度和文案继续变化。
+- **结束态降噪**：若需要降低干扰，可在结束灰态只显示休息段标签，隐藏工作段标签（通过 `SplitSegmentProgressBar` 的可控标签能力实现）。

@@ -138,6 +138,9 @@
 - **重置**：用户对某条**闹钟**子项点击「重置」时，主进程 `setFixedTimeCountdownOverride(key, item.time)` 会记录该时刻为周期起点（`fixedTimeCycleStartAt.set(key, Date.now())`），并在后续每次 `getReminderCountdowns()` 中返回该**时间戳**作为 `cycleStartAt`（不可用“当前时间”覆盖，否则起始时间会跟着时钟变）。
 - **起始时间显示**：列表视图进度条左侧「起始时间」= 该周期的真实起点：有 `cycleStartAt` 时用其格式化为 HH:mm，否则用设定时间 `cd.time`（如 20:00）。不要用 `Date.now()` 作为闹钟子项的起始时间标签。
 - **保存后**：保存设置**不**清除 override；仅「全部重置」会按需更新。若需“保存后恢复为按上次设定时间”的语义，再考虑在保存时调用 `clearFixedTimeCountdownOverrides()`（当前未采用）。
+- **单次闹钟启动/重置**：`setFixedTimeCountdownOverride` 必须同时清理 `fixedSingleShotState`（否则会持续 `ended=true`）、并清理 fixed 拆分休息相关定时器与去重状态（避免新周期沿用旧周期痕迹）。
+- **fixed 拆分休息调度**：休息弹窗与休息结束倒计时采用**绝对时间 setTimeout 预调度**，不依赖“整分钟轮询命中窗口”；并在应用启动与 fixed 启动/重置后立即补一次调度检查，避免秒级分段漏弹窗。
+- **单次结束态冻结**：`weekdaysEnabled` 全 false（永不）且已结束时，分段条应保持灰态静止，不再随 `Date.now()` 变化；如需降噪显示，可仅保留休息段标签，隐藏工作段标签。
 
 ### 4.6 单实例与启动
 
@@ -163,6 +166,24 @@
 - **组件**：`src/renderer/src/components/SegmentProgressBars.tsx`（`SplitSegmentProgressBar`、`SingleCycleProgressBar` 及弹窗内静态预览条）。
 - **截断与气泡**：条上标签使用 `truncate`；若测量为 **`scrollWidth > clientWidth`**（`ResizeObserver`），hover **整条**进度条时在**水平居中、条上方**显示与条同色（**绿**/工作、**蓝**/休息）的**白字气泡**，尖角朝下指向条；**未截断则不显示气泡**。
 - **结构**：气泡父级与带 `overflow-hidden` 的圆角条**分层**（外层 `group`、内层条形容器），避免气泡被裁切；**不要**对 sortable 包裹误用会引入 **scaleY** 的整段 `transform`（参见 4.7 dnd-kit 条）。
+- **可控标签显示**：`SplitSegmentProgressBar` 支持按段控制是否显示标签（`showLabel`），用于结束灰态降低干扰。
+
+### 4.10 设置页关键交互
+
+- **全部重置需二次确认**：`Settings` 页「全部重置」为谨慎操作，必须先弹确认框；仅在用户点击「确认重置」后才调用 `resetAllReminderProgress()`。
+
+### 4.11 弹窗主题（壁纸）规划约定
+
+- **架构分层**：采用“双层架构”——**系统设置**承载完整主题编辑（背景/遮罩/文字/排版/预设/批量应用），**新建/编辑子项弹窗**仅提供轻量入口（选择主题 + 小预览 + 跳转主题工坊）。
+- **数据模型**：主题应作为独立实体管理（建议 `popupThemes`），子项仅绑定主题 id（如 `mainPopupThemeId`、`restPopupThemeId`）；避免将完整样式字段冗余写入每条子项。
+- **目标区分**：主弹窗与休息弹窗主题分开管理；休息弹窗入口仅在拆分 `splitCount > 1` 时显示。
+- **会员预留**：主题能力须预留 free/pro 门控（如渐变遮罩、文件夹壁纸、文字高级排版），先设计能力开关再逐步接入商业化。
+
+### 4.12 进度沉淀规范（强制执行）
+
+- **每完成一个功能点，必须更新进度文档**：至少同步 `docs/SESSION_HANDOVER.md` 的“本轮改动/决策/下一步”。
+- **复杂功能须有专项方案文档**：如弹窗主题，使用单独文档（如 `docs/POPUP_THEME_PLAN.md`）维护范围、状态、决策和待办。
+- **新会话可恢复**：交接提示需包含“当前版本号/commit、已完成、进行中、下一步第一条动作”，确保开新对话可无缝继续。
 
 ---
 

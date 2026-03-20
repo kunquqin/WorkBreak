@@ -1,13 +1,15 @@
 import { app } from 'electron'
 import { readFileSync, writeFileSync, existsSync, mkdirSync } from 'node:fs'
 import { join, dirname } from 'node:path'
-import type { AppSettings, CategoryKind, ReminderCategory, SubReminder, PresetPools } from '../shared/settings'
-import { getDefaultPresetPools, getStableDefaultCategories } from '../shared/settings'
+import type { AppSettings, CategoryKind, ReminderCategory, SubReminder, PresetPools, PopupTheme, AppEntitlements } from '../shared/settings'
+import { getDefaultPresetPools, getStableDefaultCategories, getDefaultPopupThemes, getDefaultEntitlements } from '../shared/settings'
 
 export type { AppSettings, ReminderCategory, SubReminder } from '../shared/settings'
 
 const defaultCategories = getStableDefaultCategories()
 const defaultPresetPools = getDefaultPresetPools()
+const defaultPopupThemes = getDefaultPopupThemes()
+const defaultEntitlements = getDefaultEntitlements()
 const legacyReminderContentDefaults = [
   '该休息一下啦',
   '起身活动一下',
@@ -140,6 +142,8 @@ function normalizeCategories(cats: unknown): ReminderCategory[] {
           startTime?: string
           time: string
           title?: unknown
+          mainPopupThemeId?: unknown
+          restPopupThemeId?: unknown
           splitCount?: number
           restDurationSeconds?: number
           restContent?: string
@@ -157,6 +161,8 @@ function normalizeCategories(cats: unknown): ReminderCategory[] {
           ...(typeof fixed.startTime === 'string' && fixed.startTime ? { startTime: fixed.startTime } : {}),
           time: fixed.time,
           content: i.content as string,
+          ...(typeof fixed.mainPopupThemeId === 'string' && fixed.mainPopupThemeId ? { mainPopupThemeId: fixed.mainPopupThemeId } : {}),
+          ...(typeof fixed.restPopupThemeId === 'string' && fixed.restPopupThemeId ? { restPopupThemeId: fixed.restPopupThemeId } : {}),
           splitCount: fixed.splitCount,
           restDurationSeconds: fixed.restDurationSeconds,
           restContent: fixed.restContent,
@@ -164,7 +170,18 @@ function normalizeCategories(cats: unknown): ReminderCategory[] {
         }
       }
       if (i.mode === 'interval' && typeof (i as { intervalMinutes: unknown }).intervalMinutes === 'number') {
-        const interval = i as { title?: unknown; intervalMinutes: number; intervalHours?: number; intervalSeconds?: number; repeatCount?: number | null; splitCount?: number; restDurationSeconds?: number; restContent?: string }
+        const interval = i as {
+          title?: unknown
+          intervalMinutes: number
+          intervalHours?: number
+          intervalSeconds?: number
+          repeatCount?: number | null
+          splitCount?: number
+          restDurationSeconds?: number
+          restContent?: string
+          mainPopupThemeId?: unknown
+          restPopupThemeId?: unknown
+        }
         const repeatCount = interval.repeatCount === undefined || interval.repeatCount === null
           ? null
           : Math.max(1, Math.floor(Number(interval.repeatCount)))
@@ -177,6 +194,8 @@ function normalizeCategories(cats: unknown): ReminderCategory[] {
           intervalMinutes: interval.intervalMinutes,
           intervalSeconds: interval.intervalSeconds,
           content: i.content as string,
+          ...(typeof interval.mainPopupThemeId === 'string' && interval.mainPopupThemeId ? { mainPopupThemeId: interval.mainPopupThemeId } : {}),
+          ...(typeof interval.restPopupThemeId === 'string' && interval.restPopupThemeId ? { restPopupThemeId: interval.restPopupThemeId } : {}),
           repeatCount,
           splitCount: interval.splitCount,
           restDurationSeconds: interval.restDurationSeconds,
@@ -262,6 +281,75 @@ function normalizePresetPools(raw: unknown, categories: ReminderCategory[]): Pre
   }
 }
 
+function normalizePopupThemes(raw: unknown): PopupTheme[] {
+  if (!Array.isArray(raw) || raw.length === 0) return [...defaultPopupThemes]
+  const out: PopupTheme[] = raw
+    .map((x): PopupTheme | null => {
+      if (!x || typeof x !== 'object') return null
+      const o = x as Record<string, unknown>
+      const id = typeof o.id === 'string' && o.id.trim() ? o.id : `theme_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`
+      const name = typeof o.name === 'string' && o.name.trim() ? o.name.trim() : '未命名主题'
+      const target = o.target === 'rest' ? 'rest' : 'main'
+      const backgroundType = o.backgroundType === 'image' ? 'image' : 'solid'
+      const backgroundColor = typeof o.backgroundColor === 'string' && o.backgroundColor ? o.backgroundColor : '#000000'
+      const imageSourceType = o.imageSourceType === 'folder' ? 'folder' : 'single'
+      const imagePath = typeof o.imagePath === 'string' && o.imagePath.trim() ? o.imagePath : undefined
+      const imageFolderPath = typeof o.imageFolderPath === 'string' && o.imageFolderPath.trim() ? o.imageFolderPath : undefined
+      const imageFolderFiles = Array.isArray(o.imageFolderFiles)
+        ? o.imageFolderFiles.filter((p): p is string => typeof p === 'string' && p.trim().length > 0)
+        : undefined
+      const imageFolderPlayMode = o.imageFolderPlayMode === 'random' ? 'random' : 'sequence'
+      const imageFolderIntervalSecNum = Number(o.imageFolderIntervalSec)
+      const imageFolderIntervalSec = Number.isFinite(imageFolderIntervalSecNum)
+        ? Math.max(1, Math.min(3600, Math.floor(imageFolderIntervalSecNum)))
+        : 30
+      const overlayEnabled = typeof o.overlayEnabled === 'boolean' ? o.overlayEnabled : false
+      const overlayColor = typeof o.overlayColor === 'string' && o.overlayColor ? o.overlayColor : '#000000'
+      const overlayOpacityNum = Number(o.overlayOpacity)
+      const overlayOpacity = Number.isFinite(overlayOpacityNum) ? Math.max(0, Math.min(1, overlayOpacityNum)) : 0.45
+      const contentColor = typeof o.contentColor === 'string' && o.contentColor ? o.contentColor : '#ffffff'
+      const timeColor = typeof o.timeColor === 'string' && o.timeColor ? o.timeColor : '#e2e8f0'
+      const countdownColor = typeof o.countdownColor === 'string' && o.countdownColor ? o.countdownColor : '#ffffff'
+      const contentFontSize = Math.max(12, Math.min(120, Math.floor(Number(o.contentFontSize) || 56)))
+      const timeFontSize = Math.max(10, Math.min(100, Math.floor(Number(o.timeFontSize) || 30)))
+      const countdownFontSize = Math.max(24, Math.min(260, Math.floor(Number(o.countdownFontSize) || 180)))
+      const textAlign = o.textAlign === 'left' || o.textAlign === 'right' ? o.textAlign : 'center'
+      return {
+        id,
+        name,
+        target,
+        backgroundType,
+        backgroundColor,
+        imageSourceType,
+        ...(imagePath ? { imagePath } : {}),
+        ...(imageFolderPath ? { imageFolderPath } : {}),
+        ...(imageFolderFiles && imageFolderFiles.length > 0 ? { imageFolderFiles } : {}),
+        imageFolderPlayMode,
+        imageFolderIntervalSec,
+        overlayEnabled,
+        overlayColor,
+        overlayOpacity,
+        contentColor,
+        timeColor,
+        countdownColor,
+        contentFontSize,
+        timeFontSize,
+        countdownFontSize,
+        textAlign,
+      }
+    })
+    .filter((x): x is PopupTheme => x !== null)
+  return out.length > 0 ? out : [...defaultPopupThemes]
+}
+
+function normalizeEntitlements(raw: unknown): AppEntitlements {
+  if (!raw || typeof raw !== 'object') return { ...defaultEntitlements }
+  const o = raw as Record<string, unknown>
+  return {
+    popupThemeLevel: o.popupThemeLevel === 'pro' ? 'pro' : 'free',
+  }
+}
+
 /** 开发时写到项目根目录，便于确认；正式用 userData */
 function getSettingsPath(): string {
   const isDev = !!process.env.VITE_DEV_SERVER_URL
@@ -279,7 +367,12 @@ export function getSettings(): AppSettings {
   const path = getSettingsPath()
   if (!existsSync(path)) {
     if (process.env.VITE_DEV_SERVER_URL) console.log('[WorkBreak] 设置文件不存在，使用默认值。路径:', path)
-    return { reminderCategories: defaultCategories, presetPools: defaultPresetPools }
+    return {
+      reminderCategories: defaultCategories,
+      presetPools: defaultPresetPools,
+      popupThemes: defaultPopupThemes,
+      entitlements: defaultEntitlements,
+    }
   }
   try {
     const raw = readFileSync(path, 'utf-8')
@@ -289,6 +382,8 @@ export function getSettings(): AppSettings {
       const next: AppSettings = {
         reminderCategories: migrated,
         presetPools: normalizePresetPools(data.presetPools, migrated),
+        popupThemes: normalizePopupThemes(data.popupThemes),
+        entitlements: normalizeEntitlements(data.entitlements),
       }
       const dir = dirname(path)
       if (!existsSync(dir)) mkdirSync(dir, { recursive: true })
@@ -300,12 +395,19 @@ export function getSettings(): AppSettings {
     const out: AppSettings = {
       reminderCategories: normalizedCategories,
       presetPools: normalizePresetPools(data.presetPools, normalizedCategories),
+      popupThemes: normalizePopupThemes(data.popupThemes),
+      entitlements: normalizeEntitlements(data.entitlements),
     }
     if (process.env.VITE_DEV_SERVER_URL) console.log('[WorkBreak] 已读取设置:', path)
     return out
   } catch (e) {
     if (process.env.VITE_DEV_SERVER_URL) console.warn('[WorkBreak] 读取设置失败', e)
-    return { reminderCategories: defaultCategories, presetPools: defaultPresetPools }
+    return {
+      reminderCategories: defaultCategories,
+      presetPools: defaultPresetPools,
+      popupThemes: defaultPopupThemes,
+      entitlements: defaultEntitlements,
+    }
   }
 }
 
@@ -318,6 +420,8 @@ export function setSettings(settings: Partial<AppSettings>): AppSettings {
     presetPools: settings.presetPools !== undefined
       ? normalizePresetPools(settings.presetPools, settings.reminderCategories !== undefined ? normalizeCategories(settings.reminderCategories) : current.reminderCategories)
       : current.presetPools,
+    popupThemes: settings.popupThemes !== undefined ? normalizePopupThemes(settings.popupThemes) : current.popupThemes,
+    entitlements: settings.entitlements !== undefined ? normalizeEntitlements(settings.entitlements) : current.entitlements,
   }
   const path = getSettingsPath()
   const dir = dirname(path)
