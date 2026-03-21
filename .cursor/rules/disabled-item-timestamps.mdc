@@ -1,0 +1,34 @@
+---
+description: 禁用/结束态闹钟子项的时间戳必须推算到正确日期，确保跨天标签一致
+globs: ["src/main/reminders.ts", "src/renderer/src/pages/Settings.tsx"]
+---
+
+# 禁用态子项时间戳推算
+
+## 问题背景
+
+`getReminderCountdowns` 为禁用（`enabled=false`）的 fixed 子项返回 `windowStartAt`/`windowEndAt` 时间戳。前端 `formatTimeWithDay` 根据时间戳判断是否跨天来决定显示"明天开始/明天结束"。
+
+## 必须遵守的规则
+
+1. **禁用态必须返回有效时间戳**：不要返回 `null`/`undefined`/`now` 来"凑数"。前端 `formatTimeWithDay` 有 fallback 路径（只接受 HH:mm 字符串），该路径无法判断跨天，会导致"明天"标记丢失。
+
+2. **时间窗口已过去时 +24h**：当 `windowEndAt <= now`（整个窗口在过去），`windowStartAt` 和 `windowEndAt` 都要 +24h 推到明天。否则时间戳虽然"正确"但日期是今天，前端会误判为"不跨天"。
+
+3. **开关开启/关闭标签一致**：同一个闹钟，开关 ON 显示"明天开始 20:50"，开关 OFF 也必须显示"明天开始 20:50"，不能因为禁用就变成"开始 20:50"。
+
+4. **useNowAsStart=true 的特殊处理**：`windowStartAt = now`（始终当前），所以永远是"今天"，不会有"明天开始"。`windowEndAt` 需要单独处理跨天。
+
+## 典型错误
+
+```typescript
+// 错误：禁用态直接用今天的 HH:mm 算时间戳，不检查是否已过去
+base.setHours(s.h, s.m, 0, 0)
+const ws = base.getTime()  // 可能是过去的时间
+
+// 正确：检查并推到明天
+let ws = base.getTime()
+let we = ...
+if (we <= ws) we += 86400000  // 跨午夜
+if (we <= now) { ws += 86400000; we += 86400000 }  // 窗口已过
+```

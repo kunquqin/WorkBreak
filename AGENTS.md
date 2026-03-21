@@ -134,7 +134,7 @@
 - 提醒计划、定时器均在主进程 `reminders.ts`，以主进程为“单一事实来源”；应用启动时由 `startReminders()` 排程。
 - **normalizeCategories 保全字段**：`main/settings.ts` 的 `normalizeCategories` 负责反序列化校验；为 `SubReminder` 的每种 mode 分支构造对象时，**必须保留该 mode 的全部字段**（如秒表的 `content`、闹钟的 `weekdaysEnabled`）。否则 auto-save → hydrate 后新加的字段会丢失。
 
-### 4.5 闹钟（mode: fixed）「重置」与起始时间
+### 4.5 闹钟（mode: fixed）「重置」与开始时间
 
 - **重置**：用户对某条**闹钟**子项点击「重置」时，主进程 `setFixedTimeCountdownOverride(key, item.time)` 会记录该时刻为周期起点（`fixedTimeCycleStartAt.set(key, Date.now())`），并在后续每次 `getReminderCountdowns()` 中返回该**时间戳**作为 `cycleStartAt`（不可用“当前时间”覆盖，否则起始时间会跟着时钟变）。
 - **起始时间显示**：列表视图进度条左侧「起始时间」= 该周期的真实起点：有 `cycleStartAt` 时用其格式化为 HH:mm，否则用设定时间 `cd.time`（如 20:00）。不要用 `Date.now()` 作为闹钟子项的起始时间标签。
@@ -142,6 +142,13 @@
 - **单次闹钟启动/重置**：`setFixedTimeCountdownOverride` 必须同时清理 `fixedSingleShotState`（否则会持续 `ended=true`）、并清理 fixed 拆分休息相关定时器与去重状态（避免新周期沿用旧周期痕迹）。
 - **fixed 拆分休息调度**：休息弹窗与休息结束倒计时采用**绝对时间 setTimeout 预调度**，不依赖“整分钟轮询命中窗口”；并在应用启动与 fixed 启动/重置后立即补一次调度检查，避免秒级分段漏弹窗。
 - **单次结束态冻结**：`weekdaysEnabled` 全 false（永不）且已结束时，分段条应保持灰态静止，不再随 `Date.now()` 变化；如需降噪显示，可仅保留休息段标签，隐藏工作段标签。
+- **useNowAsStart 开关**：闹钟子项 `useNowAsStart?: boolean`。开启时起始时间跟随系统时间实时更新，确认时以 `Date.now()` 毫秒精度为起点（`fixedPreciseStartAt`）；关闭时用户自定义起止时间范围。编辑态从 `sourceItem.useNowAsStart` 恢复。
+- **重置按钮条件显示**：仅在 `useNowAsStart=true` 时显示（倒计时始终显示）。自定义时间范围下隐藏，避免用户误以为"从当前时间启动"。
+- **单次结束自动关闭**：主进程 `autoDisableByKey()` 在单次闹钟/倒计时结束后自动 `enabled=false` 并持久化。渲染进程在 polling `useEffect` 中检测到 `cd.ended` + 本地 `enabled` 不一致时，主动 `getSettings()` 刷新。
+- **结束态漏斗**：`cd.ended` 时漏斗归位至起点（`anchorPercent=0`），显示"待启动"；手动关闭（`!isEnabled && !cd.ended`）漏斗在终点显示"0:00"。
+- **跨天时间标签**：进度条起止时间统一使用 `formatTimeWithDay(ts, fallback, '开始'|'结束')`，当天不加前缀（"开始 HH:mm"），跨天显示"明天开始/明天结束"。开关开启/关闭均一致。
+- **禁用态时间戳推算**：`getReminderCountdowns` 中，禁用项的 `windowStartAt`/`windowEndAt` 必须返回有效时间戳（非 null），且当时间窗口已过去时 +24h 推到明天，确保前端 `formatTimeWithDay` 始终走时间戳分支而非 fallback。
+- **文案规范**：UI 中统一使用"开始"（非"起始"）、"结束"。
 
 ### 4.6 单实例与启动
 
@@ -185,6 +192,7 @@
 
 - **临时 HTML 文件加载**：弹窗 HTML 写入 `os.tmpdir()` 下的临时 `.html` 文件，用 `BrowserWindow.loadFile()` 加载。**不要**用 `loadURL('data:text/html,...')`——大图片 base64 内嵌会超出 Chromium URL 长度限制，导致弹窗白屏。
 - **出错回退**：`loadFile` 失败时自动回退到无主题（纯黑背景）的临时 HTML，确保弹窗始终弹出。
+- **并发串行化**：多个弹窗（休息/结束）可能同时触发，但 `BrowserWindow` 是单例，并发 `loadFile` 会崩溃。使用 `popupChain`（Promise 链）+ `popupSeq`（序号）串行化所有 `loadFile` 操作；`closeReminderPopupIfAny` 递增 `popupSeq` 使排队中的加载失效。
 - **弹窗内容精简**：主弹窗仅显示"提醒内容 + 时间"；休息弹窗仅显示"休息提醒 + 时间 + 倒计时"。不显示分类名、标题等冗余信息。
 - **关闭按钮**：右上角黑色圆底白色 SVG 细线 X（`stroke-width` 控制粗细），鼠标移动时显示、静止 2 秒后隐藏；支持 `Esc` 键关闭。**不要**用"知道了"大按钮。
 - **文字尺寸**：使用显式像素值（如 `${contentFont}px`），不使用 CSS `clamp()`，保证渲染确定性与预览一致性。

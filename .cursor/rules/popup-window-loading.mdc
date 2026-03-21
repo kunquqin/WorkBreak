@@ -1,0 +1,29 @@
+---
+description: Electron 弹窗窗口加载约定：必须用临时文件，不用 data: URL；渲染进程图片预览必须走 IPC
+globs: ["src/main/reminderWindow.ts", "src/main/reminders.ts", "src/renderer/src/pages/Settings.tsx", "src/renderer/src/components/AddSubReminderModal.tsx"]
+---
+
+# 弹窗窗口加载与图片预览
+
+## 弹窗加载（主进程）
+
+- **必须用临时 HTML 文件 + `loadFile()`**：将 HTML 写入 `os.tmpdir()` 下临时文件，然后 `BrowserWindow.loadFile(path)` 加载。
+- **禁止用 `loadURL('data:text/html,...')`**：当 HTML 内嵌大图片 base64 时，data: URL 会超出 Chromium 长度限制（约 2MB），导致弹窗白屏且无报错。这个 bug 极难排查因为 `loadURL` 不会抛异常。
+- **必须有回退机制**：`loadFile` 失败时，自动生成一个无主题（纯黑背景）的临时 HTML 并重新加载，确保弹窗始终弹出。
+
+## 图片预览（渲染进程）
+
+- **渲染进程不能直接用 `file://` 协议**：Vite 开发服务器运行在 `http://localhost`，Chromium 安全策略阻止 `http://` 页面访问 `file://` 资源。
+- **必须走 IPC**：通过 `resolvePreviewImageUrl` IPC 让主进程读取本地图片 → 转 `data:image/` base64 URL → 返回渲染进程使用。
+- **缓存已转换的 URL**：用 `previewImageUrlMap` 避免同一图片重复读取和 base64 编码。
+
+## 弹窗并发串行化
+
+- **BrowserWindow 是单例**：多个弹窗（休息/结束）可能同时触发，但并发调用 `loadFile` 会导致崩溃闪退。
+- **必须用 Promise 链串行化**：`popupChain` 保证上一个 `loadFile` 完成后再执行下一个；`popupSeq`（递增序号）在关闭弹窗时使排队中的加载失效。
+- **必须检查 `isDestroyed()`**：在 `loadFile` 前后都要检查窗口是否已销毁，外层包 `try-catch`。
+
+## 预览与实际弹窗一致性
+
+- 预览区必须获取 `primaryDisplaySize`（屏幕实际宽高），用相同的尺寸计算逻辑算出真实像素值，再按预览容器比例缩放。
+- 文字尺寸用显式像素值（`px`），不用 `clamp()`，确保计算确定性。
