@@ -359,7 +359,7 @@ function runFixedTimeCheck() {
               const latest = fixedRestBreakState.get(key)
               if (!latest || latest.signature !== cycleSignature || latest.countdownFiredIndexes.has(i)) return
               reminderLog('固定时间·休息结束倒计时', { key, phaseIndex: i, countdownSec })
-              showRestEndCountdownPopup(countdownSec, item.restContent || '休息一下', resolvePopupThemeById(item.restPopupThemeId, 'rest'))
+              showRestEndCountdownPopup(countdownSec)
               latest.countdownFiredIndexes.add(i)
             }
             if (nowMs >= countdownAt && nowMs < restEndAt) {
@@ -439,7 +439,7 @@ function getWorkDurationMs(st: IntervalState, phaseIndex: number): number {
  * 休息结束前弹出倒计时弹窗。
  * countdownSec = min(5, restDurationSec)，在休息段最后 countdownSec 秒时触发。
  */
-function scheduleRestEndCountdown(key: string, restDurationMs: number, restContent: string, theme?: PopupTheme) {
+function scheduleRestEndCountdown(key: string, restDurationMs: number) {
   clearRestEndCountdown(key)
   const restSec = Math.round(restDurationMs / 1000)
   if (restSec < 1) return
@@ -447,7 +447,7 @@ function scheduleRestEndCountdown(key: string, restDurationMs: number, restConte
   const delayMs = restDurationMs - countdownSec * 1000
   const fireCountdown = () => {
     reminderLog('休息结束倒计时弹窗', { key, countdownSec })
-    showRestEndCountdownPopup(countdownSec, restContent || '休息一下', theme)
+    showRestEndCountdownPopup(countdownSec)
     restEndCountdownTimeouts.delete(key)
   }
   if (delayMs <= 0) {
@@ -473,7 +473,7 @@ function scheduleNextPhase(key: string) {
         st.phaseStartTime = now
         const t = setTimeout(() => scheduleNextPhase(key), st.restDurationMs)
         intervalTimeouts.set(key, t)
-        scheduleRestEndCountdown(key, st.restDurationMs, st.restContent, resolvePopupThemeById(st.restPopupThemeId, 'rest'))
+        scheduleRestEndCountdown(key, st.restDurationMs)
       } else {
         st.phaseIndex++
         st.phaseStartTime = now

@@ -14,7 +14,18 @@ export default {
     electron([
       {
         entry: resolve(__dirname, 'src/main/index.ts'),
-        vite: { build: { outDir: resolve(__dirname, 'out/main') } },
+        vite: {
+          build: {
+            outDir: resolve(__dirname, 'out/main'),
+            rollupOptions: {
+              // 必须整包 external：否则 Rollup 会打进 bundle，`./libs/core` 会相对 out/main 解析而崩
+              external: (id) =>
+                id === 'font-list' ||
+                id.startsWith('font-list/') ||
+                /[/\\]node_modules[/\\]font-list[/\\]/.test(id),
+            },
+          },
+        },
       },
       {
         entry: resolve(__dirname, 'src/preload/index.ts'),

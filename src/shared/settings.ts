@@ -11,7 +11,29 @@ export type PopupTextAlign = 'left' | 'center' | 'right'
 export type PopupImageSourceType = 'single' | 'folder'
 export type PopupFolderPlayMode = 'sequence' | 'random'
 
-/** 文字元素空间变换（百分比定位 + 旋转 + 缩放） */
+/**
+ * 单层文字描边 / 阴影（弹窗与预览共用；参数对齐 Keynote 类工具）。
+ * 角度：0° 向右，90° 向下（屏幕坐标）。
+ */
+export interface PopupLayerTextEffects {
+  strokeEnabled?: boolean
+  /** 描边宽度（px），上限见 popupTextEffects.POPUP_TEXT_STROKE_WIDTH_MAX */
+  strokeWidthPx?: number
+  strokeColor?: string
+  strokeOpacity?: number
+  shadowEnabled?: boolean
+  shadowColor?: string
+  shadowOpacity?: number
+  /** 模糊半径（px） */
+  shadowBlurPx?: number
+  /** 扩散 / 光晕大小（px），与 blur 叠加 */
+  shadowSizePx?: number
+  /** 阴影偏移距离（px，弹窗逻辑像素） */
+  shadowDistancePx?: number
+  shadowAngleDeg?: number
+}
+
+/** 文字元素空间变换（百分比定位 + 旋转 + 缩放 + 可选文字框尺寸） */
 export interface TextTransform {
   /** 水平位置，容器宽度百分比（0=左边, 50=居中, 100=右边） */
   x: number
@@ -21,6 +43,23 @@ export interface TextTransform {
   rotation: number
   /** 缩放倍率（1=原始大小） */
   scale: number
+  /**
+   * 文字块占弹窗内容区宽度百分比（约 5～96）；缺省时不固定宽，由内容与 max-width 限制。
+   * 预览区用 Moveable 四边/四角拉伸调节，文字在框内换行自适应。
+   * **时间/倒计时**：未设 `shortLayerTextBoxLockWidth` 时宽度随文字（`width:max-content`），本字段仅作 **`max-width` 上限**；锁定后与本字段组成定宽 `width:…%`（与真实弹窗一致）。
+   */
+  textBoxWidthPct?: number
+  /** 文字块占弹窗内容区高度百分比（约 3～100）；缺省时高度随内容。 */
+  textBoxHeightPct?: number
+  /**
+   * 仅 **time / countdown** 使用：`true` 时 `textBoxWidthPct` 为定宽；缺省/false 时横向贴字宽，`textBoxWidthPct` 仅限制最大宽度（便于 Moveable 外框贴合「12:00」等单行）。
+   */
+  shortLayerTextBoxLockWidth?: boolean
+  /**
+   * 仅主文案 content 使用：用户用预览四边拉框（或面板里填了宽高）后为 true，
+   * 此后宽度不再随字数自动「贴边/60%」变化，失焦只自动增高；缺省/false 为自动栏宽模式。
+   */
+  contentTextBoxUserSized?: boolean
 }
 
 export function defaultTextTransform(): TextTransform {
@@ -30,6 +69,8 @@ export function defaultTextTransform(): TextTransform {
 export interface PopupTheme {
   id: string
   name: string
+  /** 主题结构版本，便于未来多图层等扩展迁移；缺省按 1 */
+  formatVersion?: number
   target: PopupThemeTarget
   backgroundType: PopupBackgroundType
   backgroundColor: string
@@ -48,6 +89,20 @@ export interface PopupTheme {
   contentFontSize: number
   timeFontSize: number
   countdownFontSize: number
+  /**
+   * @deprecated 旧版全局字体；无分层字段时 `resolvePopupFontFamilyCss` 仍作回退。
+   */
+  popupFontFamilyPreset?: string
+  /** @deprecated 旧版全局本机字体名 */
+  popupFontFamilySystem?: string
+  /** 主文案：字体预设 id */
+  contentFontFamilyPreset?: string
+  /** 主文案：本机字体族名 */
+  contentFontFamilySystem?: string
+  timeFontFamilyPreset?: string
+  timeFontFamilySystem?: string
+  countdownFontFamilyPreset?: string
+  countdownFontFamilySystem?: string
   textAlign: PopupTextAlign
   /** 字重 (100-900) */
   contentFontWeight?: number
@@ -59,6 +114,28 @@ export interface PopupTheme {
   timeTransform?: TextTransform
   /** 倒计时数字空间变换（仅休息弹窗） */
   countdownTransform?: TextTransform
+  /** 各文字层独立对齐；缺省回落到 textAlign */
+  contentTextAlign?: PopupTextAlign
+  timeTextAlign?: PopupTextAlign
+  countdownTextAlign?: PopupTextAlign
+  /** 字间距（px），约 -2～20 */
+  contentLetterSpacing?: number
+  timeLetterSpacing?: number
+  countdownLetterSpacing?: number
+  /** 行高（无单位倍数），如 1.35 */
+  contentLineHeight?: number
+  timeLineHeight?: number
+  countdownLineHeight?: number
+  /**
+   * 主题工坊/预览用占位文案（真实弹窗仍用提醒子项的 content / 时间等；仅无子项上下文时用于预览与编辑）。
+   */
+  previewContentText?: string
+  previewTimeText?: string
+  previewCountdownText?: string
+  /** 主文案描边/阴影 */
+  contentTextEffects?: PopupLayerTextEffects
+  timeTextEffects?: PopupLayerTextEffects
+  countdownTextEffects?: PopupLayerTextEffects
 }
 
 export interface AppEntitlements {
@@ -236,7 +313,9 @@ function defaultMainTheme(): PopupTheme {
   return {
     id: 'theme_main_default',
     name: '主弹窗默认',
+    formatVersion: 1,
     target: 'main',
+    previewContentText: '提醒',
     backgroundType: 'solid',
     backgroundColor: '#000000',
     overlayEnabled: false,
@@ -250,7 +329,8 @@ function defaultMainTheme(): PopupTheme {
     countdownFontSize: 180,
     textAlign: 'center',
     contentTransform: { x: 50, y: 42, rotation: 0, scale: 1 },
-    timeTransform: { x: 50, y: 55, rotation: 0, scale: 1 },
+    /** 时间：横向 max-content 贴字，高度带来可点区域；不设 width% 避免操作框撑满一条 */
+    timeTransform: { x: 50, y: 55, rotation: 0, scale: 1, textBoxHeightPct: 8 },
   }
 }
 
@@ -258,7 +338,9 @@ function defaultRestTheme(): PopupTheme {
   return {
     id: 'theme_rest_default',
     name: '休息弹窗默认',
+    formatVersion: 1,
     target: 'rest',
+    previewContentText: '休息一下',
     backgroundType: 'solid',
     backgroundColor: '#000000',
     overlayEnabled: false,
@@ -272,8 +354,8 @@ function defaultRestTheme(): PopupTheme {
     countdownFontSize: 180,
     textAlign: 'center',
     contentTransform: { x: 50, y: 30, rotation: 0, scale: 1 },
-    timeTransform: { x: 50, y: 48, rotation: 0, scale: 1 },
-    countdownTransform: { x: 50, y: 70, rotation: 0, scale: 1 },
+    timeTransform: { x: 50, y: 48, rotation: 0, scale: 1, textBoxHeightPct: 9 },
+    countdownTransform: { x: 50, y: 70, rotation: 0, scale: 1, textBoxHeightPct: 20 },
   }
 }
 

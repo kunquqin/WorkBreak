@@ -182,7 +182,7 @@
 
 ### 4.11 弹窗主题（壁纸）约定
 
-- **架构分层**：采用“双层架构”——**系统设置**承载完整主题编辑（背景/遮罩/文字/排版/预设/批量应用），**新建/编辑子项弹窗**仅提供轻量入口（选择主题 + 小预览 + 跳转主题工坊）。
+- **架构分层**：**系统设置 · 主题工坊**与**子项新建/编辑**共用 **`PopupThemeEditorPanel`**（内为 `ThemePreviewEditor` + 分页表单，与设置页单卡一致）。子项侧默认仍为**下拉选主题 + 小预览 + 跳转主题工坊**；**未展开详细编辑时**小预览用 **`ThemePreviewEditor`**（双击可改主文案 `content` 并回写表单项，拖拽/旋转/缩放即时 `updatePopupTheme`）。**「编辑主题」**在**同一表单卡片下方内联展开**详细 Panel（非 `document.body` Portal，可 `max-height` 滚动）；再点可收起（有未保存改动时确认）。**保存到主题库**时若内容相对打开快照有变：`countPopupThemeReferences`（可排除当前子项）为 0 则 **`replacePopupTheme`**，否则 **`clonePopupThemeForFork` + `appendPopupTheme`** 并改写子项 `mainPopupThemeId` / `restPopupThemeId`。无实质改动则仅关闭详细区。
 - **数据模型**：主题为独立实体 `popupThemes: PopupTheme[]`（`shared/settings.ts`），子项仅绑定主题 id（`mainPopupThemeId`、`restPopupThemeId`）；避免将完整样式字段冗余写入每条子项。
 - **目标区分**：主弹窗与休息弹窗主题分开管理；休息弹窗入口仅在拆分 `splitCount > 1` 时显示。
 - **会员预留**：`AppEntitlements.popupThemeLevel` 区分 `'free' | 'pro'`；门控能力如渐变遮罩、文件夹壁纸、文字高级排版，先设计开关再接商业化。
@@ -199,16 +199,20 @@
 - **文字定位**：使用 `TextTransform` 百分比绝对定位（`left: x%; top: y%; transform: translate(-50%, -50%) rotate() scale()`），主进程 `transformStyle()` 辅助函数生成 CSS。无 transform 字段时使用默认位置（主弹窗：内容 y=42%、时间 y=55%；休息弹窗：内容 y=30%、倒计时 y=70%）。
 - **休息弹窗 tick 动画**：使用独立 CSS `scale` 属性（非 `transform`），避免覆盖定位 transform。Electron 28+ / Chromium 120+ 支持。
 
-### 4.13 弹窗主题预览（ThemePreviewEditor 组件）
+### 4.13 弹窗主题预览（ThemePreviewEditor / PopupThemeEditorPanel）
 
-- **独立组件**：`src/renderer/src/components/ThemePreviewEditor.tsx`，从 Settings.tsx 拆出，接收 `theme`、`onUpdateTheme`、`previewViewportWidth`、`previewImageUrlMap`、`popupPreviewAspect`、`selectedElement`、`onSelectElement` props。
-- **1:1 缩放映射**：预览区必须与实际全屏弹窗保持视觉一致。获取 `primaryDisplaySize`（屏幕实际宽高）→ 用 `clampByViewport` 计算真实像素值 → 用 `toPreviewPx`（预览容器宽度 / 屏幕宽度比）缩放到预览尺寸。
+- **预览组件**：`ThemePreviewEditor.tsx`（Moveable + 预览区 + 可选双击内联编辑）。**完整参数区**：`PopupThemeEditorPanel.tsx`（预览 + 分页「全部/文字/遮罩/背景」+ 与设置页一致的表单；**「当前选中层 · 排版」**：随全局/左中右、字间距、行高，对应 `PopupTheme` 分层字段并由 **`reminderWindow.ts`** 输出 CSS）。**设置页主题工坊**与子项弹窗内联详细编辑共用该 Panel。
+- **1:1 缩放映射**：预览区必须与实际全屏弹窗保持视觉一致。`previewViewportWidth` 取自主屏逻辑宽（如 `primaryDisplaySize.width`）；**`ThemePreviewEditor` 用 ResizeObserver 测量预览盒实际宽度**，`previewScale = min(1, 实测宽 / previewViewportWidth)`，再经 `toPreviewPx` 映射字号/字距/内边距。**禁止**用固定参考宽（如常数 920）代替实测宽，否则窄预览栏会出现文字过大、与全屏弹窗比例不一致。
 - **图片预览**：渲染进程无法直接访问 `file://` 协议（Vite 开发服务器为 `http://`），须通过 IPC `resolvePreviewImageUrl` 让主进程读取本地图片并返回 `data:image/` base64 URL。缓存在 `previewImageUrlMap` 避免重复读取。
 - **预览不显示关闭按钮**：预览区是只读展示，关闭按钮无实际意义，不渲染。
 - **参数分页**：每张主题卡有独立的分页状态（全部/文字/遮罩/背景），存储在 `themeSettingsPanelFilterMap: Record<themeId, FilterType>` 中，切换一张不影响其他。
 - **可视化编辑**：`react-moveable` 提供拖拽 / 旋转 / 缩放 / 对齐参考线。拖拽时直接操作 DOM（`target.style.left/top`）保证 60fps，松手后 commit 百分比到 React state。
 - **对齐参考线**：容器 25%/50%/75% 水平 + 垂直线，加元素间相互对齐（`elementGuidelines`）。
 - **选中联动**：`themeSelectedElementMap: Record<themeId, TextElementKey | null>` 存储每张主题卡的选中元素；预览区点击选中 / 空白取消；参数面板「位置与变换」区同步高亮与数值编辑。
+- **主文案 content 栏宽（`TextTransform` + ThemePreviewEditor）**：仅 **content** 适用「≤ 画布约 **60%** 时横向贴字、超出则锁 **60%** 换行」的自动栏宽；**`contentTextBoxUserSized`** 为 true 时（预览四边拉框或面板填宽高）宽度不再随字数自动变，可拉至约 **96%**；**失焦**在**当前宽度**下只自动增高（`textBoxHeightPct`）。**`textBoxWidthPct` 上限 96%**（normalize / 弹窗 / 预览一致）。
+- **时间 / 倒计时「短层」**：**`shortLayerTextBoxLockWidth`**（`shared/settings.ts` / `main/settings.ts` normalize）。**未锁定**：`width: max-content`，**`textBoxWidthPct` 仅作 `max-width` 上限**（Moveable 外框贴「12:00」等单行）；**预览四边拉框** `finalizeResize` 后置 **`shortLayerTextBoxLockWidth: true`** 恢复百分比**定宽条**。**`reminderWindow.textBoxLayoutCss`** 与 **`ThemePreviewEditor`** 样式须同步。固定 **`height: %`** 时 **time/countdown 用 `overflow: hidden`**，**content** 仍 **`overflow: auto`**（避免 Windows/Chromium 在 **nowrap** 下单行误出纵向滚动条）。
+- **`effectiveEditableKeys` 稳定化**：**不要**把父组件**内联**的 **`onLiveTextCommit` 函数引用**放进 `useMemo` 依赖（子项每秒因时钟重渲染 → 新引用 → `liveSnap` 等 effect 误触发抖动）。用 **`Boolean(onLiveTextCommit)`** + 显式 **`editableTextKeys` 签名串**（排序 `join`）；默认 **`['content']` / 全层** 数组用**模块级常量**，避免每帧 `new []`。
+- **单选四角等比缩放锚点**：拖某角则锁定**对角**在预览容器内的像素位置（Moveable **`direction`** → **`fixedCornerFromScaleDirection`**，每帧修正 `translate`）；**`scaleDirectionForPinRef`** 供 Ctrl 切换中心后再松键时恢复对角语义；**Ctrl** 仍锁定 **AABB 中心**。
 
 ### 4.14 进度沉淀规范（强制执行）
 

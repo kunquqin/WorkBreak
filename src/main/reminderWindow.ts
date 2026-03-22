@@ -2,6 +2,8 @@ import { app, BrowserWindow, screen } from 'electron'
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs'
 import { extname, join } from 'node:path'
 import type { PopupTheme, TextTransform } from '../shared/settings'
+import { layerTextEffectsCss } from '../shared/popupTextEffects'
+import { resolvePopupFontFamilyCss } from '../shared/popupThemeFonts'
 
 export interface ReminderPopupOptions {
   title: string
@@ -86,24 +88,95 @@ function transformStyle(t: TextTransform | undefined, fallbackX: number, fallbac
   return `position: absolute; left: ${x}%; top: ${y}%; transform: translate(-50%, -50%) rotate(${r}deg) scale(${s}); transform-origin: center;`
 }
 
+/** 文字层固定排版区域（与 ThemePreviewEditor 中 textBoxWidthPct / textBoxHeightPct 一致） */
+type TextBoxLayer = 'content' | 'time' | 'countdown'
+
+/** 时间与倒计时为实时单行数据，nowrap 避免窄 textBox 下被 overflow-wrap:anywhere 拆成「1」「2」「:」多行 */
+function textBoxLayoutCss(t: TextTransform | undefined, layer: TextBoxLayer): string {
+  const w = t?.textBoxWidthPct
+  const h = t?.textBoxHeightPct
+  const lockW = t?.shortLayerTextBoxLockWidth === true
+  let s = ''
+  if (layer === 'content') {
+    if (w != null && Number.isFinite(w)) {
+      const wp = Math.max(5, Math.min(96, w))
+      s += `width: ${wp}%; max-width: 100%; box-sizing: border-box;`
+    } else {
+      s += 'max-width: 96vw;'
+    }
+  } else {
+    // time / countdown：默认横向贴字宽（与预览 Moveable 外框一致）；锁定后才是定宽条
+    s += 'box-sizing: border-box;'
+    if (lockW && w != null && Number.isFinite(w)) {
+      const wp = Math.max(5, Math.min(96, w))
+      s += `width: ${wp}%; max-width: 100%;`
+    } else {
+      s += 'width: max-content;'
+      if (w != null && Number.isFinite(w)) {
+        s += ` max-width: ${Math.max(5, Math.min(96, w))}%;`
+      } else {
+        s += ' max-width: 96vw;'
+      }
+    }
+  }
+  if (h != null && Number.isFinite(h)) {
+    const hp = Math.max(3, Math.min(100, h))
+    // 时间/倒计时单行 nowrap：auto 在固定高度下易误出纵向滚动条；主文案多行仍 auto 以容纳长文
+    const ov = layer === 'content' ? 'auto' : 'hidden'
+    s += ` height: ${hp}%; max-height: 100%; overflow: ${ov};`
+  }
+  if (layer === 'content') {
+    // 与 ThemePreviewEditor 一致：不用 overflow-wrap:anywhere，避免窄框下中文被逐字强拆行（与编辑态不一致）
+    s += ' white-space: pre-wrap; word-wrap: break-word; overflow-wrap: break-word; word-break: keep-all;'
+  } else {
+    s += ' white-space: nowrap; word-break: keep-all; overflow-wrap: normal;'
+  }
+  return s
+}
+
+/** 各文字层排版：对齐 / 字间距 / 行高（缺省回落 textAlign 与内置行高） */
+function layerTypographyCss(theme: PopupTheme | undefined, layer: 'content' | 'time' | 'countdown'): string {
+  const baseAlign = theme?.textAlign ?? 'center'
+  let align = baseAlign
+  let letterSpacing = 0
+  let lineHeight = layer === 'countdown' ? 1 : 1.35
+  if (layer === 'content') {
+    align = theme?.contentTextAlign ?? baseAlign
+    letterSpacing = theme?.contentLetterSpacing ?? 0
+    lineHeight = theme?.contentLineHeight ?? 1.35
+  } else if (layer === 'time') {
+    align = theme?.timeTextAlign ?? baseAlign
+    letterSpacing = theme?.timeLetterSpacing ?? 0
+    lineHeight = theme?.timeLineHeight ?? 1.35
+  } else {
+    align = theme?.countdownTextAlign ?? baseAlign
+    letterSpacing = theme?.countdownLetterSpacing ?? 0
+    lineHeight = theme?.countdownLineHeight ?? 1
+  }
+  return `text-align: ${align}; letter-spacing: ${letterSpacing}px; line-height: ${lineHeight};`
+}
+
 function buildReminderHtml(options: ReminderPopupOptions): string {
   const { title, body, timeStr, theme } = options
   const titleEsc = escapeHtml(title)
   const bodyEsc = escapeHtml(body)
   const timeEsc = escapeHtml(timeStr)
-  const textAlign = theme?.textAlign ?? 'center'
-  const contentFont = Math.max(14, Math.min(120, Math.floor(theme?.contentFontSize ?? 56)))
-  const timeFont = Math.max(10, Math.min(100, Math.floor(theme?.timeFontSize ?? 30)))
+  const contentFont = Math.max(1, Math.min(8000, Math.floor(theme?.contentFontSize ?? 56)))
+  const timeFont = Math.max(1, Math.min(8000, Math.floor(theme?.timeFontSize ?? 30)))
   const contentColor = theme?.contentColor || '#ffffff'
   const timeColor = theme?.timeColor || '#e2e8f0'
   const overlayEnabled = Boolean(theme?.overlayEnabled)
   const overlayColor = theme?.overlayColor || '#000000'
   const overlayOpacity = clampOpacity(theme?.overlayOpacity, 0.45)
   const bgStyle = getBackgroundStyle(theme)
+  const contentFontFamilyCss = resolvePopupFontFamilyCss(theme, 'content')
+  const timeFontFamilyCss = resolvePopupFontFamilyCss(theme, 'time')
   const contentPos = transformStyle(theme?.contentTransform, 50, 42)
   const timePos = transformStyle(theme?.timeTransform, 50, 55)
   const contentWeight = theme?.contentFontWeight ?? 600
   const timeWeight = theme?.timeFontWeight ?? 400
+  const tyContent = layerTypographyCss(theme, 'content')
+  const tyTime = layerTypographyCss(theme, 'time')
 
   return `<!DOCTYPE html>
 <html lang="zh-CN">
@@ -113,11 +186,11 @@ function buildReminderHtml(options: ReminderPopupOptions): string {
   <title>${titleEsc}</title>
   <style>
     * { box-sizing: border-box; margin: 0; padding: 0; }
-    html, body { width: 100%; height: 100%; color: #fff; font-family: system-ui, "Microsoft YaHei", sans-serif; overflow: hidden; ${bgStyle} }
+    html, body { width: 100%; height: 100%; color: #fff; font-family: system-ui, sans-serif; overflow: hidden; ${bgStyle} }
     .overlay { position: fixed; inset: 0; background: ${overlayColor}; opacity: ${overlayEnabled ? overlayOpacity : 0}; pointer-events: none; }
     .content { position: relative; z-index: 1; width: 100%; height: 100%; }
-    .line1 { ${contentPos} font-size: ${contentFont}px; color: ${contentColor}; text-align: ${textAlign}; line-height: 1.35; font-weight: ${contentWeight}; max-width: 96vw; white-space: pre-wrap; }
-    .line2 { ${timePos} font-size: ${timeFont}px; color: ${timeColor}; text-align: ${textAlign}; font-weight: ${timeWeight}; max-width: 96vw; }
+    .line1 { ${contentPos} font-family: ${contentFontFamilyCss}; font-size: ${contentFont}px; color: ${contentColor}; ${tyContent} font-weight: ${contentWeight}; ${textBoxLayoutCss(theme?.contentTransform, 'content')} ${layerTextEffectsCss(theme, 'content')} }
+    .line2 { ${timePos} font-family: ${timeFontFamilyCss}; font-size: ${timeFont}px; color: ${timeColor}; ${tyTime} font-weight: ${timeWeight}; ${textBoxLayoutCss(theme?.timeTransform, 'time')} ${layerTextEffectsCss(theme, 'time')} }
     .close-floating {
       position: fixed;
       top: clamp(12px, 2vw, 28px);
@@ -268,22 +341,9 @@ export function closeReminderPopupIfAny() {
 
 /* ─── 休息即将结束：倒计时弹窗 ─── */
 
-function buildRestEndCountdownHtml(countdownSec: number, content: string, theme?: PopupTheme): string {
-  const contentEsc = escapeHtml(content)
+/** 休息段最后 N 秒：与休息主题硬切，固定黑底白字，不读主题壁纸/遮罩/排版 */
+function buildRestEndCountdownHtml(countdownSec: number): string {
   const sec = Math.max(1, Math.min(countdownSec, 99))
-  const textAlign = theme?.textAlign ?? 'center'
-  const contentColor = theme?.contentColor || '#ffffff'
-  const timeColor = theme?.timeColor || '#e2e8f0'
-  const overlayEnabled = Boolean(theme?.overlayEnabled)
-  const overlayColor = theme?.overlayColor || '#000000'
-  const overlayOpacity = clampOpacity(theme?.overlayOpacity, 0.4)
-  const bgStyle = getBackgroundStyle(theme)
-  const contentFont = Math.max(14, Math.min(120, Math.floor(theme?.contentFontSize ?? 40)))
-  const countdownFont = Math.max(48, Math.min(280, Math.floor(theme?.countdownFontSize ?? 180)))
-  const contentPos = transformStyle(theme?.contentTransform, 50, 30)
-  const countdownPos = transformStyle(theme?.countdownTransform, 50, 70)
-  const contentWeight = theme?.contentFontWeight ?? 600
-  const countdownWeight = theme?.countdownFontWeight ?? 700
   return `<!DOCTYPE html>
 <html lang="zh-CN">
 <head>
@@ -292,11 +352,18 @@ function buildRestEndCountdownHtml(countdownSec: number, content: string, theme?
   <title>休息即将结束</title>
   <style>
     * { box-sizing: border-box; margin: 0; padding: 0; }
-    html, body { width: 100%; height: 100%; color: #fff; font-family: system-ui, "Microsoft YaHei", sans-serif; overflow: hidden; ${bgStyle} }
-    .overlay { position: fixed; inset: 0; background: ${overlayColor}; opacity: ${overlayEnabled ? overlayOpacity : 0}; pointer-events: none; }
-    .content { position: relative; z-index: 1; width: 100%; height: 100%; }
-    .line1 { ${contentPos} font-size: ${contentFont}px; color: ${contentColor}; text-align: ${textAlign}; line-height: 1.35; font-weight: ${contentWeight}; max-width: 96vw; white-space: pre-wrap; }
-    .countdown { ${countdownPos} color: ${timeColor}; font-size: ${countdownFont}px; font-weight: ${countdownWeight}; text-align: ${textAlign}; line-height: 1; font-variant-numeric: tabular-nums; max-width: 96vw; transition: scale 0.15s ease-out, opacity 0.15s ease-out; }
+    html, body { width: 100%; height: 100%; color: #fff; font-family: system-ui, "Segoe UI", sans-serif; overflow: hidden; background: #000000; }
+    .stack {
+      position: absolute; left: 50%; top: 50%; transform: translate(-50%, -50%);
+      z-index: 1; display: flex; flex-direction: column; align-items: center; justify-content: center;
+      gap: clamp(10px, 2.2vmin, 28px); text-align: center; padding: 2vmin;
+    }
+    .title { font-size: clamp(30px, 5.5vmin, 64px); font-weight: 600; line-height: 1.25; color: #ffffff; }
+    .countdown {
+      font-size: clamp(104px, 28vmin, 340px); font-weight: 700; line-height: 1; color: #ffffff;
+      font-variant-numeric: tabular-nums;
+      transition: scale 0.15s ease-out, opacity 0.15s ease-out;
+    }
     .countdown.tick { scale: 1.15; opacity: 0.7; }
     .close-floating {
       position: fixed;
@@ -335,9 +402,8 @@ function buildRestEndCountdownHtml(countdownSec: number, content: string, theme?
   </style>
 </head>
 <body>
-  <div class="overlay"></div>
-  <div class="content">
-    <div class="line1">${contentEsc}</div>
+  <div class="stack">
+    <div class="title">休息即将结束</div>
     <div class="countdown" id="cd">${sec}</div>
   </div>
   <button class="close-floating" id="closeBtn" aria-label="关闭弹窗">
@@ -385,13 +451,12 @@ function buildRestEndCountdownHtml(countdownSec: number, content: string, theme?
 }
 
 /**
- * 休息即将结束倒计时弹窗：全屏黑底，大数字从 countdownSec 倒数到 0 后自动关闭。
+ * 休息即将结束倒计时弹窗：全屏固定黑底白字，大数字从 countdownSec 倒数到 0 后自动关闭。
  * 复用同一个 reminderPopupWindow 单例（覆盖当前休息提醒弹窗内容）。
  */
-export function showRestEndCountdownPopup(countdownSec: number, content: string, theme?: PopupTheme) {
-  const html = buildRestEndCountdownHtml(countdownSec, content, theme)
-  const fallbackHtml = buildRestEndCountdownHtml(countdownSec, content, undefined)
+export function showRestEndCountdownPopup(countdownSec: number) {
+  const html = buildRestEndCountdownHtml(countdownSec)
   const htmlPath = writePopupHtmlToTempFile('rest-countdown-popup.html', html)
-  const fallbackPath = writePopupHtmlToTempFile('rest-countdown-popup-fallback.html', fallbackHtml)
+  const fallbackPath = writePopupHtmlToTempFile('rest-countdown-popup-fallback.html', html)
   enqueuePopupLoad(htmlPath, fallbackPath)
 }

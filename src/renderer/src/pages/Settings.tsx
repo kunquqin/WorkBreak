@@ -13,9 +13,14 @@ import type { Transform } from '@dnd-kit/utilities'
 // Framer Motion Reorder 已移除——其 layout 投影系统在混合类型列表中
 // 会导致兄弟卡片位置不随内容高度变化而更新（秒表打点后下方卡重叠）。
 // 大类排序现统一使用 @dnd-kit/sortable。
-import type { AppSettings, CategoryKind, PresetPools, ReminderCategory, SubReminder, CountdownItem, PopupTheme, TextTransform } from '../types'
+import type { AppSettings, CategoryKind, PresetPools, ReminderCategory, SubReminder, CountdownItem, PopupTheme } from '../types'
 import { getDefaultPresetPools, getStableDefaultCategories, getDefaultPopupThemes, getDefaultEntitlements, genId } from '../types'
-import { AddSubReminderModal, type AddSubReminderPayload } from '../components/AddSubReminderModal'
+import {
+  AddSubReminderModal,
+  type AddSubReminderPayload,
+  type OpenThemeStudioEditFromSubitemArgs,
+  type SubReminderModalThemeEditorContext,
+} from '../components/AddSubReminderModal'
 import { PresetTextField } from '../components/PresetTextField'
 import { WeekdayRepeatControl } from '../components/WeekdayRepeatControl'
 import { SplitSegmentProgressBar, SingleCycleProgressBar } from '../components/SegmentProgressBars'
@@ -28,8 +33,9 @@ import {
   stopwatchToggleRunning,
   type StopwatchRuntime,
 } from '../utils/stopwatchUtils'
-import { toPreviewImageUrl } from '../utils/popupThemePreview'
-import { ThemePreviewEditor, type TextElementKey } from '../components/ThemePreviewEditor'
+import { type TextElementKey } from '../components/ThemePreviewEditor'
+import { type ThemeSettingsPanelFilter } from '../components/PopupThemeEditorPanel'
+import { ThemeStudioListView, ThemeStudioFloatingEditor, type ThemeStudioFloatingSource } from '../components/ThemeStudio'
 import { buildSplitSchedule } from '../../../shared/splitSchedule'
 
 /** 每次使用时读取，避免模块加载时 preload 尚未注入 */
@@ -47,7 +53,6 @@ const defaultSettings: AppSettings = {
 /** 列表筛选：全部 / 仅闹钟大类 / 仅倒计时大类 */
 type CategoryListFilter = 'all' | 'alarm' | 'countdown' | 'stopwatch'
 type PopupPreviewAspect = '16:9' | '4:3'
-type ThemeSettingsPanelFilter = 'all' | 'text' | 'overlay' | 'background'
 type ThemeBatchApplyScope = 'all' | 'selected'
 type ThemeBatchApplyCandidate = {
   key: string
@@ -235,7 +240,8 @@ type SubReminderRowProps = {
   restContentPresets: string[]
   subTitlePresets: PresetPools['subTitle']
   popupThemes: PopupTheme[]
-  onOpenThemeStudio?: () => void
+  onOpenThemeStudioList?: () => void
+  onOpenThemeStudioEdit?: (args: OpenThemeStudioEditFromSubitemArgs) => void
   /** @dnd-kit/sortable：仅手柄上 spread，避免 Framer Reorder 在可变高度下与鼠标错位 */
   sortableListeners: DraggableSyntheticListeners
   isSortableDragging: boolean
@@ -255,6 +261,15 @@ type SubReminderRowProps = {
   onSubTitlePresetsChange: (mode: 'fixed' | 'interval' | 'stopwatch', presets: string[]) => void
   /** 立即切换启用状态（并立刻生效） */
   onToggleEnabledNow: (categoryIndex: number, itemIndex: number, enabled: boolean) => void | Promise<void>
+  /** 子项弹窗内全屏编辑主题（与主题工坊能力一致） */
+  subReminderThemeEditor: SubReminderModalThemeEditorContext | null
+  popupThemeRemotePatch: {
+    categoryId: string
+    anchor: string
+    mainPopupThemeId?: string
+    restPopupThemeId?: string
+  } | null
+  onConsumePopupThemeRemotePatch: () => void
 }
 
 /** 秒表子项：状态仅在各自组件内，避免全局 Map 键冲突导致多表互相清空 */
@@ -878,8 +893,12 @@ function SubReminderRow({
   onReminderContentPresetsChange,
   onRestContentPresetsChange,
   onSubTitlePresetsChange,
-  onOpenThemeStudio,
+  onOpenThemeStudioList,
+  onOpenThemeStudioEdit,
   onToggleEnabledNow,
+  subReminderThemeEditor,
+  popupThemeRemotePatch,
+  onConsumePopupThemeRemotePatch,
 }: SubReminderRowProps) {
   const countdownKey = `${categoryId}_${item.id}`
   const cd = countdowns.find((c) => c.key === countdownKey)
@@ -1023,7 +1042,12 @@ function SubReminderRow({
             onContentPresetsChange={onReminderContentPresetsChange}
             onTitlePresetsChange={(presets) => onSubTitlePresetsChange(item.mode, presets)}
             onRestPresetsChange={onRestContentPresetsChange}
-            onOpenThemeStudio={onOpenThemeStudio}
+            onOpenThemeStudioList={onOpenThemeStudioList}
+            onOpenThemeStudioEdit={onOpenThemeStudioEdit}
+            embeddedThemeStudioContext={{ categoryId, anchor: item.id }}
+            themeEditorContext={subReminderThemeEditor ?? undefined}
+            popupThemeRemotePatch={popupThemeRemotePatch}
+            onConsumePopupThemeRemotePatch={onConsumePopupThemeRemotePatch}
           />
         </div>
       ) : (
@@ -1449,7 +1473,8 @@ type CategoryCardProps = {
   restContentPresets: string[]
   subTitlePresets: PresetPools['subTitle']
   popupThemes: PopupTheme[]
-  onOpenThemeStudio?: () => void
+  onOpenThemeStudioList?: () => void
+  onOpenThemeStudioEdit?: (args: OpenThemeStudioEditFromSubitemArgs) => void
   getCategoryTitlePresets: (kind: CategoryKind) => string[]
   onCategoryTitlePresetsChange: (kind: CategoryKind, presets: string[]) => void
   onReminderContentPresetsChange: (presets: string[]) => void
@@ -1464,6 +1489,14 @@ type CategoryCardProps = {
   onConfirmEmbeddedEdit: (categoryId: string, itemId: string, payload: AddSubReminderPayload) => void | Promise<void>
   addStopwatchItem: (categoryIndex: number) => void
   onToggleEnabledNow: (categoryIndex: number, itemIndex: number, enabled: boolean) => void | Promise<void>
+  subReminderThemeEditor: SubReminderModalThemeEditorContext | null
+  popupThemeRemotePatch: {
+    categoryId: string
+    anchor: string
+    mainPopupThemeId?: string
+    restPopupThemeId?: string
+  } | null
+  onConsumePopupThemeRemotePatch: () => void
 }
 
 function CategoryCard(props: CategoryCardProps) {
@@ -1484,7 +1517,8 @@ function CategoryCard(props: CategoryCardProps) {
     restContentPresets,
     subTitlePresets,
     popupThemes,
-    onOpenThemeStudio,
+    onOpenThemeStudioList,
+    onOpenThemeStudioEdit,
     getCategoryTitlePresets,
     onCategoryTitlePresetsChange,
     onReminderContentPresetsChange,
@@ -1499,6 +1533,9 @@ function CategoryCard(props: CategoryCardProps) {
     onConfirmEmbeddedEdit,
     addStopwatchItem,
     onToggleEnabledNow,
+    subReminderThemeEditor,
+    popupThemeRemotePatch,
+    onConsumePopupThemeRemotePatch,
   } = props
   const {
     attributes: catSortAttrs,
@@ -1645,7 +1682,8 @@ function CategoryCard(props: CategoryCardProps) {
                     restContentPresets={restContentPresets}
                     subTitlePresets={subTitlePresets}
                     popupThemes={popupThemes}
-                    onOpenThemeStudio={onOpenThemeStudio}
+                    onOpenThemeStudioList={onOpenThemeStudioList}
+                    onOpenThemeStudioEdit={onOpenThemeStudioEdit}
                     repeatDropdown={repeatDropdown}
                     setRepeatDropdown={setRepeatDropdown}
                     refreshCountdowns={refreshCountdowns}
@@ -1656,6 +1694,9 @@ function CategoryCard(props: CategoryCardProps) {
                     onRestContentPresetsChange={onRestContentPresetsChange}
                     onSubTitlePresetsChange={onSubTitlePresetsChange}
                     onToggleEnabledNow={onToggleEnabledNow}
+                    subReminderThemeEditor={subReminderThemeEditor}
+                    popupThemeRemotePatch={popupThemeRemotePatch}
+                    onConsumePopupThemeRemotePatch={onConsumePopupThemeRemotePatch}
                   />
                 ))}
               </div>
@@ -1681,7 +1722,12 @@ function CategoryCard(props: CategoryCardProps) {
               onContentPresetsChange={onReminderContentPresetsChange}
               onTitlePresetsChange={(presets) => onSubTitlePresetsChange(inlineAddDraft.mode, presets)}
               onRestPresetsChange={onRestContentPresetsChange}
-              onOpenThemeStudio={onOpenThemeStudio}
+              onOpenThemeStudioList={onOpenThemeStudioList}
+              onOpenThemeStudioEdit={onOpenThemeStudioEdit}
+              embeddedThemeStudioContext={{ categoryId: cat.id, anchor: inlineAddDraft.draftKey }}
+              themeEditorContext={subReminderThemeEditor ?? undefined}
+              popupThemeRemotePatch={popupThemeRemotePatch}
+              onConsumePopupThemeRemotePatch={onConsumePopupThemeRemotePatch}
             />
           </div>
         )}
@@ -1735,6 +1781,17 @@ export function Settings() {
   const [themeBatchApplyDraft, setThemeBatchApplyDraft] = useState<ThemeBatchApplyDraft | null>(null)
   const [previewImageUrlMap, setPreviewImageUrlMap] = useState<Record<string, string>>({})
   const [primaryDisplaySize, setPrimaryDisplaySize] = useState<{ width: number; height: number } | null>(null)
+  type ThemeStudioNav = null | { view: 'list' }
+  const [themeStudioNav, setThemeStudioNav] = useState<ThemeStudioNav>(null)
+  const [floatingThemeEdit, setFloatingThemeEdit] = useState<null | { themeId: string; source: ThemeStudioFloatingSource }>(
+    null,
+  )
+  const [popupThemeRemotePatch, setPopupThemeRemotePatch] = useState<null | {
+    categoryId: string
+    anchor: string
+    mainPopupThemeId?: string
+    restPopupThemeId?: string
+  }>(null)
   const [themeSelectedElementsMap, setThemeSelectedElementsMap] = useState<Record<string, TextElementKey[]>>({})
   const getThemeSelectedElements = (themeId: string): TextElementKey[] => themeSelectedElementsMap[themeId] ?? []
   const setThemeSelectedElements = (themeId: string, els: TextElementKey[]) => {
@@ -1742,7 +1799,6 @@ export function Settings() {
   }
   const listContainerRefsMap = useRef<Record<string, React.RefObject<HTMLDivElement | null>>>({})
   const categoryReorderContainerRef = useRef<HTMLDivElement>(null)
-  const popupThemeSectionRef = useRef<HTMLElement>(null)
   const categorySensors = useSensors(useSensor(PointerSensor, { activationConstraint: { distance: 8 } }))
   /** 与界面一致，供弹窗确认与防抖落盘读取，避免闭包/磁盘快照错位 */
   const reminderCategoriesRef = useRef(settings.reminderCategories)
@@ -1757,6 +1813,7 @@ export function Settings() {
   }, [settings.reminderCategories, categoryListFilter])
 
   const applyCategoryListFilter = (f: CategoryListFilter) => {
+    setThemeStudioNav(null)
     setCategoryListFilter(f)
     const cats = reminderCategoriesRef.current
     setRepeatDropdown(null)
@@ -1891,7 +1948,7 @@ export function Settings() {
     void Promise.all(
       paths.map(async (p) => {
         const r = await api.resolvePreviewImageUrl(p)
-        return [p, r.success ? r.url : toPreviewImageUrl(p)] as const
+        return [p, r.success ? r.url : ''] as const
       })
     ).then((entries) => {
       if (disposed) return
@@ -2068,80 +2125,6 @@ export function Settings() {
     if (repeatDropdown && repeatDropdown.categoryIndex > categoryIndex) setRepeatDropdown({ ...repeatDropdown, categoryIndex: repeatDropdown.categoryIndex - 1 })
     if (removedCat && expandedEditSub?.categoryId === removedCat.id) setExpandedEditSub(null)
     if (removedCat && inlineAddDraft?.categoryId === removedCat.id) setInlineAddDraft(null)
-  }
-
-  const moveCategory = (fromIndex: number, toIndex: number) => {
-    if (fromIndex === toIndex) return
-    const next = settings.reminderCategories.slice()
-    const [removed] = next.splice(fromIndex, 1)
-    next.splice(toIndex, 0, removed)
-    setCategories(next)
-    if (presetModal !== null) {
-      const idx = presetModal.categoryIndex
-      if (idx === fromIndex) setPresetModal({ ...presetModal, categoryIndex: toIndex })
-      else if (fromIndex < idx && toIndex >= idx) setPresetModal({ ...presetModal, categoryIndex: idx - 1 })
-      else if (fromIndex > idx && toIndex <= idx) setPresetModal({ ...presetModal, categoryIndex: idx + 1 })
-    }
-    if (repeatDropdown !== null) {
-      const idx = repeatDropdown.categoryIndex
-      if (idx === fromIndex) setRepeatDropdown({ ...repeatDropdown, categoryIndex: toIndex })
-      else if (fromIndex < idx && toIndex >= idx) setRepeatDropdown({ ...repeatDropdown, categoryIndex: idx - 1 })
-      else if (fromIndex > idx && toIndex <= idx) setRepeatDropdown({ ...repeatDropdown, categoryIndex: idx + 1 })
-    }
-  }
-
-  const moveItem = (categoryIndex: number, fromIndex: number, toIndex: number) => {
-    if (fromIndex === toIndex) return
-    const next = settings.reminderCategories.slice()
-    const cat = { ...next[categoryIndex], items: next[categoryIndex].items.slice() }
-    const [removed] = cat.items.splice(fromIndex, 1)
-    cat.items.splice(toIndex, 0, removed)
-    next[categoryIndex] = cat
-    setCategories(next)
-    if (repeatDropdown?.categoryIndex === categoryIndex) {
-      if (repeatDropdown.itemIndex === fromIndex) setRepeatDropdown({ ...repeatDropdown, itemIndex: toIndex })
-      else if (fromIndex < repeatDropdown.itemIndex && toIndex >= repeatDropdown.itemIndex) setRepeatDropdown({ ...repeatDropdown, itemIndex: repeatDropdown.itemIndex - 1 })
-      else if (fromIndex > repeatDropdown.itemIndex && toIndex <= repeatDropdown.itemIndex) setRepeatDropdown({ ...repeatDropdown, itemIndex: repeatDropdown.itemIndex + 1 })
-    }
-  }
-
-  /** 将子项从一个大类移动到另一个大类（可同大类，相当于 moveItem） */
-  const moveItemToCategory = (fromCi: number, fromIi: number, toCi: number, toIndex: number) => {
-    const next = settings.reminderCategories.slice()
-    const fromCat = next[fromCi]
-    if (!fromCat || fromIi < 0 || fromIi >= fromCat.items.length) return
-    const toCat = next[toCi]
-    if (!toCat || fromCat.categoryKind !== toCat.categoryKind) return
-    const [removed] = fromCat.items.splice(fromIi, 1)
-    const toItems = toCi === fromCi ? fromCat.items : toCat.items.slice()
-    const insertAt = Math.max(0, Math.min(toIndex, toItems.length))
-    toItems.splice(insertAt, 0, removed)
-    if (toCi === fromCi) {
-      next[fromCi] = { ...fromCat, items: toItems }
-    } else {
-      next[fromCi] = { ...fromCat, items: fromCat.items }
-      next[toCi] = { ...toCat, items: toItems }
-    }
-    setCategories(next)
-    if (repeatDropdown) {
-      if (repeatDropdown.categoryIndex === fromCi && repeatDropdown.itemIndex === fromIi) {
-        setRepeatDropdown(toCi === fromCi ? { ...repeatDropdown, itemIndex: insertAt } : { categoryIndex: toCi, itemIndex: insertAt })
-      } else if (repeatDropdown.categoryIndex === fromCi && fromIi < repeatDropdown.itemIndex) {
-        setRepeatDropdown({ ...repeatDropdown, itemIndex: repeatDropdown.itemIndex - 1 })
-      } else if (repeatDropdown.categoryIndex === toCi && insertAt <= repeatDropdown.itemIndex) {
-        setRepeatDropdown({ ...repeatDropdown, itemIndex: repeatDropdown.itemIndex + 1 })
-      }
-    }
-    if (expandedEditSub && removed.id === expandedEditSub.itemId) {
-      setExpandedEditSub({ categoryId: next[toCi].id, itemId: removed.id })
-    }
-    if (presetModal?.categoryIndex === fromCi && presetModal.itemIndex === fromIi) {
-      setPresetModal(toCi === fromCi ? { ...presetModal, itemIndex: insertAt } : { categoryIndex: toCi, itemIndex: insertAt })
-    } else if (presetModal?.categoryIndex === fromCi && fromIi < (presetModal.itemIndex ?? 0)) {
-      setPresetModal({ ...presetModal, itemIndex: (presetModal.itemIndex ?? 0) - 1 })
-    } else if (presetModal?.categoryIndex === toCi && insertAt <= (presetModal.itemIndex ?? 0)) {
-      setPresetModal({ ...presetModal, itemIndex: (presetModal.itemIndex ?? 0) + 1 })
-    }
   }
 
   const handleAddSubReminderConfirm = async (categoryId: string, payload: AddSubReminderPayload) => {
@@ -2389,9 +2372,10 @@ export function Settings() {
     setSaveError('')
   }
 
-  const addPopupTheme = (target: 'main' | 'rest') => {
+  const addPopupTheme = (target: 'main' | 'rest'): string => {
+    const id = genId()
     const newTheme: PopupTheme = {
-      id: genId(),
+      id,
       name: target === 'main' ? '主弹窗主题' : '休息弹窗主题',
       target,
       backgroundType: 'solid',
@@ -2409,12 +2393,55 @@ export function Settings() {
       textAlign: 'center',
       imageFolderPlayMode: 'sequence',
       imageFolderIntervalSec: 30,
+      formatVersion: 1,
     }
     setPopupThemes([newTheme, ...popupThemes])
+    return id
   }
 
+  const appendPopupTheme = useCallback((theme: PopupTheme) => {
+    setSettingsState((prev) => {
+      const list = Array.isArray(prev.popupThemes) ? prev.popupThemes : getDefaultPopupThemes()
+      return {
+        ...prev,
+        // 新主题插到前面，与「添加主题」一致，设置页主题工坊与下拉框更容易看到刚保存的项
+        popupThemes: [theme, ...list],
+      }
+    })
+    setSaveStatus('idle')
+    setSaveError('')
+  }, [])
+
+  const replacePopupTheme = useCallback((theme: PopupTheme) => {
+    setSettingsState((prev) => {
+      const themes = Array.isArray(prev.popupThemes) ? prev.popupThemes : getDefaultPopupThemes()
+      return {
+        ...prev,
+        popupThemes: themes.map((t) => (t.id === theme.id ? { ...theme } : t)),
+      }
+    })
+    setSaveStatus('idle')
+    setSaveError('')
+  }, [])
+
+  const countPopupThemeReferences = useCallback(
+    (themeId: string, exclude?: { categoryId: string; itemId: string } | null) => {
+      let n = 0
+      for (const cat of settings.reminderCategories) {
+        for (const item of cat.items) {
+          if (item.mode !== 'fixed' && item.mode !== 'interval') continue
+          if (exclude && cat.id === exclude.categoryId && item.id === exclude.itemId) continue
+          if (item.mainPopupThemeId === themeId) n++
+          if (item.restPopupThemeId === themeId) n++
+        }
+      }
+      return n
+    },
+    [settings.reminderCategories],
+  )
+
   /** 函数式更新 prev.popupThemes：打组松手会连续 patch 多个字段，闭包里的数组会互相覆盖。注意不能传给 setPopupThemes(函数)，setPopupThemes 只接受数组，否则会整段把函数写进 state → .map 崩溃 */
-  const updatePopupTheme = (themeId: string, patch: Partial<PopupTheme>) => {
+  const updatePopupTheme = useCallback((themeId: string, patch: Partial<PopupTheme>) => {
     setSettingsState((prev) => {
       const themes = Array.isArray(prev.popupThemes) ? prev.popupThemes : getDefaultPopupThemes()
       return {
@@ -2424,7 +2451,21 @@ export function Settings() {
     })
     setSaveStatus('idle')
     setSaveError('')
-  }
+  }, [])
+
+  const previewViewportWidthStudio = primaryDisplaySize?.width ?? (popupPreviewAspect === '16:9' ? 1920 : 1600)
+
+  const subReminderThemeEditor = useMemo<SubReminderModalThemeEditorContext>(
+    () => ({
+      appendPopupTheme,
+      replacePopupTheme,
+      countPopupThemeReferences,
+      updatePopupTheme,
+      previewViewportWidth: previewViewportWidthStudio,
+      popupPreviewAspect,
+    }),
+    [appendPopupTheme, replacePopupTheme, countPopupThemeReferences, updatePopupTheme, previewViewportWidthStudio, popupPreviewAspect],
+  )
 
   const removePopupTheme = (themeId: string) => {
     const theme = popupThemes.find((t) => t.id === themeId)
@@ -2513,34 +2554,6 @@ export function Settings() {
   const setReminderContentPresets = (presets: string[]) => updatePresetPools({ reminderContent: presets })
   const setRestContentPresets = (presets: string[]) => updatePresetPools({ restContent: presets })
 
-  const pickThemeImageFile = async (themeId: string) => {
-    const api = getApi()
-    const result = await api?.pickPopupImageFile?.()
-    if (!result || !result.success) return
-    updatePopupTheme(themeId, {
-      backgroundType: 'image',
-      imageSourceType: 'single',
-      imagePath: result.path,
-      imageFolderPath: undefined,
-      imageFolderFiles: undefined,
-    })
-  }
-
-  const pickThemeImageFolder = async (themeId: string) => {
-    const api = getApi()
-    const result = await api?.pickPopupImageFolder?.()
-    if (!result || !result.success) return
-    updatePopupTheme(themeId, {
-      backgroundType: 'image',
-      imageSourceType: 'folder',
-      imageFolderPath: result.folderPath,
-      imageFolderFiles: result.files,
-      imagePath: result.files[0],
-      imageFolderPlayMode: 'sequence',
-      imageFolderIntervalSec: 30,
-    })
-  }
-
   const applyPresetToItem = (categoryIndex: number, itemIndex: number, text: string) => {
     const it = settings.reminderCategories[categoryIndex]?.items[itemIndex]
     if (it?.mode === 'stopwatch') return
@@ -2602,6 +2615,32 @@ export function Settings() {
     }
   }
 
+  useEffect(() => {
+    if (!floatingThemeEdit) return
+    if (popupThemes.some((t) => t.id === floatingThemeEdit.themeId)) return
+    setFloatingThemeEdit(null)
+  }, [floatingThemeEdit, popupThemes])
+
+  const floatingThemeRefExclude = useMemo(() => {
+    if (floatingThemeEdit?.source.kind !== 'subitem') return null
+    const { categoryId, itemAnchor } = floatingThemeEdit.source
+    const cat = settings.reminderCategories.find((c) => c.id === categoryId)
+    if (!cat?.items.some((i) => i.id === itemAnchor)) return null
+    return { categoryId, itemId: itemAnchor }
+  }, [floatingThemeEdit, settings.reminderCategories])
+
+  const openThemeStudioEditFromSubitem = useCallback((args: OpenThemeStudioEditFromSubitemArgs) => {
+    setFloatingThemeEdit({
+      themeId: args.themeId,
+      source: {
+        kind: 'subitem',
+        categoryId: args.categoryId,
+        itemAnchor: args.itemAnchor,
+        popupTarget: args.popupTarget,
+      },
+    })
+  }, [])
+
   if (loading) {
     return (
       <div className="min-h-screen bg-slate-50 flex items-center justify-center">
@@ -2638,40 +2677,70 @@ export function Settings() {
         </div>
       </header>
 
-      <main className="max-w-5xl mx-auto px-6 py-6 space-y-6">
-        <div
-          className="flex flex-wrap items-center gap-2 rounded-lg border border-slate-200 bg-white p-3 shadow-sm"
-          role="tablist"
-          aria-label="提醒类型筛选"
-        >
-          {(
-            [
-              { id: 'all' as const, label: '全部' },
-              { id: 'alarm' as const, label: '闹钟' },
-              { id: 'countdown' as const, label: '倒计时' },
-              { id: 'stopwatch' as const, label: '秒表' },
-            ] as const
-          ).map(({ id, label }) => {
-            const active = categoryListFilter === id
-            return (
-              <button
-                key={id}
-                type="button"
-                role="tab"
-                aria-selected={active}
-                onClick={() => applyCategoryListFilter(id)}
-                className={`rounded-md px-4 py-2 text-sm font-medium transition-colors ${
-                  active
-                    ? 'bg-slate-800 text-white shadow-sm'
-                    : 'bg-slate-50 text-slate-700 hover:bg-slate-100 border border-transparent'
-                }`}
-              >
-                {label}
-              </button>
-            )
-          })}
+      <main className="mx-auto flex min-h-0 w-full max-w-[1600px] flex-col space-y-6 px-4 py-4 sm:px-6 sm:py-6">
+        <div className="box-border flex w-full min-w-0 flex-wrap items-center justify-between gap-3 rounded-lg border border-slate-200 bg-white p-3 shadow-sm">
+          <div className="flex flex-wrap gap-2" role="tablist" aria-label="提醒类型筛选">
+            {(
+              [
+                { id: 'all' as const, label: '全部' },
+                { id: 'alarm' as const, label: '闹钟' },
+                { id: 'countdown' as const, label: '倒计时' },
+                { id: 'stopwatch' as const, label: '秒表' },
+              ] as const
+            ).map(({ id, label }) => {
+              const active = !themeStudioNav && categoryListFilter === id
+              return (
+                <button
+                  key={id}
+                  type="button"
+                  role="tab"
+                  aria-selected={active}
+                  onClick={() => applyCategoryListFilter(id)}
+                  className={`rounded-md px-4 py-2 text-sm font-medium transition-colors ${
+                    active
+                      ? 'bg-slate-800 text-white shadow-sm'
+                      : 'border border-transparent bg-slate-50 text-slate-700 hover:bg-slate-100'
+                  }`}
+                >
+                  {label}
+                </button>
+              )
+            })}
+          </div>
+          <button
+            type="button"
+            role="tab"
+            aria-selected={!!themeStudioNav}
+            onClick={() => setThemeStudioNav({ view: 'list' })}
+            className={`shrink-0 rounded-md px-3 py-2 text-sm font-medium transition-colors ${
+              themeStudioNav
+                ? 'bg-slate-800 text-white shadow-sm'
+                : 'border border-slate-300 bg-white text-slate-800 shadow-sm hover:bg-slate-50'
+            }`}
+          >
+            主题工坊
+          </button>
         </div>
 
+        {themeStudioNav ? (
+          <div className="box-border flex min-h-[calc(100vh-280px)] w-full min-w-0 flex-1 flex-col rounded-xl border border-slate-200 bg-white p-4 shadow-sm">
+            <div className="mb-3 border-b border-slate-100 pb-3">
+              <h2 className="text-lg font-semibold text-slate-800">主题工坊</h2>
+            </div>
+            <ThemeStudioListView
+              themes={popupThemes}
+              previewImageUrlMap={previewImageUrlMap}
+              previewViewportWidth={previewViewportWidthStudio}
+              popupPreviewAspect={popupPreviewAspect}
+              onOpenEdit={(id) => setFloatingThemeEdit({ themeId: id, source: { kind: 'studio-list' } })}
+              onAddTheme={() => {
+                const id = addPopupTheme('main')
+                setFloatingThemeEdit({ themeId: id, source: { kind: 'studio-list' } })
+              }}
+            />
+          </div>
+        ) : (
+        <div className="box-border flex min-h-0 w-full min-w-0 flex-1 flex-col gap-6">
         <div className="flex flex-col gap-3 sm:flex-row sm:gap-4">
           {(categoryListFilter === 'all' || categoryListFilter === 'alarm') && (
             <button
@@ -2760,7 +2829,8 @@ export function Settings() {
                 restContentPresets={restContentPresets}
                 subTitlePresets={subTitlePresets}
                 popupThemes={popupThemes}
-                onOpenThemeStudio={() => popupThemeSectionRef.current?.scrollIntoView({ behavior: 'smooth', block: 'start' })}
+                onOpenThemeStudioList={() => setThemeStudioNav({ view: 'list' })}
+                onOpenThemeStudioEdit={openThemeStudioEditFromSubitem}
                 getCategoryTitlePresets={getCategoryTitlePresets}
                 onCategoryTitlePresetsChange={setCategoryTitlePresets}
                 onReminderContentPresetsChange={setReminderContentPresets}
@@ -2775,6 +2845,9 @@ export function Settings() {
                 onConfirmEmbeddedEdit={(cid, iid, payload) => handleEditSubReminderConfirm(cid, iid, payload)}
                 addStopwatchItem={addStopwatchItem}
                 onToggleEnabledNow={(ci, ii, enabled) => void toggleReminderEnabledNow(ci, ii, enabled)}
+                subReminderThemeEditor={subReminderThemeEditor}
+                popupThemeRemotePatch={popupThemeRemotePatch}
+                onConsumePopupThemeRemotePatch={() => setPopupThemeRemotePatch(null)}
               />
               )
             })}
@@ -2782,493 +2855,10 @@ export function Settings() {
           </SortableContext>
         </DndContext>
 
-        <section ref={popupThemeSectionRef} className="rounded-xl border border-slate-200 bg-white p-4 shadow-sm space-y-4">
-          <div className="flex items-center justify-between gap-3 flex-wrap">
-            <div>
-              <h3 className="text-base font-semibold text-slate-800">弹窗主题（V1 开发中）</h3>
-              <p className="text-xs text-slate-500 mt-1">先提供主题基础字段配置与持久化，后续迭代预览、遮罩渐变和批量应用。</p>
-            </div>
-            <div className="flex items-center gap-2">
-              <button
-                type="button"
-                onClick={() => addPopupTheme('main')}
-                className="rounded-md border border-slate-300 px-3 py-1.5 text-xs text-slate-700 hover:bg-slate-50"
-              >
-                + 主弹窗主题
-              </button>
-              <button
-                type="button"
-                onClick={() => addPopupTheme('rest')}
-                className="rounded-md border border-slate-300 px-3 py-1.5 text-xs text-slate-700 hover:bg-slate-50"
-              >
-                + 休息弹窗主题
-              </button>
-            </div>
-          </div>
+        </div>
+        )}
 
-          <div className="flex items-center justify-between gap-3 flex-wrap rounded-lg border border-slate-200 bg-slate-50 px-3 py-2">
-            <p className="text-xs text-slate-500">实时预览比例</p>
-            <div className="inline-flex rounded-md border border-slate-300 bg-white p-0.5">
-              <button
-                type="button"
-                onClick={() => setPopupPreviewAspect('16:9')}
-                className={`rounded px-2 py-1 text-xs transition-colors ${popupPreviewAspect === '16:9' ? 'bg-slate-800 text-white' : 'text-slate-600 hover:bg-slate-100'}`}
-              >
-                16:9
-              </button>
-              <button
-                type="button"
-                onClick={() => setPopupPreviewAspect('4:3')}
-                className={`rounded px-2 py-1 text-xs transition-colors ${popupPreviewAspect === '4:3' ? 'bg-slate-800 text-white' : 'text-slate-600 hover:bg-slate-100'}`}
-              >
-                4:3
-              </button>
-            </div>
-          </div>
-
-          <div className="space-y-3">
-            {popupThemes.map((theme) => {
-              const previewViewportWidth = primaryDisplaySize?.width ?? (popupPreviewAspect === '16:9' ? 1920 : 1600)
-              return (
-              <div key={theme.id} className="rounded-lg border border-slate-200 bg-slate-50 p-3 space-y-3">
-                <div className="flex items-center gap-2 flex-wrap">
-                  <span className={`inline-flex rounded px-2 py-0.5 text-[11px] font-medium ${theme.target === 'main' ? 'bg-violet-100 text-violet-700' : 'bg-blue-100 text-blue-700'}`}>
-                    {theme.target === 'main' ? '主弹窗' : '休息弹窗'}
-                  </span>
-                  <input
-                    type="text"
-                    value={theme.name}
-                    onChange={(e) => updatePopupTheme(theme.id, { name: e.target.value })}
-                    className="flex-1 min-w-[12rem] rounded border border-slate-300 px-2 py-1 text-sm"
-                    placeholder="主题名称"
-                  />
-                  <button
-                    type="button"
-                    onClick={() => removePopupTheme(theme.id)}
-                    className="rounded border border-red-200 px-2 py-1 text-xs text-red-600 hover:bg-red-50 disabled:opacity-40"
-                    disabled={popupThemes.filter((t) => t.target === theme.target).length <= 1}
-                    title="每个目标至少保留一个主题"
-                  >
-                    删除
-                  </button>
-                  <button
-                    type="button"
-                    onClick={() =>
-                      setThemeBatchApplyDraft({
-                        themeId: theme.id,
-                        target: theme.target,
-                        applyAlarm: true,
-                        applyCountdown: true,
-                        scope: 'all',
-                        selectedItemKeys: [],
-                        applying: false,
-                      })
-                    }
-                    className="rounded border border-slate-300 px-2 py-1 text-xs text-slate-700 hover:bg-slate-100"
-                    title="将当前主题批量应用到提醒子项"
-                  >
-                    应用到全部…
-                  </button>
-                </div>
-                <div className="space-y-3">
-                  <ThemePreviewEditor
-                    theme={theme}
-                    onUpdateTheme={updatePopupTheme}
-                    previewViewportWidth={previewViewportWidth}
-                    previewImageUrlMap={previewImageUrlMap}
-                    popupPreviewAspect={popupPreviewAspect}
-                    selectedElements={getThemeSelectedElements(theme.id)}
-                    onSelectElements={(els) => setThemeSelectedElements(theme.id, els)}
-                  />
-                  <div className="flex items-center justify-between gap-3 flex-wrap rounded-md border border-slate-200 bg-white px-3 py-2">
-                    <p className="text-xs text-slate-500">参数分页</p>
-                    <div className="inline-flex rounded-md border border-slate-300 bg-white p-0.5">
-                      <button
-                        type="button"
-                        onClick={() => setThemePanelFilter(theme.id, 'all')}
-                        className={`rounded px-2 py-1 text-xs transition-colors ${getThemePanelFilter(theme.id) === 'all' ? 'bg-slate-800 text-white' : 'text-slate-600 hover:bg-slate-100'}`}
-                      >
-                        全部
-                      </button>
-                      <button
-                        type="button"
-                        onClick={() => setThemePanelFilter(theme.id, 'text')}
-                        className={`rounded px-2 py-1 text-xs transition-colors ${getThemePanelFilter(theme.id) === 'text' ? 'bg-slate-800 text-white' : 'text-slate-600 hover:bg-slate-100'}`}
-                      >
-                        文字
-                      </button>
-                      <button
-                        type="button"
-                        onClick={() => setThemePanelFilter(theme.id, 'overlay')}
-                        className={`rounded px-2 py-1 text-xs transition-colors ${getThemePanelFilter(theme.id) === 'overlay' ? 'bg-slate-800 text-white' : 'text-slate-600 hover:bg-slate-100'}`}
-                      >
-                        遮罩
-                      </button>
-                      <button
-                        type="button"
-                        onClick={() => setThemePanelFilter(theme.id, 'background')}
-                        className={`rounded px-2 py-1 text-xs transition-colors ${getThemePanelFilter(theme.id) === 'background' ? 'bg-slate-800 text-white' : 'text-slate-600 hover:bg-slate-100'}`}
-                      >
-                        背景
-                      </button>
-                    </div>
-                  </div>
-
-                  {(getThemePanelFilter(theme.id) === 'all' || getThemePanelFilter(theme.id) === 'text') && (
-                  <div className="rounded-md border border-slate-200 bg-white p-3 space-y-2">
-                    <h4 className="text-xs font-semibold text-slate-700">文字</h4>
-                    <div className="grid grid-cols-1 gap-2 sm:grid-cols-2 lg:grid-cols-3">
-                      <label className="text-xs text-slate-600 space-y-1">
-                        <span>主文案颜色</span>
-                        <input
-                          type="color"
-                          value={theme.contentColor}
-                          onChange={(e) => updatePopupTheme(theme.id, { contentColor: e.target.value })}
-                          className="h-8 w-full rounded border border-slate-300 bg-white"
-                        />
-                      </label>
-                      <label className="text-xs text-slate-600 space-y-1">
-                        <span>时间颜色</span>
-                        <input
-                          type="color"
-                          value={theme.timeColor}
-                          onChange={(e) => updatePopupTheme(theme.id, { timeColor: e.target.value })}
-                          className="h-8 w-full rounded border border-slate-300 bg-white"
-                        />
-                      </label>
-                      
-                    </div>
-                    <div className="grid grid-cols-1 gap-2 sm:grid-cols-2 lg:grid-cols-3">
-                      <label className="text-xs text-slate-600 space-y-1">
-                        <span>文案字号</span>
-                        <input
-                          type="number"
-                          min={12}
-                          max={120}
-                          value={theme.contentFontSize}
-                          onChange={(e) => updatePopupTheme(theme.id, { contentFontSize: Math.max(12, Math.min(120, Number(e.target.value) || 12)) })}
-                          className="w-full rounded border border-slate-300 px-2 py-1 text-sm"
-                        />
-                      </label>
-                      <label className="text-xs text-slate-600 space-y-1">
-                        <span>时间字号</span>
-                        <input
-                          type="number"
-                          min={10}
-                          max={80}
-                          value={theme.timeFontSize}
-                          onChange={(e) => updatePopupTheme(theme.id, { timeFontSize: Math.max(10, Math.min(80, Number(e.target.value) || 10)) })}
-                          className="w-full rounded border border-slate-300 px-2 py-1 text-sm"
-                        />
-                      </label>
-                      {theme.target === 'rest' && (
-                        <label className="text-xs text-slate-600 space-y-1">
-                          <span>倒计时字号</span>
-                          <input
-                            type="number"
-                            min={40}
-                            max={260}
-                            value={theme.countdownFontSize}
-                            onChange={(e) => updatePopupTheme(theme.id, { countdownFontSize: Math.max(40, Math.min(260, Number(e.target.value) || 40)) })}
-                            className="w-full rounded border border-slate-300 px-2 py-1 text-sm"
-                          />
-                        </label>
-                      )}
-                    </div>
-                    <div className="grid grid-cols-1 gap-2 sm:grid-cols-2">
-                      <label className="text-xs text-slate-600 space-y-1">
-                        <span>文字对齐</span>
-                        <select
-                          value={theme.textAlign}
-                          onChange={(e) => updatePopupTheme(theme.id, { textAlign: e.target.value as PopupTheme['textAlign'] })}
-                          className="w-full rounded border border-slate-300 px-2 py-1 text-sm"
-                        >
-                          <option value="left">左对齐</option>
-                          <option value="center">居中</option>
-                          <option value="right">右对齐</option>
-                        </select>
-                      </label>
-                    </div>
-                    {/* 字重 */}
-                    <div className="grid grid-cols-1 gap-2 sm:grid-cols-2 lg:grid-cols-3">
-                      <label className="text-xs text-slate-600 space-y-1">
-                        <span>内容字重</span>
-                        <select value={theme.contentFontWeight ?? 600}
-                          onChange={(e) => updatePopupTheme(theme.id, { contentFontWeight: Number(e.target.value) })}
-                          className="w-full rounded border border-slate-300 px-2 py-1 text-sm">
-                          <option value={100}>100 Thin</option><option value={200}>200 Extra Light</option>
-                          <option value={300}>300 Light</option><option value={400}>400 Normal</option>
-                          <option value={500}>500 Medium</option><option value={600}>600 Semi Bold</option>
-                          <option value={700}>700 Bold</option><option value={800}>800 Extra Bold</option>
-                          <option value={900}>900 Black</option>
-                        </select>
-                      </label>
-                      <label className="text-xs text-slate-600 space-y-1">
-                        <span>时间字重</span>
-                        <select value={theme.timeFontWeight ?? 400}
-                          onChange={(e) => updatePopupTheme(theme.id, { timeFontWeight: Number(e.target.value) })}
-                          className="w-full rounded border border-slate-300 px-2 py-1 text-sm">
-                          <option value={100}>100 Thin</option><option value={200}>200 Extra Light</option>
-                          <option value={300}>300 Light</option><option value={400}>400 Normal</option>
-                          <option value={500}>500 Medium</option><option value={600}>600 Semi Bold</option>
-                          <option value={700}>700 Bold</option><option value={800}>800 Extra Bold</option>
-                          <option value={900}>900 Black</option>
-                        </select>
-                      </label>
-                      {theme.target === 'rest' && (
-                        <label className="text-xs text-slate-600 space-y-1">
-                          <span>倒计时字重</span>
-                          <select value={theme.countdownFontWeight ?? 700}
-                            onChange={(e) => updatePopupTheme(theme.id, { countdownFontWeight: Number(e.target.value) })}
-                            className="w-full rounded border border-slate-300 px-2 py-1 text-sm">
-                            <option value={100}>100 Thin</option><option value={200}>200 Extra Light</option>
-                            <option value={300}>300 Light</option><option value={400}>400 Normal</option>
-                            <option value={500}>500 Medium</option><option value={600}>600 Semi Bold</option>
-                            <option value={700}>700 Bold</option><option value={800}>800 Extra Bold</option>
-                            <option value={900}>900 Black</option>
-                          </select>
-                        </label>
-                      )}
-                    </div>
-                    {/* 位置与变换 */}
-                    <div className="border-t border-slate-100 pt-2 mt-1 space-y-2">
-                      <div className="flex items-center justify-between">
-                        <h5 className="text-xs font-semibold text-slate-700">位置与变换</h5>
-                        <div className="inline-flex rounded-md border border-slate-300 bg-white p-0.5">
-                          {(['content', 'time', ...(theme.target === 'rest' ? ['countdown'] : [])] as TextElementKey[]).map((elKey) => {
-                            const sels = getThemeSelectedElements(theme.id)
-                            const active = sels.includes(elKey)
-                            return (
-                              <button
-                                key={elKey}
-                                type="button"
-                                onClick={() => {
-                                  if (active) setThemeSelectedElements(theme.id, sels.filter((k) => k !== elKey))
-                                  else setThemeSelectedElements(theme.id, [...sels, elKey])
-                                }}
-                                className={`rounded px-2 py-0.5 text-[11px] transition-colors ${active ? 'bg-indigo-600 text-white' : 'text-slate-600 hover:bg-slate-100'}`}
-                              >
-                                {elKey === 'content' ? '内容' : elKey === 'time' ? '时间' : '倒计时'}
-                              </button>
-                            )
-                          })}
-                        </div>
-                      </div>
-                      {(() => {
-                        const sels = getThemeSelectedElements(theme.id)
-                        const sel = sels[0]
-                        if (!sel) return <p className="text-[11px] text-slate-400">点击预览区文字或上方按钮选中元素</p>
-                        const tField = sel === 'content' ? 'contentTransform' : sel === 'time' ? 'timeTransform' : 'countdownTransform'
-                        const defaults: Record<string, Record<TextElementKey, TextTransform>> = {
-                          main: { content: { x: 50, y: 42, rotation: 0, scale: 1 }, time: { x: 50, y: 55, rotation: 0, scale: 1 }, countdown: { x: 50, y: 70, rotation: 0, scale: 1 } },
-                          rest: { content: { x: 50, y: 30, rotation: 0, scale: 1 }, time: { x: 50, y: 48, rotation: 0, scale: 1 }, countdown: { x: 50, y: 70, rotation: 0, scale: 1 } },
-                        }
-                        const def = defaults[theme.target]?.[sel] ?? { x: 50, y: 50, rotation: 0, scale: 1 }
-                        const t: TextTransform = (theme[tField as keyof PopupTheme] as TextTransform | undefined) ?? def
-                        const update = (patch: Partial<TextTransform>) => updatePopupTheme(theme.id, { [tField]: { ...t, ...patch } })
-                        return (
-                          <div className="space-y-2">
-                            <p className="text-[11px] text-indigo-500">
-                              {sel === 'content' ? '内容' : sel === 'time' ? '时间' : '倒计时'}
-                              {sels.length >= 2 ? ` (+ ${sels.length - 1} 个)` : ''}
-                            </p>
-                            <div className="grid grid-cols-2 gap-2 sm:grid-cols-4">
-                              <label className="text-[11px] text-slate-600 space-y-0.5">
-                                <span>X 位置 (%)</span>
-                                <input type="number" min={0} max={100} step={0.5} value={+t.x.toFixed(1)}
-                                  onChange={(e) => update({ x: Math.max(0, Math.min(100, Number(e.target.value) || 0)) })}
-                                  className="w-full rounded border border-slate-300 px-2 py-1 text-xs" />
-                              </label>
-                              <label className="text-[11px] text-slate-600 space-y-0.5">
-                                <span>Y 位置 (%)</span>
-                                <input type="number" min={0} max={100} step={0.5} value={+t.y.toFixed(1)}
-                                  onChange={(e) => update({ y: Math.max(0, Math.min(100, Number(e.target.value) || 0)) })}
-                                  className="w-full rounded border border-slate-300 px-2 py-1 text-xs" />
-                              </label>
-                              <label className="text-[11px] text-slate-600 space-y-0.5">
-                                <span>旋转 (°)</span>
-                                <input type="number" min={-360} max={360} step={1} value={+t.rotation.toFixed(1)}
-                                  onChange={(e) => update({ rotation: Math.max(-360, Math.min(360, Number(e.target.value) || 0)) })}
-                                  className="w-full rounded border border-slate-300 px-2 py-1 text-xs" />
-                              </label>
-                              <label className="text-[11px] text-slate-600 space-y-0.5">
-                                <span>缩放</span>
-                                <input type="number" min={0.1} max={5} step={0.05} value={+t.scale.toFixed(2)}
-                                  onChange={(e) => update({ scale: Math.max(0.1, Math.min(5, Number(e.target.value) || 1)) })}
-                                  className="w-full rounded border border-slate-300 px-2 py-1 text-xs" />
-                              </label>
-                            </div>
-                            <button
-                              type="button"
-                              onClick={() => {
-                                const patch: Partial<PopupTheme> = {}
-                                for (const k of sels) {
-                                  const field = k === 'content' ? 'contentTransform' : k === 'time' ? 'timeTransform' : 'countdownTransform'
-                                  const d = defaults[theme.target]?.[k] ?? { x: 50, y: 50, rotation: 0, scale: 1 }
-                                  ;(patch as Record<string, TextTransform>)[field] = { ...d }
-                                }
-                                updatePopupTheme(theme.id, patch)
-                              }}
-                              className="text-[11px] text-indigo-600 hover:text-indigo-800"
-                            >
-                              {sels.length >= 2 ? '将全部选中项重置为默认位置' : '重置为默认位置'}
-                            </button>
-                          </div>
-                        )
-                      })()}
-                    </div>
-                  </div>
-                  )}
-
-                  {(getThemePanelFilter(theme.id) === 'all' || getThemePanelFilter(theme.id) === 'overlay') && (
-                  <div className="rounded-md border border-slate-200 bg-white p-3 space-y-2">
-                    <h4 className="text-xs font-semibold text-slate-700">遮罩</h4>
-                    <div className="grid grid-cols-1 gap-2 sm:grid-cols-2 lg:grid-cols-3">
-                      <label className="inline-flex items-center gap-2 rounded border border-slate-200 bg-white px-2 py-1.5 text-xs text-slate-700">
-                        <input
-                          type="checkbox"
-                          checked={theme.overlayEnabled}
-                          onChange={(e) => updatePopupTheme(theme.id, { overlayEnabled: e.target.checked })}
-                        />
-                        启用遮罩
-                      </label>
-                      <label className="text-xs text-slate-600 space-y-1">
-                        <span>遮罩颜色</span>
-                        <input
-                          type="color"
-                          value={theme.overlayColor}
-                          onChange={(e) => updatePopupTheme(theme.id, { overlayColor: e.target.value })}
-                          disabled={!theme.overlayEnabled}
-                          className="h-8 w-full rounded border border-slate-300 bg-white disabled:opacity-50"
-                        />
-                      </label>
-                      <label className="text-xs text-slate-600 space-y-1">
-                        <span>遮罩透明度（0-1）</span>
-                        <input
-                          type="number"
-                          min={0}
-                          max={1}
-                          step={0.05}
-                          value={theme.overlayOpacity}
-                          onChange={(e) => updatePopupTheme(theme.id, { overlayOpacity: Math.max(0, Math.min(1, Number(e.target.value) || 0)) })}
-                          disabled={!theme.overlayEnabled}
-                          className="w-full rounded border border-slate-300 px-2 py-1 text-sm disabled:opacity-50"
-                        />
-                      </label>
-                    </div>
-                  </div>
-                  )}
-
-                  {(getThemePanelFilter(theme.id) === 'all' || getThemePanelFilter(theme.id) === 'background') && (
-                  <div className="rounded-md border border-slate-200 bg-white p-3 space-y-2">
-                    <h4 className="text-xs font-semibold text-slate-700">背景</h4>
-                    <div className="grid grid-cols-1 gap-2 sm:grid-cols-2 lg:grid-cols-3">
-                      <label className="text-xs text-slate-600 space-y-1">
-                        <span>背景类型</span>
-                        <select
-                          value={theme.backgroundType}
-                          onChange={(e) => updatePopupTheme(theme.id, { backgroundType: e.target.value as PopupTheme['backgroundType'] })}
-                          className="w-full rounded border border-slate-300 px-2 py-1 text-sm"
-                        >
-                          <option value="solid">纯色</option>
-                          <option value="image">图片</option>
-                        </select>
-                      </label>
-                      {theme.backgroundType === 'solid' && (
-                        <label className="text-xs text-slate-600 space-y-1">
-                          <span>背景色</span>
-                          <input
-                            type="color"
-                            value={theme.backgroundColor}
-                            onChange={(e) => updatePopupTheme(theme.id, { backgroundColor: e.target.value })}
-                            className="h-8 w-full rounded border border-slate-300 bg-white"
-                          />
-                        </label>
-                      )}
-                    </div>
-
-                    {theme.backgroundType === 'image' && (
-                      <div className="space-y-2">
-                        <div className="grid grid-cols-1 gap-2 sm:grid-cols-2">
-                          <button
-                            type="button"
-                            onClick={() => { void pickThemeImageFile(theme.id) }}
-                            className="rounded border border-slate-300 px-3 py-2 text-xs text-slate-700 hover:bg-slate-50"
-                          >
-                            选择单个图片
-                          </button>
-                          <button
-                            type="button"
-                            onClick={() => { void pickThemeImageFolder(theme.id) }}
-                            className="rounded border border-slate-300 px-3 py-2 text-xs text-slate-700 hover:bg-slate-50"
-                          >
-                            选择图片文件夹（轮播）
-                          </button>
-                        </div>
-                        <div className="grid grid-cols-1 gap-2 sm:grid-cols-2 lg:grid-cols-3">
-                          <label className="text-xs text-slate-600 space-y-1">
-                            <span>图片来源</span>
-                            <select
-                              value={theme.imageSourceType ?? 'single'}
-                              onChange={(e) => updatePopupTheme(theme.id, { imageSourceType: e.target.value as 'single' | 'folder' })}
-                              className="w-full rounded border border-slate-300 px-2 py-1 text-sm"
-                            >
-                              <option value="single">单图</option>
-                              <option value="folder">文件夹</option>
-                            </select>
-                          </label>
-                          {(theme.imageSourceType ?? 'single') === 'folder' && (
-                            <>
-                              <label className="text-xs text-slate-600 space-y-1">
-                                <span>轮播模式</span>
-                                <select
-                                  value={theme.imageFolderPlayMode ?? 'sequence'}
-                                  onChange={(e) => updatePopupTheme(theme.id, { imageFolderPlayMode: e.target.value as 'sequence' | 'random' })}
-                                  className="w-full rounded border border-slate-300 px-2 py-1 text-sm"
-                                >
-                                  <option value="sequence">顺序</option>
-                                  <option value="random">随机</option>
-                                </select>
-                              </label>
-                              <label className="text-xs text-slate-600 space-y-1">
-                                <span>切换间隔（秒）</span>
-                                <input
-                                  type="number"
-                                  min={1}
-                                  max={3600}
-                                  value={theme.imageFolderIntervalSec ?? 30}
-                                  onChange={(e) => updatePopupTheme(theme.id, { imageFolderIntervalSec: Math.max(1, Math.min(3600, Number(e.target.value) || 1)) })}
-                                  className="w-full rounded border border-slate-300 px-2 py-1 text-sm"
-                                />
-                              </label>
-                            </>
-                          )}
-                        </div>
-                        <p className="text-xs text-slate-500">
-                          {(theme.imageSourceType ?? 'single') === 'folder'
-                            ? `文件夹：${theme.imageFolderPath ?? '未选择'}（共 ${theme.imageFolderFiles?.length ?? 0} 张）`
-                            : `当前图片：${theme.imagePath ?? '未选择'}`}
-                        </p>
-                        <label className="block text-xs text-slate-600 space-y-1">
-                          <span>手动路径（可选）</span>
-                          <input
-                            type="text"
-                            value={theme.imagePath ?? ''}
-                            onChange={(e) => updatePopupTheme(theme.id, { imagePath: e.target.value, imageSourceType: 'single' })}
-                            className="w-full rounded border border-slate-300 px-2 py-1 text-sm"
-                            placeholder="例如：C:\\images\\wallpaper.jpg"
-                          />
-                        </label>
-                      </div>
-                    )}
-                  </div>
-                  )}
-                </div>
-              </div>
-            )})}
-          </div>
-        </section>
-
+        {!themeStudioNav && (
         <div className="space-y-3">
           <p className="text-xs text-slate-500 leading-relaxed">
             有修改后约 0.4 秒内会在后台<strong className="text-slate-600">自动写入</strong>本地文件（静默，不闪状态）。下方「立即保存」用于马上落盘；旁边的<strong className="text-slate-600">「已保存」</strong>仅在该按钮成功时出现。
@@ -3295,6 +2885,7 @@ export function Settings() {
           {saveError && <p className="text-sm text-red-600 bg-red-50 px-3 py-2 rounded">错误：{saveError}</p>}
           {settingsPath && <p className="text-xs text-slate-500">设置文件：<code className="bg-slate-100 px-1 rounded">{settingsPath}</code></p>}
         </div>
+        )}
       </main>
 
       {presetModal !== null && (
@@ -3588,6 +3179,79 @@ export function Settings() {
           </div>
         </div>
       )}
+      {floatingThemeEdit &&
+        (() => {
+          const fe = floatingThemeEdit
+          const th = popupThemes.find((t) => t.id === fe.themeId)
+          const previewViewportWidth =
+            primaryDisplaySize?.width ?? (popupPreviewAspect === '16:9' ? 1920 : 1600)
+          if (!th) return null
+          return (
+            <ThemeStudioFloatingEditor
+              themes={popupThemes}
+              themeId={fe.themeId}
+              source={fe.source}
+              onClose={() => setFloatingThemeEdit(null)}
+              onSwitchEditingThemeId={(newId) =>
+                setFloatingThemeEdit((prev) => (prev ? { ...prev, themeId: newId } : null))
+              }
+              onAfterForkRebindSubitem={
+                fe.source.kind === 'subitem'
+                  ? (newThemeId) => {
+                      if (fe.source.kind !== 'subitem') return
+                      const s = fe.source
+                      setPopupThemeRemotePatch({
+                        categoryId: s.categoryId,
+                        anchor: s.itemAnchor,
+                        ...(s.popupTarget === 'main'
+                          ? { mainPopupThemeId: newThemeId }
+                          : { restPopupThemeId: newThemeId }),
+                      })
+                    }
+                  : undefined
+              }
+              previewViewportWidth={previewViewportWidth}
+              previewImageUrlMap={previewImageUrlMap}
+              popupPreviewAspect={popupPreviewAspect}
+              onPopupPreviewAspectChange={setPopupPreviewAspect}
+              panelFilter={getThemePanelFilter(fe.themeId)}
+              onPanelFilterChange={(f) => setThemePanelFilter(fe.themeId, f)}
+              getSelectedElements={getThemeSelectedElements}
+              setSelectedElements={setThemeSelectedElements}
+              replacePopupTheme={replacePopupTheme}
+              appendPopupTheme={appendPopupTheme}
+              countPopupThemeReferences={countPopupThemeReferences}
+              themeRefExclude={floatingThemeRefExclude}
+              onOpenBatchApply={
+                fe.source.kind === 'studio-list'
+                  ? () => {
+                      const t0 = popupThemes.find((t) => t.id === fe.themeId)
+                      if (!t0) return
+                      setThemeBatchApplyDraft({
+                        themeId: fe.themeId,
+                        target: t0.target,
+                        applyAlarm: true,
+                        applyCountdown: true,
+                        scope: 'all',
+                        selectedItemKeys: [],
+                        applying: false,
+                      })
+                    }
+                  : undefined
+              }
+              onDeleteTheme={
+                fe.source.kind === 'studio-list'
+                  ? () => {
+                      removePopupTheme(fe.themeId)
+                      setFloatingThemeEdit(null)
+                    }
+                  : undefined
+              }
+              canDeleteTheme={popupThemes.filter((t) => t.target === th.target).length > 1}
+              deleteDisabledTitle="每个目标至少保留一个主题"
+            />
+          )
+        })()}
     </div>
   )
 }

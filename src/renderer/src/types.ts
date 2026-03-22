@@ -5,6 +5,7 @@ export type {
   ReminderCategory,
   SubReminder,
   CountdownItem,
+  PopupLayerTextEffects,
   PopupTheme,
   PopupThemeTarget,
   AppEntitlements,

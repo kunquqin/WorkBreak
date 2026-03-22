@@ -27,6 +27,10 @@ declare global {
       pickPopupImageFolder: () => Promise<
         { success: true; folderPath: string; files: string[] } | { success: false; error: string }
       >
+      getSystemFontFamilies: () => Promise<
+        { success: true; fonts: string[] } | { success: false; fonts: string[]; error: string }
+      >
+      clearSystemFontListCache: () => Promise<void>
     }
   }
 }

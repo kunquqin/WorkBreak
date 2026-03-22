@@ -2,7 +2,9 @@ import React, { useRef, useCallback, useMemo, useLayoutEffect, useState, useEffe
 import { flushSync } from 'react-dom'
 import Moveable from 'react-moveable'
 import type { PopupTheme, TextTransform } from '../types'
-import { toPreviewImageUrl } from '../utils/popupThemePreview'
+import { rendererSafePreviewImageUrl } from '../utils/popupThemePreview'
+import { layerTextEffectsReactStyle } from '../../../shared/popupTextEffects'
+import { resolvePopupFontFamilyCss } from '../../../shared/popupThemeFonts'
 
 export type TextElementKey = 'content' | 'time' | 'countdown'
 
@@ -14,10 +16,29 @@ interface ThemePreviewEditorProps {
   popupPreviewAspect: '16:9' | '4:3'
   selectedElements: TextElementKey[]
   onSelectElements: (keys: TextElementKey[]) => void
-}
-
-function clampByViewport(minPx: number, viewportRatio: number, maxPx: number, viewportWidth: number): number {
-  return Math.max(minPx, Math.min(maxPx, viewportWidth * viewportRatio))
+  /** 覆盖预览文案（如子项表单里的提醒内容 / 休息时间） */
+  previewLabels?: Partial<Record<TextElementKey, string>>
+  /** 允许双击进入文字编辑的层；默认仅 content（需同时传 onLiveTextCommit） */
+  editableTextKeys?: TextElementKey[]
+  /** 预览内编辑失焦后回写（如更新子项 content / restContent） */
+  onLiveTextCommit?: (key: TextElementKey, text: string) => void
+  /** 方向键微调作用域：含面板参数区；缺省仅预览黑底内 */
+  keyboardScopeRef?: React.RefObject<HTMLElement | null>
+  /** 主题工坊列表缩略图等：与完整预览同一套比例与排版，禁止编辑与拖拽 */
+  readOnly?: boolean
+  /** false：不显示说明条与多选对齐工具栏，仅黑底画幅（嵌入卡片顶图等） */
+  showToolbar?: boolean
+  /**
+   * 与全屏弹窗相同的逻辑像素画幅（宽×高）。用于主题工坊缩略图：外层再 CSS scale 压入窄槽，换行与真实弹窗一致。
+   */
+  fixedPreviewPixelSize?: { width: number; height: number }
+  /**
+   * capped：黑底画幅 max-width 920px 并居中（默认，适合窄栏/设置卡）；
+   * fill：黑底画幅随父级宽度拉满（主题工坊左栏等，与主屏比例仍由 previewScale 映射）
+   */
+  previewWidthMode?: 'capped' | 'fill'
+  /** card：白底圆角外框+内边距；none：无外框（与工具条直接贴父级，省画面） */
+  outerChrome?: 'card' | 'none'
 }
 
 /** Moveable 打组轨道平移多为 translate(xpx,ypx)，偶发 translate3d */
@@ -30,8 +51,14 @@ function parseTransformValues(css: string): { translateX: number; translateY: nu
     if (t3) { tx = parseFloat(t3[1]); ty = parseFloat(t3[2]) }
   }
   const r = /rotate\(\s*([-\d.]+)deg\s*\)/.exec(css)
-  const s = /scale\(\s*([-\d.]+)/.exec(css)
-  return { translateX: tx, translateY: ty, rotation: r ? parseFloat(r[1]) : 0, scale: s ? parseFloat(s[1]) : 1 }
+  const sm = /scale\(\s*([-\d.]+)(?:\s*,\s*([-\d.]+))?\s*\)/.exec(css)
+  let sc = 1
+  if (sm) {
+    const sx = parseFloat(sm[1])
+    const sy = sm[2] !== undefined ? parseFloat(sm[2]) : sx
+    sc = Math.sqrt(Math.max(1e-8, sx * sy))
+  }
+  return { translateX: tx, translateY: ty, rotation: r ? parseFloat(r[1]) : 0, scale: sc }
 }
 
 function hasPixelTranslate(css: string): boolean {
@@ -40,6 +67,51 @@ function hasPixelTranslate(css: string): boolean {
 
 function buildTransform(tx: number, ty: number, rotation: number, scale: number): string {
   return `translate(${tx}px, ${ty}px) rotate(${rotation}deg) scale(${scale})`
+}
+
+/** 元素 AABB 四角相对黑底预览容器左上角的像素坐标（与 Moveable 校正 translate 一致） */
+type ScaleFixedCorner = 'tl' | 'tr' | 'bl' | 'br'
+
+function getBoxCornerInContainer(er: DOMRect, cr: DOMRect, corner: ScaleFixedCorner): { x: number; y: number } {
+  const l = er.left - cr.left
+  const t = er.top - cr.top
+  const r = er.right - cr.left
+  const b = er.bottom - cr.top
+  switch (corner) {
+    case 'tl':
+      return { x: l, y: t }
+    case 'tr':
+      return { x: r, y: t }
+    case 'bl':
+      return { x: l, y: b }
+    case 'br':
+      return { x: r, y: b }
+  }
+}
+
+/**
+ * Moveable Scalable 的 direction（所拖角）→ 缩放时应保持不动的对角。
+ * nw [-1,-1]→右下；ne [1,-1]→左下；sw [-1,1]→右上；se [1,1]→左上。
+ */
+function fixedCornerFromScaleDirection(direction: number[]): ScaleFixedCorner {
+  const dx = Math.sign(direction[0] || 0)
+  const dy = Math.sign(direction[1] || 0)
+  if (dx === -1 && dy === -1) return 'br'
+  if (dx === 1 && dy === -1) return 'bl'
+  if (dx === -1 && dy === 1) return 'tr'
+  if (dx === 1 && dy === 1) return 'tl'
+  return 'tl'
+}
+
+/** Moveable 拖动缩放过程中可能输出 scale(sx,sy) 且 sx≠sy，字会被「压扁/拉宽」；松手后若只取单轴易误判，故在每一帧强制为等比 scale */
+function forceUniformScaleInFullTransform(css: string): string {
+  if (!css || !/\bscale\s*\(/.test(css)) return css
+  return css.replace(/scale\(\s*([-\d.]+)(?:\s*,\s*([-\d.]+))?\s*\)/g, (_m, a, b) => {
+    const sx = parseFloat(a)
+    const sy = b !== undefined ? parseFloat(b) : sx
+    const u = Math.sqrt(Math.max(1e-8, sx * sy))
+    return `scale(${u})`
+  })
 }
 
 /**
@@ -63,6 +135,12 @@ function pickMoveableCssTransform(e: { transform?: string; afterTransform?: stri
 }
 
 /** Shift 吸附角度：只改第一个 rotate()，保留多段 translate 等 */
+/** Moveable 把手/连线等在 .moveable-control-box 内；点击时会抢走 contentEditable 焦点 */
+function isThemePreviewMoveableChrome(node: EventTarget | null): boolean {
+  if (!node || !(node instanceof HTMLElement)) return false
+  return Boolean(node.closest('.moveable-control-box'))
+}
+
 function snapRotateInFullTransform(css: string, inputEvent: MouseEvent | TouchEvent | null): string {
   if (!inputEvent || !(inputEvent as MouseEvent).shiftKey) return css
   const m = /rotate\(\s*([-\d.]+)deg\s*\)/.exec(css)
@@ -72,15 +150,25 @@ function snapRotateInFullTransform(css: string, inputEvent: MouseEvent | TouchEv
   return css.slice(0, m.index) + `rotate(${snapped}deg)` + css.slice(m.index + m[0].length)
 }
 
+/** 主文案：单行固有宽 ≤ 画布此比例时栏宽贴内容；超出则栏宽锁为此比例并在框内换行；拉框可宽于此上限，至 CONTENT_TEXT_BOX_CAP_RATIO */
+const CONTENT_TEXT_INLINE_MAX_RATIO = 0.6
+const CONTENT_TEXT_BOX_CAP_RATIO = 0.96
+
+/** 与 liveSnap / useMemo 依赖稳定：勿每轮渲染 new 新数组，否则小窗预览会跟着时钟抖动 */
+const DEFAULT_EDITABLE_CONTENT_ONLY: TextElementKey[] = ['content']
+/** 仅主文案可预览内双击编辑；时间层仅 Moveable 变换（与真实弹窗一致） */
+const DEFAULT_EDITABLE_ALL_LAYERS: TextElementKey[] = ['content']
+
 export const DEFAULT_TRANSFORMS: Record<string, Record<TextElementKey, TextTransform>> = {
   main: {
     content: { x: 50, y: 42, rotation: 0, scale: 1 },
-    time: { x: 50, y: 55, rotation: 0, scale: 1 },
+    time: { x: 50, y: 55, rotation: 0, scale: 1, textBoxHeightPct: 8 },
     countdown: { x: 50, y: 70, rotation: 0, scale: 1 },
   },
+  /** 休息提醒全屏弹窗与主弹窗同为「主文案 + 时间」两层；结束前几秒倒计时为固定样式，不在此预览 */
   rest: {
-    content: { x: 50, y: 30, rotation: 0, scale: 1 },
-    time: { x: 50, y: 48, rotation: 0, scale: 1 },
+    content: { x: 50, y: 42, rotation: 0, scale: 1 },
+    time: { x: 50, y: 55, rotation: 0, scale: 1, textBoxHeightPct: 8 },
     countdown: { x: 50, y: 70, rotation: 0, scale: 1 },
   },
 }
@@ -108,9 +196,36 @@ const UNGROUP_ICON = (
 
 interface ElementSnapshot { t: TextTransform; txPx: number; tyPx: number }
 
+function alignForKey(theme: PopupTheme, key: TextElementKey): PopupTheme['textAlign'] {
+  if (key === 'content') return theme.contentTextAlign ?? theme.textAlign
+  if (key === 'time') return theme.timeTextAlign ?? theme.textAlign
+  return theme.countdownTextAlign ?? theme.textAlign
+}
+
+function letterSpacingForKey(theme: PopupTheme, key: TextElementKey): number {
+  if (key === 'content') return theme.contentLetterSpacing ?? 0
+  if (key === 'time') return theme.timeLetterSpacing ?? 0
+  return theme.countdownLetterSpacing ?? 0
+}
+
+function lineHeightForKey(theme: PopupTheme, key: TextElementKey): number {
+  if (key === 'content') return theme.contentLineHeight ?? 1.35
+  if (key === 'time') return theme.timeLineHeight ?? 1.35
+  return theme.countdownLineHeight ?? 1
+}
+
 export function ThemePreviewEditor({
   theme, onUpdateTheme, previewViewportWidth, previewImageUrlMap,
   popupPreviewAspect, selectedElements, onSelectElements,
+  previewLabels,
+  editableTextKeys,
+  onLiveTextCommit,
+  keyboardScopeRef,
+  readOnly = false,
+  showToolbar = true,
+  previewWidthMode = 'capped',
+  outerChrome = 'card',
+  fixedPreviewPixelSize,
 }: ThemePreviewEditorProps) {
   const containerRef = useRef<HTMLDivElement>(null)
   const contentRef = useRef<HTMLDivElement>(null)
@@ -118,27 +233,84 @@ export function ThemePreviewEditor({
   const countdownRef = useRef<HTMLDivElement>(null)
   const moveableRef = useRef<Moveable | null>(null)
 
+  /**
+   * 未指定时：有 onLiveTextCommit 仅开放主文案（子项小预览）；否则三层均可编辑（主题工坊写回 preview* 字段）
+   * 稳定化：
+   * - `onLiveTextCommit` 常为内联函数，不能以引用为 deps；
+   * - `editableTextKeys` 常为内联数组（如 Panel 仅主文案等），引用每帧变也会拖垮 liveSnap。
+   * 故：用 `hasLiveTextCommit` + `editableKeysSig`（排序拼接）作为 memo 依赖；显式 keys 在 sig 不变时返回缓存的拷贝。
+   */
+  const hasLiveTextCommit = Boolean(onLiveTextCommit)
+  const editableTextKeysRef = useRef(editableTextKeys)
+  editableTextKeysRef.current = editableTextKeys
+  const editableKeysSig =
+    editableTextKeys != null && editableTextKeys.length > 0
+      ? [...editableTextKeys].sort().join('\x1e')
+      : ''
+  const effectiveEditableKeys = useMemo((): TextElementKey[] => {
+    if (readOnly) return []
+    if (editableKeysSig !== '') {
+      const src = editableTextKeysRef.current
+      if (src != null && src.length > 0) return [...src]
+    }
+    if (hasLiveTextCommit) return DEFAULT_EDITABLE_CONTENT_ONLY
+    return DEFAULT_EDITABLE_ALL_LAYERS
+  }, [readOnly, editableKeysSig, hasLiveTextCommit])
+
+  const [editingTextKey, setEditingTextKey] = useState<TextElementKey | null>(null)
+  const editingTextKeyRef = useRef<TextElementKey | null>(null)
+  editingTextKeyRef.current = editingTextKey
+  /** 避免：点空白 blur 后同一次点击又执行 onSelectElements([]) 清掉选中 */
+  const justExitedTextEditRef = useRef(false)
+  /** 捕获阶段：指针落在 Moveable 控件上（先于 contentEditable 的 blur） */
+  const moveableChromePointerDownRef = useRef(false)
+  /**
+   * 单选缩放锚点：
+   * - 默认：拖哪个角，**对角**相对黑底容器位置不动（直觉上的「从对角拉开」）；
+   * - 按住 **Ctrl**：锁定 AABB **中心**；松键时按当前几何与起始拖角恢复对角锚点。
+   */
+  const scalePinBoxRef = useRef<
+    | { mode: 'corner'; corner: ScaleFixedCorner; pinX: number; pinY: number }
+    | { mode: 'center'; cx: number; cy: number }
+    | null
+  >(null)
+  /** 松手 Ctrl 时恢复对角锚点用（与 onScaleStart 的 direction 一致） */
+  const scaleDirectionForPinRef = useRef<number[] | null>(null)
+
   const [groupMode, setGroupMode] = useState(true)
   /** 为 true 时禁止从 theme 同步 transform 到 DOM（避免覆盖 Moveable）；必须用 React style 持有 transform，否则父组件重渲染会清掉 Moveable 写的内联样式 */
   const [transformSyncLocked, setTransformSyncLocked] = useState(false)
+  /** ResizeObserver / fonts.ready 回调需读最新锁定态，避免闭包过期 */
+  const transformSyncLockedRef = useRef(false)
+  transformSyncLockedRef.current = transformSyncLocked
   /** 与 theme 对齐的 transform 字符串，必须出现在 JSX style 中，防止 React 提交时抹掉 transform */
   const [styleTransformByKey, setStyleTransformByKey] = useState<Partial<Record<TextElementKey, string>>>({})
 
-  const previewScale = Math.min(1, 920 / Math.max(1, previewViewportWidth))
+  /**
+   * 与真实全屏弹窗的横向比例：须用「当前预览盒实际宽度 / 逻辑视口宽」，不能用固定 920。
+   * 否则在子项窄栏、展开前后宽度变化时，字号/字距仍按 920 参考缩放 → 文字远大于画面（位置/旋转相对也会「不对」）。
+   */
+  const [previewContainerWidth, setPreviewContainerWidth] = useState(0)
+  const fallbackPreviewScale = Math.min(1, 920 / Math.max(1, previewViewportWidth))
+  const previewScale =
+    previewContainerWidth > 1
+      ? Math.min(1, previewContainerWidth / Math.max(1, previewViewportWidth))
+      : fallbackPreviewScale
   const toPreviewPx = (px: number) => Math.max(1, px * previewScale)
 
-  const contentFontMax = Math.max(14, Math.min(120, Math.floor(theme.contentFontSize ?? 56)))
-  const timeFontMax = Math.max(10, Math.min(100, Math.floor(theme.timeFontSize ?? 30)))
-  const countdownFontMax = Math.max(48, Math.min(280, Math.floor(theme.countdownFontSize ?? 180)))
+  /** 预览用逻辑字号：与松手缩放烘焙一致用整数 px，避免先小数再 floor/归一化导致轻微跳变 */
   const isMain = theme.target === 'main'
-  const contentFontPx = clampByViewport(20, 0.06, contentFontMax, previewViewportWidth)
-  const timeFontPx = clampByViewport(14, 0.03, timeFontMax, previewViewportWidth)
-  const countdownFontPx = clampByViewport(80, 0.2, countdownFontMax, previewViewportWidth)
+  const contentFontPx = Math.max(1, Math.min(8000, Math.round(theme.contentFontSize ?? 56)))
+  const timeFontPx = Math.max(1, Math.min(8000, Math.round(theme.timeFontSize ?? 30)))
+  const countdownFontPx = Math.max(1, Math.min(8000, Math.round(theme.countdownFontSize ?? 180)))
 
   const getTransform = useCallback((key: TextElementKey): TextTransform => {
     const t = key === 'content' ? theme.contentTransform : key === 'time' ? theme.timeTransform : theme.countdownTransform
     return t ?? DEFAULT_TRANSFORMS[theme.target]?.[key] ?? { x: 50, y: 50, rotation: 0, scale: 1 }
   }, [theme.contentTransform, theme.timeTransform, theme.countdownTransform, theme.target])
+
+  const getTransformRef = useRef(getTransform)
+  getTransformRef.current = getTransform
 
   const updateTransform = useCallback((key: TextElementKey, patch: Partial<TextTransform>) => {
     const current = getTransform(key)
@@ -157,7 +329,6 @@ export function ThemePreviewEditor({
     const refs: HTMLDivElement[] = []
     if (contentRef.current && !selectedElements.includes('content')) refs.push(contentRef.current)
     if (timeRef.current && !selectedElements.includes('time')) refs.push(timeRef.current)
-    if (countdownRef.current && !selectedElements.includes('countdown')) refs.push(countdownRef.current)
     return refs
   }, [selectedElements])
 
@@ -172,13 +343,53 @@ export function ThemePreviewEditor({
     }
   }, [onSelectElements, selectedElements])
 
+  /** 旧版休息主题曾可选中「倒计时」层；真实弹窗已改为固定黑底倒计时，预览仅两层，需清掉无效选中 */
+  useLayoutEffect(() => {
+    if (theme.target !== 'rest') return
+    if (!selectedElements.includes('countdown')) return
+    onSelectElements(selectedElements.filter((k) => k !== 'countdown'))
+  }, [theme.target, theme.id, selectedElements, onSelectElements])
+
   const bgImageKey = ((theme.imageSourceType === 'folder' ? theme.imageFolderFiles?.[0] : theme.imagePath) ?? '').trim()
-  const bgImageUrl = previewImageUrlMap[bgImageKey] || toPreviewImageUrl(bgImageKey)
+  const bgImageUrl = rendererSafePreviewImageUrl(bgImageKey, previewImageUrlMap)
   const hasBgImage = theme.backgroundType === 'image' && (theme.imagePath || (theme.imageFolderFiles && theme.imageFolderFiles.length > 0))
 
-  const textElements: { key: TextElementKey; ref: React.RefObject<HTMLDivElement>; label: string }[] = isMain
-    ? [{ key: 'content', ref: contentRef as React.RefObject<HTMLDivElement>, label: '提醒内容' }, { key: 'time', ref: timeRef as React.RefObject<HTMLDivElement>, label: '12:00' }]
-    : [{ key: 'content', ref: contentRef as React.RefObject<HTMLDivElement>, label: '休息提醒内容' }, { key: 'time', ref: timeRef as React.RefObject<HTMLDivElement>, label: '12:00' }, { key: 'countdown', ref: countdownRef as React.RefObject<HTMLDivElement>, label: '5' }]
+  const textElements: { key: TextElementKey; ref: React.RefObject<HTMLDivElement>; label: string }[] = [
+    {
+      key: 'content',
+      ref: contentRef as React.RefObject<HTMLDivElement>,
+      label: isMain ? '提醒内容' : '休息提醒内容',
+    },
+    { key: 'time', ref: timeRef as React.RefObject<HTMLDivElement>, label: '12:00' },
+  ]
+
+  const getDisplayText = useCallback(
+    (key: TextElementKey, fallback: string) => {
+      const pl = previewLabels?.[key]
+      if (key === 'content') {
+        if (pl != null && pl !== '') return pl
+        if (theme.previewContentText?.trim()) return theme.previewContentText.trim()
+        return fallback
+      }
+      if (key === 'time') {
+        if (theme.previewTimeText?.trim()) return theme.previewTimeText.trim()
+        if (pl != null && pl !== '') return pl
+        return fallback
+      }
+      if (theme.previewCountdownText?.trim()) return theme.previewCountdownText.trim()
+      if (pl != null && pl !== '') return pl
+      return fallback
+    },
+    [previewLabels, theme.previewContentText, theme.previewTimeText, theme.previewCountdownText],
+  )
+
+  const textLayerPairs = useMemo(
+    (): { key: TextElementKey; ref: React.RefObject<HTMLDivElement | null> }[] => [
+      { key: 'content', ref: contentRef },
+      { key: 'time', ref: timeRef },
+    ],
+    [],
+  )
 
   const multiSelected = selectedElements.length >= 2
 
@@ -230,20 +441,26 @@ export function ThemePreviewEditor({
     if (moveableVisualRafRef.current != null) cancelAnimationFrame(moveableVisualRafRef.current)
   }, [])
 
-  // 从 theme 计算各文字层的 transform（写入 state，进入 JSX，避免被 React 重渲染抹掉）
-  useLayoutEffect(() => {
-    if (transformSyncLocked) return
+  /**
+   * 从 theme 计算各层像素 transform。启动/首屏时若容器或文字仍为 0 尺寸（aspect-ratio 未算完、字体未就绪），
+   * 用错误 offsetWidth 算出的 tx/ty 会锁进 state，表现为错乱；点一下重渲染才恢复。
+   * 故：尺寸未就绪则跳过写入；并由 ResizeObserver + fonts.ready + 双 rAF 补算。
+   */
+  const recomputeStyleTransformsFromTheme = useCallback(() => {
+    if (transformSyncLockedRef.current) return
     const container = containerRef.current
     if (!container) return
     const cW = container.offsetWidth
     const cH = container.offsetHeight
-    const next: Partial<Record<TextElementKey, string>> = {}
-    const pairs: { key: TextElementKey; ref: React.RefObject<HTMLDivElement | null> }[] = isMain
-      ? [{ key: 'content', ref: contentRef }, { key: 'time', ref: timeRef }]
-      : [{ key: 'content', ref: contentRef }, { key: 'time', ref: timeRef }, { key: 'countdown', ref: countdownRef }]
-    for (const { ref, key } of pairs) {
+    if (cW < 2 || cH < 2) return
+    for (const { ref } of textLayerPairs) {
       const el = ref.current
-      if (!el) continue
+      if (!el) return
+      if (el.offsetWidth < 1 || el.offsetHeight < 1) return
+    }
+    const next: Partial<Record<TextElementKey, string>> = {}
+    for (const { ref, key } of textLayerPairs) {
+      const el = ref.current!
       const t = getTransform(key)
       const tx = cW * (t.x / 100) - el.offsetWidth / 2
       const ty = cH * (t.y / 100) - el.offsetHeight / 2
@@ -257,9 +474,99 @@ export function ThemePreviewEditor({
       if (same && Object.keys(prev).length === Object.keys(next).length) return prev
       return { ...prev, ...next }
     })
-  }, [transformSyncLocked, contentFontPx, timeFontPx, countdownFontPx, theme.contentFontWeight, theme.timeFontWeight,
-    theme.countdownFontWeight, isMain, theme.textAlign, previewScale,
-    theme.contentTransform, theme.timeTransform, theme.countdownTransform, theme.target, getTransform])
+  }, [textLayerPairs, getTransform])
+
+  // 从 theme 同步 transform（layout 后立刻算 + 延后两帧再算，覆盖首帧尺寸未稳定）
+  useLayoutEffect(() => {
+    if (transformSyncLocked) return
+    let cancelled = false
+    recomputeStyleTransformsFromTheme()
+    const id0 = requestAnimationFrame(() => {
+      requestAnimationFrame(() => {
+        if (!cancelled) recomputeStyleTransformsFromTheme()
+      })
+    })
+    return () => {
+      cancelled = true
+      cancelAnimationFrame(id0)
+    }
+  }, [transformSyncLocked, recomputeStyleTransformsFromTheme, contentFontPx, timeFontPx, countdownFontPx,
+    theme.contentFontWeight, theme.timeFontWeight, theme.countdownFontWeight, theme.textAlign,
+    theme.contentTextAlign, theme.timeTextAlign, theme.countdownTextAlign,
+    theme.contentLetterSpacing, theme.timeLetterSpacing, theme.countdownLetterSpacing,
+    theme.contentLineHeight, theme.timeLineHeight, theme.countdownLineHeight,
+    theme.contentFontSize, theme.timeFontSize, theme.countdownFontSize,
+    previewScale,
+    theme.contentTransform, theme.timeTransform, theme.countdownTransform, theme.target,
+    theme.popupFontFamilyPreset,
+    theme.popupFontFamilySystem,
+    theme.contentFontFamilyPreset,
+    theme.contentFontFamilySystem,
+    theme.timeFontFamilyPreset,
+    theme.timeFontFamilySystem,
+    theme.countdownFontFamilyPreset,
+    theme.countdownFontFamilySystem,
+    theme.contentTextEffects, theme.timeTextEffects, theme.countdownTextEffects])
+
+  /** 首帧/比例切换后同步测量预览盒宽度（供 previewScale） */
+  useLayoutEffect(() => {
+    const c = containerRef.current
+    if (!c) return
+    const w = Math.round(c.getBoundingClientRect().width)
+    if (w > 1) setPreviewContainerWidth((prev) => (prev === w ? prev : w))
+  }, [popupPreviewAspect, isMain, theme.id, previewViewportWidth, fixedPreviewPixelSize?.width, fixedPreviewPixelSize?.height])
+
+  /**
+   * 仅观察预览容器：观察各文字层会在 snap→换行→尺寸抖动→recompute 间形成高频循环，表现为小窗预览「过一会儿闪一下」。
+   * 容器宽变化仍会触发重算；主题 transform / 字体等变更由其它 useLayoutEffect 负责。
+   */
+  useEffect(() => {
+    const container = containerRef.current
+    if (!container) return
+    let raf: number | null = null
+    let debounce: ReturnType<typeof setTimeout> | null = null
+    const flushRecompute = () => {
+      if (raf != null) return
+      raf = requestAnimationFrame(() => {
+        raf = null
+        recomputeStyleTransformsFromTheme()
+      })
+    }
+    const scheduleRecompute = () => {
+      if (debounce != null) clearTimeout(debounce)
+      debounce = setTimeout(() => {
+        debounce = null
+        flushRecompute()
+      }, 50)
+    }
+    const ro = new ResizeObserver((entries) => {
+      for (const e of entries) {
+        if (e.target === container) {
+          const w = Math.round(e.contentRect.width)
+          if (w > 1) setPreviewContainerWidth((prev) => (prev === w ? prev : w))
+        }
+      }
+      scheduleRecompute()
+    })
+    ro.observe(container)
+    flushRecompute()
+    return () => {
+      ro.disconnect()
+      if (debounce != null) clearTimeout(debounce)
+      if (raf != null) cancelAnimationFrame(raf)
+    }
+  }, [recomputeStyleTransformsFromTheme, isMain])
+
+  useEffect(() => {
+    const fonts = document.fonts
+    if (!fonts?.ready) return
+    let cancelled = false
+    fonts.ready.then(() => {
+      if (cancelled) return
+      requestAnimationFrame(() => recomputeStyleTransformsFromTheme())
+    })
+    return () => { cancelled = true }
+  }, [recomputeStyleTransformsFromTheme])
 
   /** 下方参数区改字号/字重/对齐等导致目标尺寸变化时，同步 Moveable 外框（拖拽中由 applyMoveableFrame 内 updateRect） */
   useLayoutEffect(() => {
@@ -267,8 +574,20 @@ export function ThemePreviewEditor({
     if (selectedElements.length === 0) return
     moveableRef.current?.updateRect()
   }, [styleTransformByKey, contentFontPx, timeFontPx, countdownFontPx, theme.textAlign,
+    theme.contentTextAlign, theme.timeTextAlign, theme.countdownTextAlign,
+    theme.contentLetterSpacing, theme.timeLetterSpacing, theme.countdownLetterSpacing,
+    theme.contentLineHeight, theme.timeLineHeight, theme.countdownLineHeight,
     theme.contentFontWeight, theme.timeFontWeight, theme.countdownFontWeight,
-    selectedElements, transformSyncLocked, previewViewportWidth, popupPreviewAspect])
+    theme.popupFontFamilyPreset,
+    theme.popupFontFamilySystem,
+    theme.contentFontFamilyPreset,
+    theme.contentFontFamilySystem,
+    theme.timeFontFamilyPreset,
+    theme.timeFontFamilySystem,
+    theme.countdownFontFamilyPreset,
+    theme.countdownFontFamilySystem,
+    theme.contentTextEffects, theme.timeTextEffects, theme.countdownTextEffects,
+    selectedElements, transformSyncLocked, previewViewportWidth, popupPreviewAspect, editingTextKey])
 
   /**
    * 与 useLayoutEffect 中正算 `tx = cW*(x/100)-w/2` 严格互逆；松手时勿用 getBoundingClientRect 中心（旋转后 AABB 中心 ≠ 布局中心），
@@ -286,7 +605,8 @@ export function ThemePreviewEditor({
     return { x, y }
   }, [])
 
-  const finalizeElement = useCallback((el: HTMLElement) => {
+  const finalizeElement = useCallback((el: HTMLElement | SVGElement) => {
+    if (!(el instanceof HTMLElement)) return
     const k = (el.dataset.elementKey as TextElementKey) || null
     if (!k || !containerRef.current) return
     const css = el.style.transform || styleTransformByKey[k] || ''
@@ -303,6 +623,106 @@ export function ThemePreviewEditor({
     mergeStyleTransforms({ [k]: tf })
   }, [styleTransformByKey, translateToThemePercent, updateTransform, mergeStyleTransforms])
 
+  /** 方向键：预览逻辑像素 ±1，多选则各层同时平移；与 finalize 相同 tx/ty → theme x/y 语义 */
+  const nudgeSelectedByPreviewPixels = useCallback(
+    (dx: number, dy: number) => {
+      if (dx === 0 && dy === 0) return
+      if (selectedElements.length === 0) return
+      const cont = containerRef.current
+      if (!cont || cont.offsetWidth < 2) return
+      const patch: Partial<PopupTheme> = {}
+      const domPatch: Partial<Record<TextElementKey, string>> = {}
+      for (const key of selectedElements) {
+        const el = getTargetRef(key)?.current
+        if (!el) continue
+        const css = el.style.transform || styleTransformByKey[key] || ''
+        const { translateX, translateY, rotation, scale } = parseTransformValues(css)
+        const nx = translateX + dx
+        const ny = translateY + dy
+        const pos = translateToThemePercent(el, nx, ny)
+        const cur = getTransform(key)
+        const field = key === 'content' ? 'contentTransform' : key === 'time' ? 'timeTransform' : 'countdownTransform'
+        ;(patch as Record<string, TextTransform>)[field] = { ...cur, x: pos.x, y: pos.y, rotation, scale }
+        const tf = buildTransform(nx, ny, rotation, scale)
+        domPatch[key] = tf
+        el.style.transform = tf
+      }
+      if (Object.keys(patch).length === 0) return
+      mergeStyleTransforms(domPatch)
+      onUpdateTheme(theme.id, patch)
+      requestAnimationFrame(() => moveableRef.current?.updateRect())
+    },
+    [
+      selectedElements,
+      getTargetRef,
+      styleTransformByKey,
+      translateToThemePercent,
+      getTransform,
+      mergeStyleTransforms,
+      onUpdateTheme,
+      theme.id,
+    ],
+  )
+
+  useEffect(() => {
+    if (readOnly) return
+    const onKey = (e: KeyboardEvent) => {
+      if (editingTextKeyRef.current) return
+      if (!['ArrowLeft', 'ArrowRight', 'ArrowUp', 'ArrowDown'].includes(e.key)) return
+      const t = e.target as HTMLElement | null
+      if (!t?.closest) return
+      if (t.closest('input, textarea, select, [contenteditable="true"]')) return
+      const scope = keyboardScopeRef?.current ?? containerRef.current
+      if (!scope?.contains(t)) return
+      if (selectedElements.length === 0) return
+      e.preventDefault()
+      const step = 1
+      let dx = 0
+      let dy = 0
+      if (e.key === 'ArrowLeft') dx = -step
+      if (e.key === 'ArrowRight') dx = step
+      if (e.key === 'ArrowUp') dy = -step
+      if (e.key === 'ArrowDown') dy = step
+      nudgeSelectedByPreviewPixels(dx, dy)
+    }
+    document.addEventListener('keydown', onKey, true)
+    return () => document.removeEventListener('keydown', onKey, true)
+  }, [readOnly, selectedElements, keyboardScopeRef, nudgeSelectedByPreviewPixels])
+
+  /** 拖动四边/四角调整文字区域后：把当前像素宽高写入 textBox*Pct，与真实弹窗 CSS 一致 */
+  const finalizeResize = useCallback(
+    (target: HTMLElement) => {
+      const k = (target.dataset.elementKey as TextElementKey) || null
+      if (!k || !containerRef.current) return
+      const c = containerRef.current
+      const cw = c.offsetWidth
+      const ch = c.offsetHeight
+      if (cw < 2 || ch < 2) return
+      const wPct = Math.round((target.offsetWidth / cw) * 1000) / 10
+      const hPct = Math.round((target.offsetHeight / ch) * 1000) / 10
+      const css = target.style.transform || styleTransformByKey[k] || ''
+      const { translateX, translateY, rotation, scale } = parseTransformValues(css)
+      const pos = translateToThemePercent(target, translateX, translateY)
+      updateTransform(k, {
+        x: pos.x,
+        y: pos.y,
+        rotation: +rotation.toFixed(2),
+        scale: +scale.toFixed(4),
+        textBoxWidthPct: Math.max(5, Math.min(96, wPct)),
+        textBoxHeightPct: Math.max(3, Math.min(100, hPct)),
+        ...(k === 'content'
+          ? { contentTextBoxUserSized: true as const }
+          : k === 'time' || k === 'countdown'
+            ? { shortLayerTextBoxLockWidth: true as const }
+            : {}),
+      })
+      const tf = buildTransform(translateX, translateY, rotation, scale)
+      mergeStyleTransforms({ [k]: tf })
+      requestAnimationFrame(() => moveableRef.current?.updateRect())
+    },
+    [styleTransformByKey, translateToThemePercent, updateTransform, mergeStyleTransforms],
+  )
+
   const snapshotsRef = useRef(new Map<string, ElementSnapshot>())
   const takeSnapshots = useCallback(() => {
     snapshotsRef.current.clear()
@@ -314,17 +734,374 @@ export function ThemePreviewEditor({
     }
   }, [selectedElements, getTransform, getTargetRef])
 
+  /**
+   * 主文案：自动栏宽（未 userSized）。短文栏宽贴内容；若单行固有宽超过画布 60%，栏宽锁 60% 并在框内换行。
+   */
+  const applyContentTextBoxAutoLayout = useCallback(
+    (el: HTMLElement) => {
+      const container = containerRef.current
+      if (!container) return
+      const cw = Math.max(1, container.offsetWidth)
+      const ch = Math.max(1, container.offsetHeight)
+      const capInlinePx = cw * CONTENT_TEXT_INLINE_MAX_RATIO
+      const maxBodyPx = cw * CONTENT_TEXT_BOX_CAP_RATIO
+      const pad = toPreviewPx(3) * 2
+      const prev = {
+        width: el.style.width,
+        height: el.style.height,
+        maxWidth: el.style.maxWidth,
+        maxHeight: el.style.maxHeight,
+        overflow: el.style.overflow,
+        minHeight: el.style.minHeight,
+      }
+      el.style.overflow = 'visible'
+      el.style.maxHeight = 'none'
+      el.style.minHeight = '0'
+
+      el.style.width = 'max-content'
+      el.style.maxWidth = `${maxBodyPx}px`
+      el.style.height = 'auto'
+      const wRead = Math.max(1, el.offsetWidth, el.scrollWidth)
+      let wIntrinsic = Math.min(wRead, maxBodyPx)
+
+      const minWpx = Math.min(maxBodyPx, Math.max(40, toPreviewPx(24)))
+      wIntrinsic = Math.max(wIntrinsic, minWpx)
+
+      const wBoxPx = wIntrinsic <= capInlinePx + 0.5 ? wIntrinsic : capInlinePx
+
+      el.style.width = `${wBoxPx}px`
+      el.style.maxWidth = 'none'
+      const hBody = Math.max(1, el.scrollHeight)
+
+      el.style.width = prev.width
+      el.style.height = prev.height
+      el.style.maxWidth = prev.maxWidth
+      el.style.maxHeight = prev.maxHeight
+      el.style.overflow = prev.overflow
+      el.style.minHeight = prev.minHeight
+
+      const wPctMax = CONTENT_TEXT_BOX_CAP_RATIO * 100
+      const wPct = Math.min(wPctMax, Math.max(5, Math.round((wBoxPx / cw) * 1000) / 10 + 0.5))
+      const hPct = Math.min(100, Math.max(3, Math.round(((hBody + pad) / ch) * 1000) / 10 + 0.3))
+      const cur = getTransformRef.current('content')
+      if (
+        cur.textBoxWidthPct != null &&
+        cur.textBoxHeightPct != null &&
+        cur.contentTextBoxUserSized !== true &&
+        Math.abs(cur.textBoxWidthPct - wPct) < 0.45 &&
+        Math.abs(cur.textBoxHeightPct - hPct) < 0.4
+      ) {
+        return
+      }
+      updateTransform('content', {
+        textBoxWidthPct: wPct,
+        textBoxHeightPct: hPct,
+        contentTextBoxUserSized: false,
+      })
+      requestAnimationFrame(() => moveableRef.current?.updateRect())
+    },
+    [toPreviewPx, updateTransform],
+  )
+
+  /** 主文案失焦或 userSized：保持当前栏宽（百分比），只按 scrollHeight 更新高度 pct。 */
+  const snapContentTextBoxHeightOnly = useCallback(
+    (el: HTMLElement) => {
+      const container = containerRef.current
+      if (!container) return
+      const cur = getTransformRef.current('content')
+      const cw = Math.max(1, container.offsetWidth)
+      const ch = Math.max(1, container.offsetHeight)
+      const pad = toPreviewPx(3) * 2
+      if (cur.textBoxWidthPct == null || !Number.isFinite(cur.textBoxWidthPct)) {
+        applyContentTextBoxAutoLayout(el)
+        return
+      }
+      const prev = {
+        width: el.style.width,
+        height: el.style.height,
+        maxWidth: el.style.maxWidth,
+        maxHeight: el.style.maxHeight,
+        overflow: el.style.overflow,
+        minHeight: el.style.minHeight,
+      }
+      const wPctClamped = Math.max(5, Math.min(CONTENT_TEXT_BOX_CAP_RATIO * 100, cur.textBoxWidthPct))
+      const wPx = (wPctClamped / 100) * cw
+      el.style.overflow = 'visible'
+      el.style.maxHeight = 'none'
+      el.style.minHeight = '0'
+      el.style.width = `${wPx}px`
+      el.style.maxWidth = 'none'
+      el.style.height = 'auto'
+      const hBody = Math.max(1, el.scrollHeight)
+
+      el.style.width = prev.width
+      el.style.height = prev.height
+      el.style.maxWidth = prev.maxWidth
+      el.style.maxHeight = prev.maxHeight
+      el.style.overflow = prev.overflow
+      el.style.minHeight = prev.minHeight
+
+      const hPct = Math.min(100, Math.max(3, Math.round(((hBody + pad) / ch) * 1000) / 10 + 0.3))
+      if (cur.textBoxHeightPct != null && Math.abs(cur.textBoxHeightPct - hPct) < 0.35) return
+      updateTransform('content', { textBoxHeightPct: hPct })
+      requestAnimationFrame(() => moveableRef.current?.updateRect())
+    },
+    [toPreviewPx, updateTransform, applyContentTextBoxAutoLayout],
+  )
+
+  const syncContentPreviewTextBox = useCallback(
+    (el: HTMLElement) => {
+      if (editingTextKeyRef.current != null) return
+      const t = getTransformRef.current('content')
+      if (t.contentTextBoxUserSized === true) snapContentTextBoxHeightOnly(el)
+      else applyContentTextBoxAutoLayout(el)
+    },
+    [applyContentTextBoxAutoLayout, snapContentTextBoxHeightOnly],
+  )
+
+  /**
+   * 时间 / 倒计时：主题内多为固定框；若无 textBox，编辑结束时收紧一次（单行 nowrap）。
+   */
+  const snapShortLayerTightContent = useCallback(
+    (k: TextElementKey, el: HTMLElement) => {
+      if (k !== 'time' && k !== 'countdown') return
+      const container = containerRef.current
+      if (!container) return
+      const cw = Math.max(1, container.offsetWidth)
+      const ch = Math.max(1, container.offsetHeight)
+      /** 与 JSX 中 `padding: toPreviewPx(3)` 一致：四边同值，量宽/高时用 2×边距 */
+      const padEdge = toPreviewPx(3)
+      const pad2 = padEdge * 2
+      const maxBodyPx = Math.max(1, cw * CONTENT_TEXT_BOX_CAP_RATIO)
+      const prev = {
+        width: el.style.width,
+        height: el.style.height,
+        maxWidth: el.style.maxWidth,
+        maxHeight: el.style.maxHeight,
+        overflow: el.style.overflow,
+        minHeight: el.style.minHeight,
+      }
+      el.style.overflow = 'visible'
+      el.style.maxHeight = 'none'
+      el.style.minHeight = '0'
+
+      el.style.width = 'max-content'
+      el.style.maxWidth = `${maxBodyPx}px`
+      el.style.height = 'auto'
+      const wRead = Math.max(1, el.offsetWidth, el.scrollWidth)
+
+      const fontPx = k === 'time' ? timeFontPx : countdownFontPx
+      const previewFont = toPreviewPx(fontPx)
+      const raw = (el.textContent ?? '').replace(/\u00a0/g, ' ')
+      const longestLine = raw.split(/\n/).reduce((m, line) => Math.max(m, line.length), 0) || 1
+      /** 时间与倒计时同一套：按字数估宽 + 对称 pad，避免时间用 7em、倒计时用 5em 导致左右留白不一致 */
+      const charW = previewFont * 0.58
+      const minFromChars = longestLine * charW + pad2
+      const minFloor = previewFont * 1.35 + pad2
+      const wIntrinsic = Math.min(maxBodyPx, Math.max(wRead, minFromChars, minFloor))
+
+      el.style.width = `${wIntrinsic}px`
+      el.style.maxWidth = 'none'
+      const hBody = Math.max(1, el.scrollHeight)
+
+      el.style.width = prev.width
+      el.style.height = prev.height
+      el.style.maxWidth = prev.maxWidth
+      el.style.maxHeight = prev.maxHeight
+      el.style.overflow = prev.overflow
+      el.style.minHeight = prev.minHeight
+
+      const wPct = Math.min(96, Math.max(5, Math.round((wIntrinsic / cw) * 1000) / 10 + 0.5))
+      const hPct = Math.min(100, Math.max(3, Math.round(((hBody + pad2) / ch) * 1000) / 10 + 0.3))
+      const cur = getTransformRef.current(k)
+      if (
+        cur.textBoxWidthPct != null &&
+        cur.textBoxHeightPct != null &&
+        Math.abs(cur.textBoxWidthPct - wPct) < 0.4 &&
+        Math.abs(cur.textBoxHeightPct - hPct) < 0.4
+      ) {
+        return
+      }
+      updateTransform(k, {
+        textBoxWidthPct: wPct,
+        textBoxHeightPct: hPct,
+        shortLayerTextBoxLockWidth: false,
+      })
+      requestAnimationFrame(() => moveableRef.current?.updateRect())
+    },
+    [toPreviewPx, updateTransform, timeFontPx, countdownFontPx],
+  )
+
+  const syncContentPreviewTextBoxRef = useRef(syncContentPreviewTextBox)
+  syncContentPreviewTextBoxRef.current = syncContentPreviewTextBox
+
+  /**
+   * 仅主文案变化才触发 content textBox 的 liveSnap。
+   * 切勿把 time/countdown 的 preview* 或 previewLabels 打进同一 sig：否则改倒计时文案、子项里时间每秒走表
+   * 会误跑 syncContentPreviewTextBox，与短层操作叠在一起 → 主文案框高度被多算、操作框底部异常延伸。
+   */
+  const contentSnapLabelSig = useMemo(() => {
+    if (!effectiveEditableKeys.includes('content')) return ''
+    return `c:${previewLabels?.content ?? ''}|${theme.previewContentText ?? ''}`
+  }, [effectiveEditableKeys, previewLabels?.content, theme.previewContentText])
+
+  /**
+   * 外部改主文案时同步栏宽/高；时间每秒变不参与 snap（固定框）。用 ref 判断编辑态，避免与 blur 重复。
+   * 勿依赖 selectedElements：取消选中时会误再跑一遍 sync，与 blur 双 rAF 叠加以致 textBox 高度被多算一行、文字上移。
+   * Moveable.updateRect 见下方仅随选中/样式变的 effect。
+   */
+  useLayoutEffect(() => {
+    if (readOnly) return
+    if (transformSyncLockedRef.current) return
+    if (editingTextKeyRef.current != null) return
+    const id = requestAnimationFrame(() => {
+      if (effectiveEditableKeys.includes('content')) {
+        const node = contentRef.current
+        if (node) syncContentPreviewTextBoxRef.current(node)
+      }
+    })
+    return () => cancelAnimationFrame(id)
+  }, [readOnly, contentSnapLabelSig, effectiveEditableKeys])
+
+  /**
+   * 角点等比缩放松手后：把 CSS scale 乘进主题字号并 reset scale→1，这样「缩放=改字号」且外框与文字度量一致；
+   * 避免仅 transform 缩放导致面板里字号不变、框与字间距别扭。
+   */
+  const finalizeScaleBakesFontSize = useCallback(
+    (el: HTMLElement | SVGElement) => {
+      if (!(el instanceof HTMLElement)) return
+      const k = (el.dataset.elementKey as TextElementKey) || null
+      if (!k || !containerRef.current) return
+      const snap = snapshotsRef.current.get(k)
+      const css = el.style.transform || styleTransformByKey[k] || ''
+      const { rotation, scale: newScale } = parseTransformValues(css)
+      const oldScale = snap?.t.scale ?? 1
+      if (Math.abs(newScale - oldScale) < 1e-5) {
+        finalizeElement(el)
+        return
+      }
+      const ratio = newScale / oldScale
+      /**
+       * 松手瞬间用 translate 反推 theme x/y 会在「scale→1 + 字号/textBox 变化」后与下一帧 recompute 的 tx/ty 不一致 → 跳动。
+       * 改为记录当前**视觉包围盒中心**在预览容器内的比例，作为 theme 的中心点；与 recompute「中心在 x%/y%」模型一致。
+       */
+      const cont = containerRef.current
+      const cWo = Math.max(1, cont.offsetWidth)
+      const cHo = Math.max(1, cont.offsetHeight)
+      const cr = cont.getBoundingClientRect()
+      const er = el.getBoundingClientRect()
+      const anchorCx = (er.left + er.right) / 2 - cr.left
+      const anchorCy = (er.top + er.bottom) / 2 - cr.top
+      /** 分母必须与 recomputeStyleTransformsFromTheme 的 cW/cH（offset 尺寸）一致，避免与 getBoundingClientRect().width 亚像素差导致一帧跳变 */
+      const xPct = Math.max(0, Math.min(100, (anchorCx / cWo) * 100))
+      const yPct = Math.max(0, Math.min(100, (anchorCy / cHo) * 100))
+      const current = getTransform(k)
+      /** 与预览 `*FontPx` 一致：按当前**已渲染的整数字号**乘缩放比再四舍五入，不写小数，避免与 floor/持久化归整打架 */
+      const baseContentPx = Math.max(1, Math.min(8000, Math.round(theme.contentFontSize ?? 56)))
+      const baseTimePx = Math.max(1, Math.min(8000, Math.round(theme.timeFontSize ?? 30)))
+      const baseCountdownPx = Math.max(1, Math.min(8000, Math.round(theme.countdownFontSize ?? 180)))
+      const fontPatch: Partial<PopupTheme> = {}
+      if (k === 'content') {
+        fontPatch.contentFontSize = Math.max(1, Math.min(8000, Math.round(baseContentPx * ratio)))
+      } else if (k === 'time') {
+        fontPatch.timeFontSize = Math.max(1, Math.min(8000, Math.round(baseTimePx * ratio)))
+      } else {
+        fontPatch.countdownFontSize = Math.max(1, Math.min(8000, Math.round(baseCountdownPx * ratio)))
+      }
+      /**
+       * 字号随 ratio 变，但 textBox 百分比不变时，像素框不变、字变大 → overflow 滚动条 + 底部截断。
+       * 与「等比缩放整块」一致：有 textBox 时同步按 ratio 缩放宽高百分比；无固定框时再靠测量贴齐。
+       */
+      const boxPatch: Partial<Pick<TextTransform, 'textBoxWidthPct' | 'textBoxHeightPct'>> = {}
+      if (current.textBoxWidthPct != null && Number.isFinite(current.textBoxWidthPct)) {
+        boxPatch.textBoxWidthPct = Math.min(96, Math.max(1, Math.round(current.textBoxWidthPct * ratio * 10) / 10 + 0.5))
+      }
+      if (current.textBoxHeightPct != null && Number.isFinite(current.textBoxHeightPct)) {
+        boxPatch.textBoxHeightPct = Math.min(100, Math.max(1, Math.round(current.textBoxHeightPct * ratio * 10) / 10 + 0.3))
+      }
+      const field = k === 'content' ? 'contentTransform' : k === 'time' ? 'timeTransform' : 'countdownTransform'
+      onUpdateTheme(theme.id, {
+        ...fontPatch,
+        [field]: {
+          ...current,
+          ...boxPatch,
+          x: xPct,
+          y: yPct,
+          rotation: +rotation.toFixed(2),
+          scale: 1,
+        },
+      })
+      const wLay = el.offsetWidth
+      const hLay = el.offsetHeight
+      const tx0 = cWo * (xPct / 100) - wLay / 2
+      const ty0 = cHo * (yPct / 100) - hLay / 2
+      const tf0 = buildTransform(tx0, ty0, rotation, 1)
+      el.style.transform = tf0
+      mergeStyleTransforms({ [k]: tf0 })
+      /**
+       * 已有 textBox 时松手已按 ratio 同步 textBox*Pct；若再 tight snap 会改框宽/高，在左/顶对齐下「div 中心不变、文字相对框」仍会漂移，观感像松手跳一下。
+       * 无固定 textBox 时仍双帧 snap 贴齐内容。
+       */
+      const didScaleTextBoxPct = Object.keys(boxPatch).length > 0
+      requestAnimationFrame(() => {
+        requestAnimationFrame(() => {
+          const node = getTargetRef(k)?.current
+          if (!node) return
+          if (didScaleTextBoxPct) moveableRef.current?.updateRect()
+          else if (k === 'content') syncContentPreviewTextBoxRef.current(node)
+          else snapShortLayerTightContent(k, node)
+        })
+      })
+    },
+    [
+      theme.id,
+      theme.contentFontSize,
+      theme.timeFontSize,
+      theme.countdownFontSize,
+      getTransform,
+      onUpdateTheme,
+      mergeStyleTransforms,
+      styleTransformByKey,
+      finalizeElement,
+      getTargetRef,
+      snapShortLayerTightContent,
+    ],
+  )
+
   const [marqueeRect, setMarqueeRect] = useState<{ left: number; top: number; width: number; height: number } | null>(null)
   const justMarqueedRef = useRef(false)
 
   const handleContainerClick = useCallback((e: React.MouseEvent) => {
+    if (readOnly) return
     if (justMarqueedRef.current) { justMarqueedRef.current = false; return }
-    if (e.target === containerRef.current || (e.target as HTMLElement).dataset?.layer === 'bg') onSelectElements([])
-  }, [onSelectElements])
+    if (justExitedTextEditRef.current) {
+      justExitedTextEditRef.current = false
+      return
+    }
+    const t = e.target as HTMLElement
+    if (e.target === containerRef.current || t.dataset?.layer === 'bg') {
+      const ek = editingTextKeyRef.current
+      if (ek) {
+        const node = getTargetRef(ek)?.current
+        justExitedTextEditRef.current = true
+        node?.blur()
+        return
+      }
+      onSelectElements([])
+    }
+  }, [readOnly, onSelectElements, getTargetRef])
 
   const handleContainerMouseDown = useCallback((e: React.MouseEvent) => {
+    if (readOnly) return
     const hit = e.target as HTMLElement
     if (hit !== containerRef.current && hit.dataset?.layer !== 'bg') return
+    const ek = editingTextKeyRef.current
+    if (ek) {
+      const node = getTargetRef(ek)?.current
+      justExitedTextEditRef.current = true
+      node?.blur()
+      return
+    }
     e.preventDefault()
     const container = containerRef.current!
     const cRect = container.getBoundingClientRect()
@@ -358,7 +1135,7 @@ export function ThemePreviewEditor({
     }
     document.addEventListener('mousemove', onMove)
     document.addEventListener('mouseup', onUp)
-  }, [textElements, getTransform, onSelectElements])
+  }, [readOnly, textElements, getTransform, onSelectElements, getTargetRef])
 
   /** 多选对齐：按各层变换后的轴对齐包围盒（AABB）对齐，与 Figma / 设计工具一致；不用中心点百分比直接比较 */
   const handleAlign = useCallback((mode: 'left' | 'centerH' | 'right' | 'top' | 'centerV' | 'bottom') => {
@@ -453,21 +1230,46 @@ export function ThemePreviewEditor({
     { mode: 'bottom' as const, icon: ALIGN_ICONS.bottom, title: '底部对齐' },
   ], [])
 
+  /** 编辑文字时仍保留 Moveable，便于同时拖动 / 旋转 / 缩放 / 调文字框（把手在文字块外侧） */
   const moveableTargets = useMemo(() => {
-    return selectedElements.map(k => getTargetRef(k)?.current).filter((e): e is HTMLElement => !!e)
+    return selectedElements
+      .map((k) => getTargetRef(k)?.current)
+      .filter((e): e is HTMLDivElement => e != null)
   }, [selectedElements, getTargetRef])
-
-  const moveableKey = useMemo(() => selectedElements.slice().sort().join(','), [selectedElements])
 
   const moveableTarget = useMemo(
     () => moveableTargets.length === 1 ? moveableTargets[0] : moveableTargets,
     [moveableTargets],
   )
 
-  const keyOfEl = (el: HTMLElement) => (el.dataset.elementKey as TextElementKey) || null
+  const resizableEnabled = moveableTargets.length === 1
+  const moveableKey = useMemo(() => {
+    const rb =
+      resizableEnabled &&
+      editingTextKey != null &&
+      selectedElements.length === 1 &&
+      selectedElements[0] === editingTextKey
+    return `${selectedElements.slice().sort().join(',')}|${editingTextKey ?? ''}|${rb ? 'box' : 'tf'}`
+  }, [selectedElements, editingTextKey, resizableEnabled])
+  /** 仅在「文字编辑态」显示四边/四角拉框，写入 textBoxWidthPct/HeightPct；预览态只用等比缩放（scalable）变换整块 */
+  const resizableForTextBounds =
+    resizableEnabled &&
+    editingTextKey != null &&
+    selectedElements.length === 1 &&
+    selectedElements[0] === editingTextKey
 
-  const applyMoveableFrame = useCallback((events: { target: HTMLElement; transform: string }[]) => {
+  /** 与黑底预览容器对齐：拖拽/缩放/拉框边缘不可超出画幅（Moveable Snappable bounds） */
+  const previewMoveableBounds = useMemo(
+    () => ({ position: 'css' as const, left: 0, top: 0, right: 0, bottom: 0 }),
+    [],
+  )
+
+  const keyOfEl = (el: HTMLElement | SVGElement) =>
+    el instanceof HTMLElement ? ((el.dataset.elementKey as TextElementKey) || null) : null
+
+  const applyMoveableFrame = useCallback((events: { target: HTMLElement | SVGElement; transform: string }[]) => {
     for (const ev of events) {
+      if (!(ev.target instanceof HTMLElement)) continue
       ev.target.style.transform = ev.transform
       const k = keyOfEl(ev.target)
       if (k) pendingMoveablePatchRef.current[k] = ev.transform
@@ -497,8 +1299,67 @@ export function ThemePreviewEditor({
     requestAnimationFrame(tick)
   }, [])
 
+  const editSessionRef = useRef<TextElementKey | null>(null)
+  useLayoutEffect(() => {
+    if (!editingTextKey) {
+      editSessionRef.current = null
+      return
+    }
+    const el = getTargetRef(editingTextKey)?.current
+    if (!el) return
+    if (editSessionRef.current !== editingTextKey) {
+      editSessionRef.current = editingTextKey
+      const defaults: Record<TextElementKey, string> = isMain
+        ? { content: '提醒内容', time: '12:00', countdown: '5' }
+        : { content: '休息提醒内容', time: '12:00', countdown: '5' }
+      el.textContent = getDisplayText(editingTextKey, defaults[editingTextKey] ?? '')
+    }
+    requestAnimationFrame(() => {
+      const node = getTargetRef(editingTextKey)?.current
+      if (!node || document.activeElement === node) return
+      node.focus()
+      const range = document.createRange()
+      range.selectNodeContents(node)
+      const sel = window.getSelection()
+      sel?.removeAllRanges()
+      sel?.addRange(range)
+    })
+  }, [editingTextKey, getTargetRef, isMain, getDisplayText])
+
+  useEffect(() => {
+    if (!editingTextKey) {
+      moveableChromePointerDownRef.current = false
+      return
+    }
+    const clearChromeFlag = () => {
+      requestAnimationFrame(() => {
+        moveableChromePointerDownRef.current = false
+      })
+    }
+    const onPointerDownCapture = (e: PointerEvent) => {
+      const t = e.target
+      if (!(t instanceof HTMLElement)) return
+      if (!containerRef.current?.contains(t)) return
+      if (isThemePreviewMoveableChrome(t)) moveableChromePointerDownRef.current = true
+    }
+    document.addEventListener('pointerdown', onPointerDownCapture, true)
+    document.addEventListener('pointerup', clearChromeFlag, true)
+    document.addEventListener('pointercancel', clearChromeFlag, true)
+    return () => {
+      document.removeEventListener('pointerdown', onPointerDownCapture, true)
+      document.removeEventListener('pointerup', clearChromeFlag, true)
+      document.removeEventListener('pointercancel', clearChromeFlag, true)
+    }
+  }, [editingTextKey])
+
   const handleTextPointerDown = useCallback((key: TextElementKey, e: React.MouseEvent) => {
     if (e.button !== 0) return
+    const ek = editingTextKeyRef.current
+    if (ek && ek !== key) {
+      getTargetRef(ek)?.current?.blur()
+    }
+    if (editingTextKey === key) return
+    if (effectiveEditableKeys.includes(key) && e.detail >= 2) return
     if (e.shiftKey) return
     e.stopPropagation()
     const inSel = selectedElements.includes(key)
@@ -511,38 +1372,62 @@ export function ThemePreviewEditor({
       flushSync(() => onSelectElements([key]))
     }
     scheduleDragStart(e.nativeEvent)
-  }, [selectedElements, onSelectElements, scheduleDragStart])
+  }, [selectedElements, onSelectElements, scheduleDragStart, editingTextKey, effectiveEditableKeys, getTargetRef])
+
+  const outerWrapClass =
+    !showToolbar ? 'w-full' : outerChrome === 'none' ? 'w-full min-w-0' : 'rounded-md border border-slate-200 bg-white p-2'
+  const previewBoxClass = fixedPreviewPixelSize
+    ? 'relative overflow-hidden rounded border border-slate-300 bg-black'
+    : previewWidthMode === 'fill'
+      ? 'relative w-full max-w-full overflow-hidden rounded border border-slate-300 bg-black'
+      : showToolbar
+        ? 'relative mx-auto w-full max-w-[920px] overflow-hidden rounded border border-slate-300 bg-black'
+        : 'relative w-full max-w-full overflow-hidden rounded border border-slate-300 bg-black'
 
   return (
-    <div className="rounded-md border border-slate-200 bg-white p-2">
-      <div className="mb-1.5 flex items-center gap-0.5 px-1">
-        {alignButtons.map(({ mode, icon, title }) => (
-          <button key={mode} type="button" title={title} disabled={!multiSelected} onClick={() => handleAlign(mode)}
-            className={`rounded p-1 transition-colors ${multiSelected ? 'text-slate-600 hover:bg-indigo-50 hover:text-indigo-700' : 'text-slate-300 cursor-default'}`}>
-            {icon}
-          </button>
-        ))}
-        {multiSelected && (
-          <>
-            <div className="mx-1.5 h-4 w-px bg-slate-200" />
-            <button type="button" onClick={() => setGroupMode(v => !v)}
-              title={groupMode ? '打组：围绕整体中心变换' : '解组：围绕各自中心变换'}
-              className={`flex items-center gap-1 rounded px-1.5 py-0.5 text-[10px] font-medium transition-colors ${groupMode ? 'bg-indigo-50 text-indigo-600 hover:bg-indigo-100' : 'bg-slate-50 text-slate-400 hover:bg-slate-100 hover:text-slate-500'}`}>
-              {groupMode ? GROUP_ICON : UNGROUP_ICON}
-              {groupMode ? '打组' : '解组'}
-            </button>
-            <span className="ml-1 text-[10px] text-indigo-500">已选 {selectedElements.length} 个</span>
-          </>
-        )}
-      </div>
+    <div className={outerWrapClass}>
+      {showToolbar && (
+        <>
+          <p className="mb-1.5 px-1 text-[10px] leading-relaxed text-slate-500">
+            <strong className="text-slate-600">预览态</strong>：仅<strong className="text-slate-600">四角</strong>等比缩放（拖某角则锚定<strong className="text-slate-600">对角</strong>；按住 <kbd className="rounded border border-slate-300 bg-slate-50 px-0.5 font-mono text-[9px]">Ctrl</kbd> 为<strong className="text-slate-600">中心点</strong>），松手后<strong className="text-slate-600">字号写入主题</strong>；<strong className="text-slate-600">仅主文案</strong>可双击改字，时间层仅拖拽缩放。双击主文案后出现四边拉框。选中层后可用<strong className="text-slate-600">方向键</strong>按预览逻辑像素平移 1px（焦点在面板内且非输入框时）。主文案未手调框时：栏宽约 ≤60% 画布则贴字边，超出则锁 60% 换行；手拉后可更宽（至约 96%）；失焦后在<strong className="text-slate-600">当前宽度</strong>下自动增高包全文。
+          </p>
+          <div className="mb-1.5 flex items-center gap-0.5 px-1">
+            {alignButtons.map(({ mode, icon, title }) => (
+              <button key={mode} type="button" title={title} disabled={!multiSelected} onClick={() => handleAlign(mode)}
+                className={`rounded p-1 transition-colors ${multiSelected ? 'text-slate-600 hover:bg-indigo-50 hover:text-indigo-700' : 'text-slate-300 cursor-default'}`}>
+                {icon}
+              </button>
+            ))}
+            {multiSelected && (
+              <>
+                <div className="mx-1.5 h-4 w-px bg-slate-200" />
+                <button type="button" onClick={() => setGroupMode(v => !v)}
+                  title={groupMode ? '打组：围绕整体中心变换' : '解组：围绕各自中心变换'}
+                  className={`flex items-center gap-1 rounded px-1.5 py-0.5 text-[10px] font-medium transition-colors ${groupMode ? 'bg-indigo-50 text-indigo-600 hover:bg-indigo-100' : 'bg-slate-50 text-slate-400 hover:bg-slate-100 hover:text-slate-500'}`}>
+                  {groupMode ? GROUP_ICON : UNGROUP_ICON}
+                  {groupMode ? '打组' : '解组'}
+                </button>
+                <span className="ml-1 text-[10px] text-indigo-500">已选 {selectedElements.length} 个</span>
+              </>
+            )}
+          </div>
+        </>
+      )}
 
       <div ref={containerRef}
-        className="relative mx-auto w-full max-w-[920px] overflow-hidden rounded border border-slate-300 bg-black select-none"
-        style={{ aspectRatio: popupPreviewAspect === '16:9' ? '16 / 9' : '4 / 3' }}
+        className={`${previewBoxClass} ${editingTextKey ? '' : 'select-none'} ${readOnly ? 'pointer-events-none' : ''}`}
+        style={
+          fixedPreviewPixelSize
+            ? { width: fixedPreviewPixelSize.width, height: fixedPreviewPixelSize.height }
+            : { aspectRatio: popupPreviewAspect === '16:9' ? '16 / 9' : '4 / 3' }
+        }
         onClick={handleContainerClick} onMouseDown={handleContainerMouseDown}>
 
         <div className="absolute inset-0" data-layer="bg" style={{
-          background: hasBgImage ? `url("${bgImageUrl}") center / cover no-repeat, ${theme.backgroundColor || '#000000'}` : (theme.backgroundColor || '#000000'),
+          background:
+            hasBgImage && bgImageUrl
+              ? `url("${bgImageUrl}") center / cover no-repeat, ${theme.backgroundColor || '#000000'}`
+              : (theme.backgroundColor || '#000000'),
         }} />
         <div className="absolute inset-0 pointer-events-none" data-layer="bg" style={{
           background: theme.overlayColor || '#000000',
@@ -553,23 +1438,165 @@ export function ThemePreviewEditor({
           const fontSize = key === 'content' ? contentFontPx : key === 'time' ? timeFontPx : countdownFontPx
           const color = key === 'content' ? theme.contentColor : key === 'countdown' ? (theme.countdownColor || theme.timeColor) : theme.timeColor
           const tf = styleTransformByKey[key] ?? 'translate(0px,0px) rotate(0deg) scale(1)'
+          const displayText = getDisplayText(key, label)
+          const ta = alignForKey(theme, key)
+          const ls = letterSpacingForKey(theme, key)
+          const lh = lineHeightForKey(theme, key)
+          const isEditing = editingTextKey === key
+          const canEditText = effectiveEditableKeys.includes(key)
+          const tform = getTransform(key)
+          const bw = tform.textBoxWidthPct
+          const bh = tform.textBoxHeightPct
+          const shortLineLayer = key === 'time' || key === 'countdown'
+          const shortLayerLockW = shortLineLayer && tform.shortLayerTextBoxLockWidth === true
+          const shortLayerFlexJustify =
+            ta === 'left' ? 'flex-start' : ta === 'right' ? 'flex-end' : 'center'
           return (
-            <div key={key} ref={ref as React.RefObject<HTMLDivElement>} data-element-key={key}
-              className="absolute cursor-move" style={{
+            <div
+              key={key}
+              ref={ref as React.RefObject<HTMLDivElement>}
+              data-element-key={key}
+              contentEditable={isEditing}
+              suppressContentEditableWarning
+              className={`absolute ${readOnly ? 'cursor-default' : isEditing ? 'cursor-text select-text ring-2 ring-indigo-400/90' : 'cursor-move'} rounded-sm`}
+              style={{
                 left: 0, top: 0,
                 transform: tf,
                 transformOrigin: 'center',
                 willChange: selectedElements.includes(key) ? 'transform' : undefined,
                 color, fontSize: `${toPreviewPx(fontSize)}px`, fontWeight: getFontWeight(key),
-                lineHeight: key === 'countdown' ? 1 : 1.35, whiteSpace: 'pre-wrap', textAlign: theme.textAlign,
-                zIndex: selectedElements.includes(key) ? 10 : 1,
-                borderRadius: '2px', padding: `${toPreviewPx(4)}px ${toPreviewPx(8)}px`,
-                fontFamily: 'system-ui, "Microsoft YaHei", sans-serif',
+                lineHeight: lh, textAlign: ta,
+                letterSpacing: `${toPreviewPx(ls)}px`,
+                zIndex: selectedElements.includes(key) || isEditing ? 10 : 1,
+                padding: `${toPreviewPx(3)}px`,
+                ...(shortLineLayer
+                  ? {
+                      display: 'flex',
+                      alignItems: 'center',
+                      justifyContent: shortLayerFlexJustify,
+                    }
+                  : {}),
+                fontFamily: resolvePopupFontFamilyCss(theme, key),
+                outline: 'none',
+                ...layerTextEffectsReactStyle(theme, key),
+                // 主文案：width 用百分比定宽（与全屏弹窗一致）。时间/倒计时默认 max-content 贴字；拉框后 shortLayerTextBoxLockWidth 才定宽
+                ...(shortLineLayer
+                  ? shortLayerLockW && bw != null && Number.isFinite(bw)
+                    ? {
+                        width: `${Math.min(96, Math.max(5, bw))}%`,
+                        maxWidth: '100%',
+                        boxSizing: 'border-box' as const,
+                      }
+                    : {
+                        width: 'max-content',
+                        maxWidth:
+                          bw != null && Number.isFinite(bw)
+                            ? `${Math.min(96, Math.max(5, bw))}%`
+                            : '96%',
+                        boxSizing: 'border-box' as const,
+                      }
+                  : bw != null && Number.isFinite(bw)
+                    ? { width: `${bw}%`, maxWidth: '100%', boxSizing: 'border-box' as const }
+                    : { maxWidth: '96%' }),
+                ...(bh != null && Number.isFinite(bh)
+                  ? isEditing
+                    ? shortLineLayer
+                      ? {
+                          minHeight: `${bh}%`,
+                          height: 'auto',
+                          maxHeight: '100%',
+                          overflow: 'hidden' as const,
+                        }
+                      : {
+                          minHeight: `${bh}%`,
+                          height: 'auto',
+                          maxHeight: '100%',
+                          overflow: 'visible' as const,
+                        }
+                    : shortLineLayer
+                      ? { height: `${bh}%`, maxHeight: '100%', overflow: 'hidden' as const }
+                      : { height: `${bh}%`, maxHeight: '100%', overflow: 'visible' as const }
+                  : {}),
+                whiteSpace: (shortLineLayer ? 'nowrap' : 'pre-wrap') as 'nowrap' | 'pre-wrap',
+                wordWrap: (shortLineLayer ? 'normal' : 'break-word') as 'normal' | 'break-word',
+                overflowWrap: (shortLineLayer ? 'normal' : 'break-word') as 'normal' | 'break-word',
+                ...(shortLineLayer ? {} : { wordBreak: 'keep-all' as const }),
               }}
-              onMouseDown={e => handleTextPointerDown(key, e)}
-              onClick={e => handleElementClick(key, e)}
-              onDoubleClick={e => { e.preventDefault(); e.stopPropagation() }}>
-              {label}
+              onMouseDownCapture={(e) => {
+                if (e.button !== 0) return
+                if (!canEditText) return
+                if (key === 'time' || key === 'countdown') return
+                if (e.detail === 2) {
+                  e.preventDefault()
+                  e.stopPropagation()
+                  flushSync(() => onSelectElements([key]))
+                  setEditingTextKey(key)
+                }
+              }}
+              onMouseDown={(e) => handleTextPointerDown(key, e)}
+              onClick={(e) => handleElementClick(key, e)}
+              onInput={
+                isEditing
+                  ? () => {
+                      requestAnimationFrame(() => {
+                        const node = getTargetRef(key)?.current
+                        if (node && key === 'content') {
+                          const tr = getTransformRef.current('content')
+                          if (tr.contentTextBoxUserSized === true) snapContentTextBoxHeightOnly(node)
+                          else applyContentTextBoxAutoLayout(node)
+                        }
+                        moveableRef.current?.updateRect()
+                      })
+                    }
+                  : undefined
+              }
+              onBlur={(ev: React.FocusEvent<HTMLDivElement>) => {
+                if (!isEditing) return
+                const keepEditing =
+                  moveableChromePointerDownRef.current ||
+                  isThemePreviewMoveableChrome(ev.relatedTarget)
+                if (keepEditing) {
+                  requestAnimationFrame(() => {
+                    if (editingTextKeyRef.current !== key) return
+                    getTargetRef(key)?.current?.focus()
+                  })
+                  return
+                }
+                const el = ref.current
+                const text = (el?.textContent ?? '').replace(/\u00a0/g, ' ').replace(/\n+$/g, '')
+                if (onLiveTextCommit) onLiveTextCommit(key, text)
+                else if (key === 'content') onUpdateTheme(theme.id, { previewContentText: text })
+                else if (key === 'time') onUpdateTheme(theme.id, { previewTimeText: text })
+                else onUpdateTheme(theme.id, { previewCountdownText: text })
+                setEditingTextKey(null)
+                requestAnimationFrame(() => {
+                  requestAnimationFrame(() => {
+                    const node = getTargetRef(key)?.current
+                    if (!node) return
+                    if (key === 'content') snapContentTextBoxHeightOnly(node)
+                    else {
+                      const tf = getTransformRef.current(key)
+                      if (tf.textBoxWidthPct == null || tf.textBoxHeightPct == null) {
+                        snapShortLayerTightContent(key, node)
+                      }
+                    }
+                  })
+                })
+              }}
+              onKeyDown={(e) => {
+                if (!isEditing) return
+                if (e.key === 'Escape') {
+                  e.preventDefault()
+                  setEditingTextKey(null)
+                  void ref.current?.blur()
+                }
+                if (e.key === 'Enter' && !e.shiftKey) {
+                  e.preventDefault()
+                  void ref.current?.blur()
+                }
+              }}
+            >
+              {!isEditing ? displayText : null}
             </div>
           )
         })}
@@ -581,18 +1608,21 @@ export function ThemePreviewEditor({
           }} />
         )}
 
-        {moveableTargets.length > 0 && (
+        {!readOnly && moveableTargets.length > 0 && (
           <Moveable
             ref={moveableRef}
             key={moveableKey}
             target={moveableTarget}
             container={containerRef.current}
+            snapContainer={containerRef}
+            bounds={previewMoveableBounds}
             individualGroupable={false}
             useResizeObserver
             defaultGroupOrigin="50% 50%"
             draggable={true}
             rotatable={true}
-            scalable={true}
+            scalable={{ keepRatio: true }}
+            resizable={resizableForTextBounds ? { throttleResize: 0, keepRatio: false } : false}
             snappable={true}
             snapDirections={{ top: true, left: true, bottom: true, right: true, center: true, middle: true }}
             elementSnapDirections={{ top: true, left: true, bottom: true, right: true, center: true, middle: true }}
@@ -604,8 +1634,8 @@ export function ThemePreviewEditor({
             verticalGuidelines={containerRef.current ? [containerRef.current.offsetWidth * 0.25, containerRef.current.offsetWidth * 0.5, containerRef.current.offsetWidth * 0.75] : []}
             throttleDrag={0} throttleRotate={0} throttleScale={0.01}
             rotationPosition="top"
-            renderDirections={['nw', 'ne', 'sw', 'se']}
-            edge={false} keepRatio={true}
+            renderDirections={resizableForTextBounds ? ['nw', 'ne', 'sw', 'se', 'n', 's', 'e', 'w'] : ['nw', 'ne', 'sw', 'se']}
+            edge={false}
 
             onDragStart={() => { resetMoveableVisualPipeline(); setTransformSyncLocked(true) }}
             onDrag={({ target, transform }) => {
@@ -628,13 +1658,96 @@ export function ThemePreviewEditor({
               setTransformSyncLocked(false)
             }}
 
-            onScaleStart={() => { resetMoveableVisualPipeline(); setTransformSyncLocked(true) }}
-            onScale={({ target, transform, afterTransform }) => {
-              applyMoveableFrame([{ target, transform: pickMoveableCssTransform({ transform, afterTransform }) }])
+            onScaleStart={({ inputEvent, direction }) => {
+              resetMoveableVisualPipeline()
+              setTransformSyncLocked(true)
+              takeSnapshots()
+              const cont = containerRef.current
+              if (!cont || selectedElements.length !== 1) {
+                scalePinBoxRef.current = null
+                scaleDirectionForPinRef.current = null
+                return
+              }
+              const el = getTargetRef(selectedElements[0])?.current
+              if (!el) {
+                scalePinBoxRef.current = null
+                scaleDirectionForPinRef.current = null
+                return
+              }
+              scaleDirectionForPinRef.current =
+                Array.isArray(direction) && direction.length >= 2 ? [direction[0], direction[1]] : [1, 1]
+              const cr = cont.getBoundingClientRect()
+              const er = el.getBoundingClientRect()
+              const ctrlHeld =
+                !!inputEvent &&
+                typeof inputEvent === 'object' &&
+                'ctrlKey' in inputEvent &&
+                Boolean((inputEvent as MouseEvent | PointerEvent).ctrlKey)
+              if (ctrlHeld) {
+                scalePinBoxRef.current = {
+                  mode: 'center',
+                  cx: (er.left + er.right) / 2 - cr.left,
+                  cy: (er.top + er.bottom) / 2 - cr.top,
+                }
+              } else {
+                const corner = fixedCornerFromScaleDirection(scaleDirectionForPinRef.current)
+                const pos = getBoxCornerInContainer(er, cr, corner)
+                scalePinBoxRef.current = { mode: 'corner', corner, pinX: pos.x, pinY: pos.y }
+              }
+            }}
+            onScale={({ target, transform, afterTransform, inputEvent }) => {
+              let raw = forceUniformScaleInFullTransform(pickMoveableCssTransform({ transform, afterTransform }))
+              applyMoveableFrame([{ target, transform: raw }])
+              const cont = containerRef.current
+              if (!cont || !(target instanceof HTMLElement)) return
+              let pin = scalePinBoxRef.current
+              if (!pin) return
+              const cr = cont.getBoundingClientRect()
+              const er = target.getBoundingClientRect()
+              const ctrlHeld =
+                !!inputEvent &&
+                typeof inputEvent === 'object' &&
+                'ctrlKey' in inputEvent &&
+                Boolean((inputEvent as MouseEvent | PointerEvent).ctrlKey)
+              const wantMode = ctrlHeld ? 'center' : 'corner'
+              if (pin.mode !== wantMode) {
+                if (wantMode === 'center') {
+                  scalePinBoxRef.current = {
+                    mode: 'center',
+                    cx: (er.left + er.right) / 2 - cr.left,
+                    cy: (er.top + er.bottom) / 2 - cr.top,
+                  }
+                } else {
+                  const dir = scaleDirectionForPinRef.current ?? [1, 1]
+                  const corner = fixedCornerFromScaleDirection(dir)
+                  const pos = getBoxCornerInContainer(er, cr, corner)
+                  scalePinBoxRef.current = { mode: 'corner', corner, pinX: pos.x, pinY: pos.y }
+                }
+                pin = scalePinBoxRef.current
+              }
+              let dlx = 0
+              let dty = 0
+              if (pin.mode === 'corner') {
+                const cur = getBoxCornerInContainer(er, cr, pin.corner)
+                dlx = pin.pinX - cur.x
+                dty = pin.pinY - cur.y
+              } else {
+                const cx = (er.left + er.right) / 2 - cr.left
+                const cy = (er.top + er.bottom) / 2 - cr.top
+                dlx = pin.cx - cx
+                dty = pin.cy - cy
+              }
+              if (Math.abs(dlx) > 0.02 || Math.abs(dty) > 0.02) {
+                const p = parseTransformValues(target.style.transform)
+                raw = buildTransform(p.translateX + dlx, p.translateY + dty, p.rotation, p.scale)
+                applyMoveableFrame([{ target, transform: raw }])
+              }
             }}
             onScaleEnd={({ target, isDrag }) => {
+              scalePinBoxRef.current = null
+              scaleDirectionForPinRef.current = null
               flushMoveableVisual('sync')
-              if (isDrag) finalizeElement(target)
+              if (isDrag) finalizeScaleBakesFontSize(target)
               setTransformSyncLocked(false)
             }}
 
@@ -677,24 +1790,29 @@ export function ThemePreviewEditor({
               setTransformSyncLocked(false)
             }}
 
-            onScaleGroupStart={() => { resetMoveableVisualPipeline(); setTransformSyncLocked(true); takeSnapshots() }}
+            onScaleGroupStart={() => {
+              resetMoveableVisualPipeline()
+              setTransformSyncLocked(true)
+              takeSnapshots()
+              scalePinBoxRef.current = null
+            }}
             onScaleGroup={({ events }) => {
               if (groupMode) {
                 applyMoveableFrame(events.map(ev => ({
                   target: ev.target,
-                  transform: pickMoveableCssTransform(ev),
+                  transform: forceUniformScaleInFullTransform(pickMoveableCssTransform(ev)),
                 })))
               } else {
                 const firstK = keyOfEl(events[0]?.target)
                 const firstSnap = firstK ? snapshotsRef.current.get(firstK) : null
                 if (!firstSnap || !firstSnap.t.scale) return
-                const evScale = parseTransformValues(pickMoveableCssTransform(events[0])).scale
+                const evScale = parseTransformValues(forceUniformScaleInFullTransform(pickMoveableCssTransform(events[0]))).scale
                 const ratio = evScale / firstSnap.t.scale
                 const frames = events.map(ev => {
                   const k = keyOfEl(ev.target)
                   const snap = k ? snapshotsRef.current.get(k) : null
                   const tf = snap
-                    ? buildTransform(snap.txPx, snap.tyPx, snap.t.rotation, Math.max(0.1, Math.min(5, snap.t.scale * ratio)))
+                    ? buildTransform(snap.txPx, snap.tyPx, snap.t.rotation, Math.max(0.05, Math.min(25, snap.t.scale * ratio)))
                     : ev.transform
                   return { target: ev.target, transform: tf }
                 })
@@ -703,7 +1821,22 @@ export function ThemePreviewEditor({
             }}
             onScaleGroupEnd={({ events, isDrag }) => {
               flushMoveableVisual('sync')
-              if (isDrag) events.forEach(ev => finalizeElement(ev.target))
+              if (isDrag) events.forEach(ev => finalizeScaleBakesFontSize(ev.target))
+              setTransformSyncLocked(false)
+            }}
+
+            onResizeStart={() => { resetMoveableVisualPipeline(); setTransformSyncLocked(true) }}
+            onResize={(e) => {
+              if (!(e.target instanceof HTMLElement)) return
+              const el = e.target
+              el.style.width = `${e.width}px`
+              el.style.height = `${e.height}px`
+              const tf = e.drag?.transform ?? e.transform
+              if (tf) el.style.transform = tf
+            }}
+            onResizeEnd={(e) => {
+              flushMoveableVisual('sync')
+              if (e.isDrag && e.target instanceof HTMLElement) finalizeResize(e.target)
               setTransformSyncLocked(false)
             }}
           />

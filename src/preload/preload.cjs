@@ -15,4 +15,6 @@ contextBridge.exposeInMainWorld('electronAPI', {
   resolvePreviewImageUrl: (imagePath) => ipcRenderer.invoke('resolvePreviewImageUrl', imagePath),
   pickPopupImageFile: () => ipcRenderer.invoke('pickPopupImageFile'),
   pickPopupImageFolder: () => ipcRenderer.invoke('pickPopupImageFolder'),
+  getSystemFontFamilies: () => ipcRenderer.invoke('getSystemFontFamilies'),
+  clearSystemFontListCache: () => ipcRenderer.invoke('clearSystemFontListCache'),
 })

@@ -19,6 +19,7 @@ import {
   restartReminders,
   syncIntervalTimersAfterSettingsChange,
 } from './reminders'
+import { clearSystemFontListCache, getSystemFontFamilies } from './systemFonts'
 
 let mainWindow: BrowserWindow | null = null
 
@@ -170,6 +171,19 @@ ipcMain.handle('pickPopupImageFile', async () => {
   const res = win ? await dialog.showOpenDialog(win, options) : await dialog.showOpenDialog(options)
   if (res.canceled || res.filePaths.length === 0) return { success: false as const, error: '已取消' }
   return { success: true as const, path: res.filePaths[0] }
+})
+ipcMain.handle('getSystemFontFamilies', async () => {
+  try {
+    const fonts = await getSystemFontFamilies()
+    return { success: true as const, fonts }
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err)
+    console.error('[WorkBreak] getSystemFontFamilies:', message)
+    return { success: false as const, fonts: [] as string[], error: message }
+  }
+})
+ipcMain.handle('clearSystemFontListCache', () => {
+  clearSystemFontListCache()
 })
 ipcMain.handle('pickPopupImageFolder', async () => {
   const win = mainWindow ?? BrowserWindow.getFocusedWindow()

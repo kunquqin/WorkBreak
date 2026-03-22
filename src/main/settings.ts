@@ -1,7 +1,8 @@
 import { app } from 'electron'
 import { readFileSync, writeFileSync, existsSync, mkdirSync } from 'node:fs'
 import { join, dirname } from 'node:path'
-import type { AppSettings, CategoryKind, ReminderCategory, SubReminder, PresetPools, PopupTheme, AppEntitlements, TextTransform } from '../shared/settings'
+import type { AppSettings, CategoryKind, ReminderCategory, SubReminder, PresetPools, PopupLayerTextEffects, PopupTheme, AppEntitlements, TextTransform } from '../shared/settings'
+import { isPopupFontFamilyPresetId, sanitizeSystemFontFamilyName } from '../shared/popupThemeFonts'
 import { getDefaultPresetPools, getStableDefaultCategories, getDefaultPopupThemes, getDefaultEntitlements } from '../shared/settings'
 
 export type { AppSettings, ReminderCategory, SubReminder } from '../shared/settings'
@@ -282,6 +283,35 @@ function normalizePresetPools(raw: unknown, categories: ReminderCategory[]): Pre
   }
 }
 
+function normalizeLayerTextEffects(raw: unknown): PopupLayerTextEffects | undefined {
+  if (!raw || typeof raw !== 'object') return undefined
+  const o = raw as Record<string, unknown>
+  const out: PopupLayerTextEffects = {}
+  if (typeof o.strokeEnabled === 'boolean') out.strokeEnabled = o.strokeEnabled
+  if (typeof o.shadowEnabled === 'boolean') out.shadowEnabled = o.shadowEnabled
+  const strokeW = Number(o.strokeWidthPx)
+  if (Number.isFinite(strokeW)) out.strokeWidthPx = Math.max(0, Math.min(24, strokeW))
+  if (typeof o.strokeColor === 'string' && /^#([0-9a-fA-F]{3}|[0-9a-fA-F]{6})$/.test(o.strokeColor.trim())) {
+    out.strokeColor = o.strokeColor.trim()
+  }
+  const strokeOp = Number(o.strokeOpacity)
+  if (Number.isFinite(strokeOp)) out.strokeOpacity = Math.max(0, Math.min(1, strokeOp))
+  if (typeof o.shadowColor === 'string' && /^#([0-9a-fA-F]{3}|[0-9a-fA-F]{6})$/.test(o.shadowColor.trim())) {
+    out.shadowColor = o.shadowColor.trim()
+  }
+  const shadowOp = Number(o.shadowOpacity)
+  if (Number.isFinite(shadowOp)) out.shadowOpacity = Math.max(0, Math.min(1, shadowOp))
+  const shadowBlur = Number(o.shadowBlurPx)
+  if (Number.isFinite(shadowBlur)) out.shadowBlurPx = Math.max(0, Math.min(80, shadowBlur))
+  const shadowSize = Number(o.shadowSizePx)
+  if (Number.isFinite(shadowSize)) out.shadowSizePx = Math.max(0, Math.min(48, shadowSize))
+  const shadowDist = Number(o.shadowDistancePx)
+  if (Number.isFinite(shadowDist)) out.shadowDistancePx = Math.max(0, Math.min(160, shadowDist))
+  const shadowAng = Number(o.shadowAngleDeg)
+  if (Number.isFinite(shadowAng)) out.shadowAngleDeg = Math.max(-360, Math.min(360, shadowAng))
+  return Object.keys(out).length > 0 ? out : undefined
+}
+
 function normalizeTextTransform(raw: unknown): TextTransform | undefined {
   if (!raw || typeof raw !== 'object') return undefined
   const o = raw as Record<string, unknown>
@@ -290,12 +320,19 @@ function normalizeTextTransform(raw: unknown): TextTransform | undefined {
   const rotation = Number(o.rotation)
   const scale = Number(o.scale)
   if (!Number.isFinite(x) || !Number.isFinite(y)) return undefined
-  return {
+  const out: TextTransform = {
     x: Math.max(0, Math.min(100, x)),
     y: Math.max(0, Math.min(100, y)),
     rotation: Number.isFinite(rotation) ? rotation % 360 : 0,
     scale: Number.isFinite(scale) ? Math.max(0.1, Math.min(5, scale)) : 1,
   }
+  const wp = Number(o.textBoxWidthPct)
+  const hp = Number(o.textBoxHeightPct)
+  if (Number.isFinite(wp)) out.textBoxWidthPct = Math.max(5, Math.min(96, wp))
+  if (Number.isFinite(hp)) out.textBoxHeightPct = Math.max(3, Math.min(100, hp))
+  if (o.contentTextBoxUserSized === true) out.contentTextBoxUserSized = true
+  if (o.shortLayerTextBoxLockWidth === true) out.shortLayerTextBoxLockWidth = true
+  return out
 }
 
 function normalizePopupThemes(raw: unknown): PopupTheme[] {
@@ -327,9 +364,14 @@ function normalizePopupThemes(raw: unknown): PopupTheme[] {
       const contentColor = typeof o.contentColor === 'string' && o.contentColor ? o.contentColor : '#ffffff'
       const timeColor = typeof o.timeColor === 'string' && o.timeColor ? o.timeColor : '#e2e8f0'
       const countdownColor = typeof o.countdownColor === 'string' && o.countdownColor ? o.countdownColor : '#ffffff'
-      const contentFontSize = Math.max(12, Math.min(120, Math.floor(Number(o.contentFontSize) || 56)))
-      const timeFontSize = Math.max(10, Math.min(100, Math.floor(Number(o.timeFontSize) || 30)))
-      const countdownFontSize = Math.max(24, Math.min(260, Math.floor(Number(o.countdownFontSize) || 180)))
+      const clampThemeFont = (raw: unknown, fallback: number) => {
+        const n = Math.floor(Number(raw))
+        const v = Number.isFinite(n) ? n : fallback
+        return Math.max(1, Math.min(8000, v))
+      }
+      const contentFontSize = clampThemeFont(o.contentFontSize, 56)
+      const timeFontSize = clampThemeFont(o.timeFontSize, 30)
+      const countdownFontSize = clampThemeFont(o.countdownFontSize, 180)
       const textAlign = o.textAlign === 'left' || o.textAlign === 'right' ? o.textAlign : 'center'
       const contentFontWeightNum = Number(o.contentFontWeight)
       const contentFontWeight = Number.isFinite(contentFontWeightNum) ? Math.max(100, Math.min(900, Math.round(contentFontWeightNum / 100) * 100)) : undefined
@@ -340,9 +382,60 @@ function normalizePopupThemes(raw: unknown): PopupTheme[] {
       const contentTransform = normalizeTextTransform(o.contentTransform)
       const timeTransform = normalizeTextTransform(o.timeTransform)
       const countdownTransform = normalizeTextTransform(o.countdownTransform)
+      const alignOrUndef = (v: unknown): 'left' | 'center' | 'right' | undefined =>
+        v === 'left' || v === 'right' || v === 'center' ? v : undefined
+      const contentTextAlign = alignOrUndef(o.contentTextAlign)
+      const timeTextAlign = alignOrUndef(o.timeTextAlign)
+      const countdownTextAlign = alignOrUndef(o.countdownTextAlign)
+      const letter = (v: unknown) => {
+        const n = Number(v)
+        return Number.isFinite(n) ? Math.max(-2, Math.min(20, n)) : undefined
+      }
+      const lh = (v: unknown) => {
+        const n = Number(v)
+        return Number.isFinite(n) ? Math.max(0.8, Math.min(3, n)) : undefined
+      }
+      const contentLetterSpacing = letter(o.contentLetterSpacing)
+      const timeLetterSpacing = letter(o.timeLetterSpacing)
+      const countdownLetterSpacing = letter(o.countdownLetterSpacing)
+      const contentLineHeight = lh(o.contentLineHeight)
+      const timeLineHeight = lh(o.timeLineHeight)
+      const countdownLineHeight = lh(o.countdownLineHeight)
+      const formatVersionNum = Number(o.formatVersion)
+      const formatVersion = Number.isFinite(formatVersionNum) && formatVersionNum >= 1 ? Math.floor(formatVersionNum) : undefined
+      const previewStr = (v: unknown, maxLen: number): string | undefined => {
+        if (typeof v !== 'string') return undefined
+        const t = v.trim().slice(0, maxLen)
+        return t.length > 0 ? t : undefined
+      }
+      const previewContentText = previewStr(o.previewContentText, 2000)
+      const previewTimeText = previewStr(o.previewTimeText, 80)
+      const previewCountdownText = previewStr(o.previewCountdownText, 80)
+      const contentTextEffects = normalizeLayerTextEffects(o.contentTextEffects)
+      const timeTextEffects = normalizeLayerTextEffects(o.timeTextEffects)
+      const countdownTextEffects = normalizeLayerTextEffects(o.countdownTextEffects)
+      const pfpRaw = typeof o.popupFontFamilyPreset === 'string' ? o.popupFontFamilyPreset.trim() : ''
+      const popupFontFamilyPreset = pfpRaw && isPopupFontFamilyPresetId(pfpRaw) ? pfpRaw : undefined
+      const sysSan = typeof o.popupFontFamilySystem === 'string' ? sanitizeSystemFontFamilyName(o.popupFontFamilySystem) : ''
+      const popupFontFamilySystem = sysSan.length > 0 ? sysSan : undefined
+      const layerPreset = (raw: unknown) => {
+        const t = typeof raw === 'string' ? raw.trim() : ''
+        return t && isPopupFontFamilyPresetId(t) ? t : undefined
+      }
+      const layerSys = (raw: unknown) => {
+        const s = typeof raw === 'string' ? sanitizeSystemFontFamilyName(raw) : ''
+        return s.length > 0 ? s : undefined
+      }
+      const contentFontFamilyPreset = layerPreset(o.contentFontFamilyPreset)
+      const contentFontFamilySystem = layerSys(o.contentFontFamilySystem)
+      const timeFontFamilyPreset = layerPreset(o.timeFontFamilyPreset)
+      const timeFontFamilySystem = layerSys(o.timeFontFamilySystem)
+      const countdownFontFamilyPreset = layerPreset(o.countdownFontFamilyPreset)
+      const countdownFontFamilySystem = layerSys(o.countdownFontFamilySystem)
       return {
         id,
         name,
+        ...(formatVersion !== undefined ? { formatVersion } : {}),
         target,
         backgroundType,
         backgroundColor,
@@ -368,6 +461,29 @@ function normalizePopupThemes(raw: unknown): PopupTheme[] {
         ...(contentTransform ? { contentTransform } : {}),
         ...(timeTransform ? { timeTransform } : {}),
         ...(countdownTransform ? { countdownTransform } : {}),
+        ...(contentTextAlign ? { contentTextAlign } : {}),
+        ...(timeTextAlign ? { timeTextAlign } : {}),
+        ...(countdownTextAlign ? { countdownTextAlign } : {}),
+        ...(contentLetterSpacing !== undefined ? { contentLetterSpacing } : {}),
+        ...(timeLetterSpacing !== undefined ? { timeLetterSpacing } : {}),
+        ...(countdownLetterSpacing !== undefined ? { countdownLetterSpacing } : {}),
+        ...(contentLineHeight !== undefined ? { contentLineHeight } : {}),
+        ...(timeLineHeight !== undefined ? { timeLineHeight } : {}),
+        ...(countdownLineHeight !== undefined ? { countdownLineHeight } : {}),
+        ...(previewContentText ? { previewContentText } : {}),
+        ...(previewTimeText ? { previewTimeText } : {}),
+        ...(previewCountdownText ? { previewCountdownText } : {}),
+        ...(contentTextEffects ? { contentTextEffects } : {}),
+        ...(timeTextEffects ? { timeTextEffects } : {}),
+        ...(countdownTextEffects ? { countdownTextEffects } : {}),
+        ...(popupFontFamilyPreset ? { popupFontFamilyPreset } : {}),
+        ...(popupFontFamilySystem ? { popupFontFamilySystem } : {}),
+        ...(contentFontFamilyPreset ? { contentFontFamilyPreset } : {}),
+        ...(contentFontFamilySystem ? { contentFontFamilySystem } : {}),
+        ...(timeFontFamilyPreset ? { timeFontFamilyPreset } : {}),
+        ...(timeFontFamilySystem ? { timeFontFamilySystem } : {}),
+        ...(countdownFontFamilyPreset ? { countdownFontFamilyPreset } : {}),
+        ...(countdownFontFamilySystem ? { countdownFontFamilySystem } : {}),
       }
     })
     .filter((x): x is PopupTheme => x !== null)

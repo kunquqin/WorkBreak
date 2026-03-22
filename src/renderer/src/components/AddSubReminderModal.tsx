@@ -1,17 +1,13 @@
-import { useState, useEffect, useRef, type CSSProperties } from 'react'
+import { useState, useEffect, useRef } from 'react'
 import type { PopupTheme, SubReminder } from '../types'
+import { ThemePreviewEditor, type TextElementKey } from './ThemePreviewEditor'
 import { WheelColumn, parseTimeHHmm, formatHHmm, WHEEL_VIEW_H } from './TimePickerModal'
 import { StaticSplitPreviewSegment, StaticSinglePreviewBar } from './SegmentProgressBars'
 import { PresetTextField } from './PresetTextField'
 import { WeekdayRepeatControl } from './WeekdayRepeatControl'
 import { ALL_WEEKDAYS_ENABLED } from '../utils/weekdayRepeatUtils'
 import { RepeatCountPicker } from './RepeatCountPicker'
-import { toPreviewImageUrl } from '../utils/popupThemePreview'
 import { buildSplitSchedule } from '../../../shared/splitSchedule'
-
-function clampByViewport(minPx: number, viewportRatio: number, maxPx: number, viewportWidth: number): number {
-  return Math.max(minPx, Math.min(maxPx, viewportWidth * viewportRatio))
-}
 
 function hmsToSeconds(h: number, m: number, s: number): number {
   return Math.max(0, h * 3600 + m * 60 + s)
@@ -69,6 +65,15 @@ function getMsFromNowToEnd(nowMs: number, endH: number, endM: number): number {
   return diff + 24 * 60 * 60 * 1000
 }
 
+export type SubReminderModalThemeEditorContext = {
+  appendPopupTheme: (theme: PopupTheme) => void
+  replacePopupTheme: (theme: PopupTheme) => void
+  countPopupThemeReferences: (themeId: string, exclude?: { categoryId: string; itemId: string } | null) => number
+  updatePopupTheme: (themeId: string, patch: Partial<PopupTheme>) => void
+  previewViewportWidth: number
+  popupPreviewAspect: '16:9' | '4:3'
+}
+
 export type AddSubReminderPayload = {
   mode: 'fixed' | 'interval'
   title?: string
@@ -89,21 +94,28 @@ export type AddSubReminderPayload = {
   useNowAsStart?: boolean
 }
 
+export type OpenThemeStudioEditFromSubitemArgs = {
+  themeId: string
+  categoryId: string
+  itemAnchor: string
+  popupTarget: 'main' | 'rest'
+}
+
 export type AddSubReminderModalProps = {
   open: boolean
   mode: 'fixed' | 'interval'
-  contentPresets: string[]
+  /** 已改为在预览内编辑主文案；保留可选供将来扩展 */
+  contentPresets?: string[]
   titlePresets: string[]
-  restPresets: string[]
+  /** 已改为在预览内编辑休息提示；保留可选供将来扩展 */
+  restPresets?: string[]
   popupThemes: PopupTheme[]
   onClose: () => void
   onConfirm: (payload: AddSubReminderPayload) => void
-  /** 更新主提醒文案预设（闹钟+倒计时共享） */
-  onContentPresetsChange: (presets: string[]) => void
+  onContentPresetsChange?: (presets: string[]) => void
   /** 更新子项标题预设（按 mode 分池） */
   onTitlePresetsChange: (presets: string[]) => void
-  /** 更新休息弹窗文案预设（与主提醒文案隔离） */
-  onRestPresetsChange: (presets: string[]) => void
+  onRestPresetsChange?: (presets: string[]) => void
   /** 编辑已有子项：与新建界面相同，底部为「更新」 */
   variant?: 'create' | 'edit'
   /** variant=edit 时必填，用于载入初始值 */
@@ -112,8 +124,22 @@ export type AddSubReminderModalProps = {
   layout?: 'modal' | 'embedded'
   /** 内联时用于重置表单（如每次打开不同草稿） */
   formInstanceKey?: string
-  /** 跳转到设置页主题工坊（可选） */
-  onOpenThemeStudio?: () => void
+  /** 内联子项/草稿进入主题工坊列表（可选） */
+  onOpenThemeStudioList?: () => void
+  /** 内联进入主题工坊编辑指定主题（与设置页同一套编辑页） */
+  onOpenThemeStudioEdit?: (args: OpenThemeStudioEditFromSubitemArgs) => void
+  /** 内联编辑时传入，用于从工坊返回后恢复展开态与绑定主题 id */
+  embeddedThemeStudioContext?: { categoryId: string; anchor: string } | null
+  /** 子项内小预览：即时改主题库（详细编辑在主题工坊） */
+  themeEditorContext?: SubReminderModalThemeEditorContext
+  /** 悬浮主题「另存为」后由设置页下发，写回本条绑定的主题 id */
+  popupThemeRemotePatch?: {
+    categoryId: string
+    anchor: string
+    mainPopupThemeId?: string
+    restPopupThemeId?: string
+  } | null
+  onConsumePopupThemeRemotePatch?: () => void
 }
 
 /** 根据总时长和拆分数计算默认每段休息秒数（总休息 ≈ 总时长的 1/6）。
@@ -133,23 +159,39 @@ function calcDefaultRestSeconds(totalMs: number, splitCount: number): number {
   return Math.max(1, Math.min(perSlotSec, maxPerSlot))
 }
 
+/** 切换主题或新建时：把主题里的预览主文案落到当前子项（仅本地 state，不写回主题库） */
+function popupMainTextFromTheme(theme: PopupTheme | undefined): string {
+  const s = (theme?.previewContentText ?? '').trim()
+  return s || '提醒'
+}
+
+function popupRestTextFromTheme(theme: PopupTheme | undefined): string {
+  const s = (theme?.previewContentText ?? '').trim()
+  return s || '休息一下'
+}
+
 export function AddSubReminderModal({
   open,
   mode,
-  contentPresets,
+  contentPresets: _contentPresets,
   titlePresets,
-  restPresets,
+  restPresets: _restPresets,
   popupThemes,
   onClose,
   onConfirm,
-  onContentPresetsChange,
+  onContentPresetsChange: _onContentPresetsChange,
   onTitlePresetsChange,
-  onRestPresetsChange,
+  onRestPresetsChange: _onRestPresetsChange,
   variant = 'create',
   sourceItem,
   layout = 'modal',
   formInstanceKey = '',
-  onOpenThemeStudio,
+  onOpenThemeStudioList,
+  onOpenThemeStudioEdit,
+  embeddedThemeStudioContext = null,
+  themeEditorContext,
+  popupThemeRemotePatch = null,
+  onConsumePopupThemeRemotePatch,
 }: AddSubReminderModalProps) {
   const getDefaultTitle = (m: 'fixed' | 'interval') => (m === 'fixed' ? '未命名闹钟' : '未命名倒计时')
   const [startH, setStartH] = useState(() => getInitialFixedRangeHM(variant, mode, sourceItem).startH)
@@ -185,11 +227,21 @@ export function AddSubReminderModal({
   const defaultRestThemeId = restThemeOptions[0]?.id ?? ''
   const restManuallySet = useRef(false)
   const restZeroTimer = useRef<ReturnType<typeof setTimeout> | null>(null)
+  const baselinePayloadJsonRef = useRef('')
+  const getPayloadSnapshotRef = useRef<() => string | null>(() => null)
   const [highlightPopupType, setHighlightPopupType] = useState<'rest' | 'main' | null>(null)
   const [previewImageUrlMap, setPreviewImageUrlMap] = useState<Record<string, string>>({})
-  const [primaryDisplaySize, setPrimaryDisplaySize] = useState<{ width: number; height: number } | null>(null)
-  const [previewContainerWidth, setPreviewContainerWidth] = useState(0)
-  const previewMeasureRef = useRef<HTMLDivElement>(null)
+
+  const [miniMainSelected, setMiniMainSelected] = useState<TextElementKey[]>([])
+  const [miniRestSelected, setMiniRestSelected] = useState<TextElementKey[]>([])
+
+  useEffect(() => {
+    if (!open) {
+      baselinePayloadJsonRef.current = ''
+      setMiniMainSelected([])
+      setMiniRestSelected([])
+    }
+  }, [open])
 
   useEffect(() => {
     if (!open) return
@@ -257,7 +309,16 @@ export function AddSubReminderModal({
     }
     setUseNowAsStart(true)
     setTitle(getDefaultTitle(mode))
-    setContent('')
+    {
+      const mainTh =
+        popupThemes.find((t) => t.target === 'main' && t.id === defaultMainThemeId) ??
+        popupThemes.find((t) => t.target === 'main')
+      const restTh =
+        popupThemes.find((t) => t.target === 'rest' && t.id === defaultRestThemeId) ??
+        popupThemes.find((t) => t.target === 'rest')
+      setContent(popupMainTextFromTheme(mainTh))
+      setRestContent(popupRestTextFromTheme(restTh))
+    }
     setWeekdaysEnabled(Array(7).fill(false))
     setSplitCount(1)
     restManuallySet.current = false
@@ -265,12 +326,11 @@ export function AddSubReminderModal({
     setRestH(0)
     setRestM(0)
     setRestS(0)
-    setRestContent('休息一下')
     setMainPopupThemeId(defaultMainThemeId)
     setRestPopupThemeId(defaultRestThemeId)
     setSplitErr(null)
     setFixedRangeErr(null)
-  }, [open, mode, variant, sourceItem?.id, formInstanceKey, layout, defaultMainThemeId, defaultRestThemeId])
+  }, [open, mode, variant, sourceItem?.id, formInstanceKey, layout, defaultMainThemeId, defaultRestThemeId, popupThemes])
 
   useEffect(() => {
     if (!open) return
@@ -281,21 +341,6 @@ export function AddSubReminderModal({
       setRestPopupThemeId(defaultRestThemeId)
     }
   }, [open, mainPopupThemeId, restPopupThemeId, mainThemeOptions, restThemeOptions, defaultMainThemeId, defaultRestThemeId])
-
-  useEffect(() => {
-    if (!open) return
-    window.electronAPI?.getPrimaryDisplaySize?.().then(setPrimaryDisplaySize).catch(() => setPrimaryDisplaySize(null))
-  }, [open])
-
-  useEffect(() => {
-    const el = previewMeasureRef.current
-    if (!el) return
-    const obs = new ResizeObserver((entries) => {
-      for (const entry of entries) setPreviewContainerWidth(entry.contentRect.width)
-    })
-    obs.observe(el)
-    return () => obs.disconnect()
-  }, [open])
 
   const [nowMs, setNowMs] = useState(Date.now)
   useEffect(() => {
@@ -324,9 +369,10 @@ export function AddSubReminderModal({
     if (!open) return
     const api = window.electronAPI
     if (!api?.resolvePreviewImageUrl) return
+    const themesForPaths = [...popupThemes]
     const paths = Array.from(
       new Set(
-        popupThemes
+        themesForPaths
           .filter((t) => t.backgroundType === 'image')
           .flatMap((t) => {
             const paths: string[] = []
@@ -342,7 +388,7 @@ export function AddSubReminderModal({
     void Promise.all(
       paths.map(async (p) => {
         const r = await api.resolvePreviewImageUrl(p)
-        return [p, r.success ? r.url : toPreviewImageUrl(p)] as const
+        return [p, r.success ? r.url : ''] as const
       })
     ).then((entries) => {
       if (disposed) return
@@ -360,6 +406,15 @@ export function AddSubReminderModal({
     window.addEventListener('keydown', onKey)
     return () => window.removeEventListener('keydown', onKey)
   }, [open, onClose])
+
+  useEffect(() => {
+    if (!popupThemeRemotePatch || !embeddedThemeStudioContext) return
+    if (popupThemeRemotePatch.categoryId !== embeddedThemeStudioContext.categoryId) return
+    if (popupThemeRemotePatch.anchor !== embeddedThemeStudioContext.anchor) return
+    if (popupThemeRemotePatch.mainPopupThemeId) setMainPopupThemeId(popupThemeRemotePatch.mainPopupThemeId)
+    if (popupThemeRemotePatch.restPopupThemeId) setRestPopupThemeId(popupThemeRemotePatch.restPopupThemeId)
+    onConsumePopupThemeRemotePatch?.()
+  }, [popupThemeRemotePatch, embeddedThemeStudioContext, onConsumePopupThemeRemotePatch])
 
   const splitN = Math.max(1, Math.min(10, splitCount))
   const intervalTotalMs = (intervalHours * 3600 + intervalMinutes * 60 + intervalSeconds) * 1000
@@ -419,6 +474,73 @@ export function AddSubReminderModal({
     setSplitErr(null)
   }, [open, splitN, splitPlan, mode])
 
+  const presetResetKey = `${open}-${layout}-${formInstanceKey}-${mode}-${variant}-${sourceItem?.id ?? 'new'}`
+
+  const buildPayloadFromState = (): AddSubReminderPayload => {
+    const totalRestSec = splitN > 1 ? hmsToSeconds(restH, restM, restS) : 0
+    if (mode === 'fixed') {
+      const nowSnap = useNowAsStart ? getLocalHoursMinutes() : null
+      const startTime = nowSnap ? formatHHmm(nowSnap.h, nowSnap.m) : formatHHmm(startHPreview, startMPreview)
+      const endTime = formatHHmm(endHPreview, endMPreview)
+      return {
+        mode: 'fixed',
+        title: title.trim() || getDefaultTitle('fixed'),
+        startTime,
+        time: endTime,
+        ...(mainPopupThemeId ? { mainPopupThemeId } : {}),
+        ...(restPopupThemeId ? { restPopupThemeId } : {}),
+        weekdaysEnabled: weekdaysEnabled.slice(),
+        content: content.trim() || '提醒',
+        splitCount: splitN,
+        restDurationSeconds: splitN > 1 && totalRestSec ? totalRestSec : undefined,
+        restContent: splitN > 1 ? restContent.trim() || undefined : undefined,
+        useNowAsStart,
+      }
+    }
+    return {
+      mode: 'interval',
+      title: title.trim() || getDefaultTitle('interval'),
+      ...(mainPopupThemeId ? { mainPopupThemeId } : {}),
+      ...(restPopupThemeId ? { restPopupThemeId } : {}),
+      intervalHours,
+      intervalMinutes,
+      intervalSeconds,
+      content: content.trim() || '提醒',
+      repeatCount,
+      splitCount: splitN,
+      restDurationSeconds: splitN > 1 && totalRestSec ? totalRestSec : undefined,
+      restContent: splitN > 1 ? restContent.trim() || undefined : undefined,
+    }
+  }
+
+  const isPayloadStructurallyValid = (): boolean => {
+    if (mode === 'fixed' && fixedRangeErr) return false
+    const totalRestSec = splitN > 1 ? hmsToSeconds(restH, restM, restS) : 0
+    const confirmPlan = buildSplitSchedule(totalSpanMs, splitN, totalRestSec * 1000)
+    if (!confirmPlan.valid) return false
+    if (mode === 'interval' && confirmPlan.workDurationsMs.some((d) => d < 1000)) return false
+    return true
+  }
+
+  getPayloadSnapshotRef.current = () =>
+    isPayloadStructurallyValid() ? JSON.stringify(buildPayloadFromState()) : null
+
+  useEffect(() => {
+    if (!open) return
+    let cancelled = false
+    const id = requestAnimationFrame(() => {
+      requestAnimationFrame(() => {
+        if (cancelled) return
+        const snap = getPayloadSnapshotRef.current()
+        if (snap !== null) baselinePayloadJsonRef.current = snap
+      })
+    })
+    return () => {
+      cancelled = true
+      cancelAnimationFrame(id)
+    }
+  }, [open, presetResetKey])
+
   if (!open) return null
 
   const applyRest = (rh: number, rm: number, rs: number) => {
@@ -465,55 +587,44 @@ export function AddSubReminderModal({
   const useSplit = splitN > 1 && splitPlan.valid && splitPlan.segments.length > 1
   const segments = useSplit ? splitPlan.segments : []
 
-  const handleStart = () => {
-    if (mode === 'fixed' && fixedRangeErr) return
-    const totalRestSec = splitN > 1 ? hmsToSeconds(restH, restM, restS) : 0
-    const confirmPlan = buildSplitSchedule(totalSpanMs, splitN, totalRestSec * 1000)
-    if (!confirmPlan.valid) {
-      setSplitErr('总时长不足以容纳拆分休息，请减少拆分份数或缩短休息时长。')
-      return
+  const handleStart = (): boolean => {
+    if (!isPayloadStructurallyValid()) {
+      if (mode === 'fixed' && fixedRangeErr) return false
+      const totalRestSec = splitN > 1 ? hmsToSeconds(restH, restM, restS) : 0
+      const confirmPlan = buildSplitSchedule(totalSpanMs, splitN, totalRestSec * 1000)
+      if (!confirmPlan.valid) {
+        setSplitErr('总时长不足以容纳拆分休息，请减少拆分份数或缩短休息时长。')
+        return false
+      }
+      if (mode === 'interval' && confirmPlan.workDurationsMs.some((d) => d < 1000)) {
+        setSplitErr('每段工作时长至少 1 秒，请减少拆分份数或缩短休息时长。')
+        return false
+      }
+      return false
     }
-    if (mode === 'interval' && confirmPlan.workDurationsMs.some((d) => d < 1000)) {
-      setSplitErr('每段工作时长至少 1 秒，请减少拆分份数或缩短休息时长。')
-      return
-    }
-    if (mode === 'fixed') {
-      const nowSnap = useNowAsStart ? getLocalHoursMinutes() : null
-      const startTime = nowSnap ? formatHHmm(nowSnap.h, nowSnap.m) : formatHHmm(startHPreview, startMPreview)
-      const endTime = formatHHmm(endHPreview, endMPreview)
-      onConfirm({
-        mode: 'fixed',
-        title: title.trim() || getDefaultTitle('fixed'),
-        startTime,
-        time: endTime,
-        ...(mainPopupThemeId ? { mainPopupThemeId } : {}),
-        ...(restPopupThemeId ? { restPopupThemeId } : {}),
-        weekdaysEnabled: weekdaysEnabled.slice(),
-        content: content.trim() || '提醒',
-        splitCount: splitN,
-        restDurationSeconds: splitN > 1 && totalRestSec ? totalRestSec : undefined,
-        restContent: splitN > 1 ? restContent.trim() || undefined : undefined,
-        useNowAsStart,
-      })
-    } else {
-      onConfirm({
-        mode: 'interval',
-        title: title.trim() || getDefaultTitle('interval'),
-        ...(mainPopupThemeId ? { mainPopupThemeId } : {}),
-        ...(restPopupThemeId ? { restPopupThemeId } : {}),
-        intervalHours,
-        intervalMinutes,
-        intervalSeconds,
-        content: content.trim() || '提醒',
-        repeatCount,
-        splitCount: splitN,
-        restDurationSeconds: splitN > 1 && totalRestSec ? totalRestSec : undefined,
-        restContent: splitN > 1 ? restContent.trim() || undefined : undefined,
-      })
-    }
+    onConfirm(buildPayloadFromState())
+    requestAnimationFrame(() => {
+      const snap = getPayloadSnapshotRef.current()
+      if (snap !== null) baselinePayloadJsonRef.current = snap
+    })
+    return true
   }
 
-  const presetResetKey = `${open}-${layout}-${formInstanceKey}-${mode}-${variant}-${sourceItem?.id ?? 'new'}`
+  const requestOpenThemeStudioList = () => {
+    if (!onOpenThemeStudioList) return
+    onOpenThemeStudioList()
+  }
+
+  const requestOpenThemeEditor = (target: 'main' | 'rest') => {
+    if (!onOpenThemeStudioEdit || !embeddedThemeStudioContext) return
+    const themeId = target === 'main' ? mainPopupThemeId : restPopupThemeId
+    onOpenThemeStudioEdit({
+      themeId,
+      categoryId: embeddedThemeStudioContext.categoryId,
+      itemAnchor: embeddedThemeStudioContext.anchor,
+      popupTarget: target,
+    })
+  }
 
   const modalTitle =
     mode === 'fixed'
@@ -527,103 +638,10 @@ export function AddSubReminderModal({
   const timeSectionTitle = mode === 'fixed' ? '闹钟设置' : '倒计时'
   const sectionHeadingClass = 'text-sm font-medium text-slate-600 mb-4 w-full text-center'
 
-  const screenW = primaryDisplaySize?.width ?? 1920
-  const screenH = primaryDisplaySize?.height ?? 1080
-  const previewScale = previewContainerWidth > 0 ? previewContainerWidth / screenW : 0.28
-  const toP = (px: number) => Math.max(1, px * previewScale)
-
-  const renderThemePreview = (
-    th: PopupTheme | undefined,
-    previewText: string,
-    isRest: boolean,
-    previewTimeStr: string,
-    measuredRef?: React.RefObject<HTMLDivElement | null>,
-  ) => {
-    const contentFontMax = Math.max(14, Math.min(120, Math.floor(th?.contentFontSize ?? 56)))
-    const timeFontMax = Math.max(10, Math.min(100, Math.floor(th?.timeFontSize ?? 30)))
-    const line1FontPx = clampByViewport(20, 0.06, contentFontMax, screenW)
-    const line2FontPx = clampByViewport(14, 0.03, timeFontMax, screenW)
-    const rawPath = ((th?.imageSourceType === 'folder' ? th?.imageFolderFiles?.[0] : th?.imagePath) ?? '').trim()
-    const imageUrl = previewImageUrlMap[rawPath] || toPreviewImageUrl(rawPath)
-    const bg = th?.backgroundType === 'image' && (th?.imagePath || (th?.imageFolderFiles && th.imageFolderFiles.length > 0))
-      ? `url("${imageUrl}") center / cover no-repeat, ${th.backgroundColor || '#000'}`
-      : (th?.backgroundColor || '#000')
-    const defaultTransforms = isRest
-      ? { content: { x: 50, y: 30 }, time: { x: 50, y: 48 }, countdown: { x: 50, y: 70 } }
-      : { content: { x: 50, y: 42 }, time: { x: 50, y: 55 }, countdown: { x: 50, y: 70 } }
-    const ct = th?.contentTransform ?? { x: defaultTransforms.content.x, y: defaultTransforms.content.y, rotation: 0, scale: 1 }
-    const tt = th?.timeTransform ?? { x: defaultTransforms.time.x, y: defaultTransforms.time.y, rotation: 0, scale: 1 }
-
-    return (
-      <div
-        ref={measuredRef as React.RefObject<HTMLDivElement> | undefined}
-        className="relative w-full overflow-hidden rounded border border-slate-200 bg-black"
-        style={{ aspectRatio: `${screenW} / ${screenH}` }}
-      >
-        <div className="absolute inset-0" style={{ background: bg }} />
-        <div
-          className="absolute inset-0"
-          style={{
-            background: th?.overlayColor || '#000',
-            opacity: th?.overlayEnabled ? (th?.overlayOpacity ?? 0.45) : 0,
-          }}
-        />
-        <div className="relative z-[1] h-full w-full">
-          <div style={{
-            position: 'absolute',
-            left: `${ct.x}%`,
-            top: `${ct.y}%`,
-            transform: `translate(-50%, -50%) rotate(${ct.rotation}deg) scale(${ct.scale})`,
-            transformOrigin: 'center',
-            color: th?.contentColor || '#fff',
-            fontSize: `${toP(line1FontPx)}px`,
-            lineHeight: 1.35,
-            fontWeight: th?.contentFontWeight ?? 600,
-            maxWidth: '96%',
-            whiteSpace: 'pre-wrap' as const,
-            textAlign: (th?.textAlign ?? 'center') as CSSProperties['textAlign'],
-            fontFamily: 'system-ui, "Microsoft YaHei", sans-serif',
-          }}>
-            {previewText}
-          </div>
-          <div style={{
-            position: 'absolute',
-            left: `${tt.x}%`,
-            top: `${tt.y}%`,
-            transform: `translate(-50%, -50%) rotate(${tt.rotation}deg) scale(${tt.scale})`,
-            transformOrigin: 'center',
-            color: th?.timeColor || '#e2e8f0',
-            fontSize: `${toP(line2FontPx)}px`,
-            fontWeight: th?.timeFontWeight ?? 400,
-            textAlign: (th?.textAlign ?? 'center') as CSSProperties['textAlign'],
-            fontFamily: 'system-ui, "Microsoft YaHei", sans-serif',
-          }}>
-            {previewTimeStr}
-          </div>
-          {isRest && (() => {
-            const countdownFontMax = Math.max(48, Math.min(280, Math.floor(th?.countdownFontSize ?? 180)))
-            const countdownFontPx = clampByViewport(80, 0.2, countdownFontMax, screenW)
-            const cdt = th?.countdownTransform ?? { x: defaultTransforms.countdown.x, y: defaultTransforms.countdown.y, rotation: 0, scale: 1 }
-            return (
-              <div style={{
-                position: 'absolute',
-                left: `${cdt.x}%`,
-                top: `${cdt.y}%`,
-                transform: `translate(-50%, -50%) rotate(${cdt.rotation}deg) scale(${cdt.scale})`,
-                transformOrigin: 'center',
-                color: th?.timeColor || '#e2e8f0',
-                fontSize: `${toP(countdownFontPx)}px`,
-                lineHeight: 1,
-                fontWeight: th?.countdownFontWeight ?? 700,
-              }}>
-                5
-              </div>
-            )
-          })()}
-        </div>
-      </div>
-    )
-  }
+  const showRestPopupCard = splitN > 1
+  const showMainPopupCard = true
+  const popupThemeLayoutClass =
+    splitN > 1 ? 'grid w-full gap-4 grid-cols-1 sm:grid-cols-2' : 'flex w-full justify-center'
 
   const formScroll = (
         <div className="flex flex-col gap-10 overflow-visible mx-auto w-full items-center px-4 py-6 sm:px-6 sm:py-8">
@@ -911,23 +929,23 @@ export function AddSubReminderModal({
             {splitErr && <p className="w-full text-center text-xs text-red-600 mt-3">{splitErr}</p>}
           </section>
 
-          {/* 5. 弹窗编辑 — 左右并排（splitN > 1 时休息弹窗在左、结束弹窗在右） */}
-          <section className="w-full">
+          {/* 5. 弹窗编辑 — 左右并排（splitN > 1）；详细编辑在主题工坊整页 */}
+          <section className="w-full self-stretch">
             <div className="mb-4 flex items-center justify-center gap-3">
               <h4 className="text-sm font-medium text-slate-600">弹窗设置</h4>
-              {onOpenThemeStudio && (
+              {onOpenThemeStudioList && (
                 <button
                   type="button"
-                  onClick={onOpenThemeStudio}
+                  onClick={requestOpenThemeStudioList}
                   className="rounded border border-slate-300 px-2 py-0.5 text-xs text-slate-500 hover:bg-slate-50"
                 >
                   主题工坊
                 </button>
               )}
             </div>
-            <div className={splitN > 1 ? 'grid w-full gap-4 grid-cols-1 sm:grid-cols-2' : 'flex w-full justify-center'}>
+            <div className={popupThemeLayoutClass}>
               {/* 休息弹窗卡片（左列，仅 splitN > 1） */}
-              {splitN > 1 && (
+              {showRestPopupCard && (
                 <div
                   className="min-w-0 overflow-hidden rounded-lg border border-slate-200"
                   onMouseEnter={() => setHighlightPopupType('rest')}
@@ -938,45 +956,69 @@ export function AddSubReminderModal({
                   <div className="bg-blue-500 px-3 py-1.5 text-center text-sm font-medium text-white">休息弹窗</div>
                   <div className="border-t border-blue-400" />
                   <div className="space-y-3 p-3">
-                    <div className="flex items-start gap-2">
-                      <span className="shrink-0 pt-1.5 text-sm text-slate-500">内容</span>
-                      <div className="flex-1 min-w-0">
-                        <PresetTextField
-                          key={`rest-${presetResetKey}`}
-                          resetKey={presetResetKey}
-                          value={restContent}
-                          onChange={setRestContent}
-                          presets={restPresets}
-                          onPresetsChange={onRestPresetsChange}
-                          mainPlaceholder="请输入休息提示语"
-                          multilineMain
-                        />
-                      </div>
-                    </div>
                     <div className="flex flex-wrap items-center gap-2">
                       <span className="text-sm text-slate-500 shrink-0">主题</span>
                       <select
                         value={restPopupThemeId}
-                        onChange={(e) => setRestPopupThemeId(e.target.value)}
+                        onChange={(e) => {
+                          const id = e.target.value
+                          setRestPopupThemeId(id)
+                          const th = restThemeOptions.find((t) => t.id === id)
+                          if (th) setRestContent(popupRestTextFromTheme(th))
+                        }}
                         className="min-w-0 flex-1 rounded border border-slate-300 px-2 py-1.5 text-sm"
                       >
                         {restThemeOptions.map((t) => (
                           <option key={t.id} value={t.id}>{t.name}</option>
                         ))}
                       </select>
+                      {themeEditorContext && onOpenThemeStudioEdit && embeddedThemeStudioContext && (
+                        <button
+                          type="button"
+                          onClick={() => requestOpenThemeEditor('rest')}
+                          className="shrink-0 rounded border border-slate-300 px-2 py-1 text-xs text-slate-600 hover:bg-slate-50"
+                        >
+                          编辑主题
+                        </button>
+                      )}
                     </div>
-                    {renderThemePreview(
-                      restThemeOptions.find((t) => t.id === restPopupThemeId),
-                      restContent.trim() || '休息一下',
-                      true,
-                      restPreviewTimeStr,
-                    )}
+                    {themeEditorContext &&
+                      (() => {
+                        const thLive = restThemeOptions.find((t) => t.id === restPopupThemeId)
+                        if (!thLive) return null
+                        return (
+                          <div className="space-y-2">
+                            <p className="text-[10px] leading-snug text-slate-400">
+                              切换主题会载入该主题的示例文案到本条提醒（仅本条）；双击预览主文案可改字，样式与拖拽写入当前主题库。详细排版请点「编辑主题」进入主题工坊。
+                            </p>
+                            <ThemePreviewEditor
+                              theme={thLive}
+                              onUpdateTheme={(id, p) => themeEditorContext.updatePopupTheme(id, p)}
+                              previewViewportWidth={themeEditorContext.previewViewportWidth}
+                              previewImageUrlMap={previewImageUrlMap}
+                              popupPreviewAspect={themeEditorContext.popupPreviewAspect}
+                              selectedElements={miniRestSelected}
+                              onSelectElements={setMiniRestSelected}
+                              previewLabels={{
+                                content: restContent.trim() || popupRestTextFromTheme(thLive),
+                                time: restPreviewTimeStr,
+                              }}
+                              onLiveTextCommit={(key, text) => {
+                                if (key === 'content') setRestContent(text)
+                              }}
+                            />
+                          </div>
+                        )
+                      })()}
                   </div>
                 </div>
               )}
               {/* 结束弹窗卡片（右列，或 splitN ≤ 1 时居中半宽） */}
+              {showMainPopupCard && (
               <div
-                className={`min-w-0 overflow-hidden rounded-lg border border-slate-200 ${splitN > 1 ? '' : 'w-full sm:w-1/2'}`}
+                className={`min-w-0 overflow-hidden rounded-lg border border-slate-200 ${
+                  splitN > 1 ? '' : 'w-full sm:w-1/2'
+                }`}
                 onMouseEnter={() => setHighlightPopupType('main')}
                 onMouseLeave={() => setHighlightPopupType(null)}
                 onFocusCapture={() => setHighlightPopupType('main')}
@@ -985,42 +1027,63 @@ export function AddSubReminderModal({
                 <div className="bg-green-500 px-3 py-1.5 text-center text-sm font-medium text-white">结束弹窗</div>
                 <div className="border-t border-green-400" />
                 <div className="space-y-3 p-3">
-                  <div className="flex items-start gap-2">
-                    <span className="shrink-0 pt-1.5 text-sm text-slate-500">内容</span>
-                    <div className="flex-1 min-w-0">
-                      <PresetTextField
-                        key={`content-${presetResetKey}`}
-                        resetKey={presetResetKey}
-                        value={content}
-                        onChange={setContent}
-                        presets={contentPresets}
-                        onPresetsChange={onContentPresetsChange}
-                        mainPlaceholder="请输入提醒内容"
-                        multilineMain
-                      />
-                    </div>
-                  </div>
                   <div className="flex flex-wrap items-center gap-2">
                     <span className="text-sm text-slate-500 shrink-0">主题</span>
                     <select
                       value={mainPopupThemeId}
-                      onChange={(e) => setMainPopupThemeId(e.target.value)}
+                      onChange={(e) => {
+                        const id = e.target.value
+                        setMainPopupThemeId(id)
+                        const th = mainThemeOptions.find((t) => t.id === id)
+                        if (th) setContent(popupMainTextFromTheme(th))
+                      }}
                       className="min-w-0 flex-1 rounded border border-slate-300 px-2 py-1.5 text-sm"
                     >
                       {mainThemeOptions.map((t) => (
                         <option key={t.id} value={t.id}>{t.name}</option>
                       ))}
                     </select>
+                    {themeEditorContext && onOpenThemeStudioEdit && embeddedThemeStudioContext && (
+                      <button
+                        type="button"
+                        onClick={() => requestOpenThemeEditor('main')}
+                        className="shrink-0 rounded border border-slate-300 px-2 py-1 text-xs text-slate-600 hover:bg-slate-50"
+                      >
+                        编辑主题
+                      </button>
+                    )}
                   </div>
-                  {renderThemePreview(
-                    mainThemeOptions.find((t) => t.id === mainPopupThemeId),
-                    content.trim() || '提醒内容预览',
-                    false,
-                    mainPreviewTimeStr,
-                    previewMeasureRef,
-                  )}
+                  {themeEditorContext &&
+                    (() => {
+                      const thLive = mainThemeOptions.find((t) => t.id === mainPopupThemeId)
+                      if (!thLive) return null
+                      return (
+                        <div className="space-y-2">
+                          <p className="text-[10px] leading-snug text-slate-400">
+                            默认即为黑底白字主题，可直接改样式；切换主题会载入该主题示例文案到本条（仅本条）。双击预览主文案改字，拖拽与样式写入当前主题库。详细排版请点「编辑主题」进入主题工坊。
+                          </p>
+                          <ThemePreviewEditor
+                            theme={thLive}
+                            onUpdateTheme={(id, p) => themeEditorContext.updatePopupTheme(id, p)}
+                            previewViewportWidth={themeEditorContext.previewViewportWidth}
+                            previewImageUrlMap={previewImageUrlMap}
+                            popupPreviewAspect={themeEditorContext.popupPreviewAspect}
+                            selectedElements={miniMainSelected}
+                            onSelectElements={setMiniMainSelected}
+                            previewLabels={{
+                              content: content.trim() || popupMainTextFromTheme(thLive),
+                              time: mainPreviewTimeStr,
+                            }}
+                            onLiveTextCommit={(key, text) => {
+                              if (key === 'content') setContent(text)
+                            }}
+                          />
+                        </div>
+                      )
+                    })()}
                 </div>
               </div>
+              )}
             </div>
           </section>
         </div>
