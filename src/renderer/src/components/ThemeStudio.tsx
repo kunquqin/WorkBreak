@@ -1,8 +1,11 @@
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type RefObject } from 'react'
+import { collectPopupThemeImagePathsForPreview } from '../utils/popupThemePreview'
 import type { PopupTheme, PopupThemeTarget } from '../types'
 import { ThemePreviewEditor, type TextElementKey } from './ThemePreviewEditor'
-import { PopupThemeEditorPanel, type ThemeSettingsPanelFilter } from './PopupThemeEditorPanel'
+import { PopupThemeEditorPanel } from './PopupThemeEditorPanel'
 import { clonePopupThemeForFork, popupThemeContentEquals } from '../../../shared/popupThemeUtils'
+import { addImageDecorationLayer } from '../../../shared/popupThemeLayers'
+import { ensureThemeLayers } from '../../../shared/settings'
 
 function themeDraftDirty(baseline: PopupTheme, draft: PopupTheme): boolean {
   if ((baseline.name ?? '').trim() !== (draft.name ?? '').trim()) return true
@@ -16,8 +19,6 @@ export type ThemeStudioEditWorkspaceProps = {
   previewViewportWidth: number
   previewImageUrlMap: Record<string, string>
   popupPreviewAspect: '16:9' | '4:3'
-  panelFilter: ThemeSettingsPanelFilter
-  onPanelFilterChange: (f: ThemeSettingsPanelFilter) => void
   onUpdateTheme: (themeId: string, patch: Partial<PopupTheme>) => void
   replaceThemeFull: (theme: PopupTheme) => void
   selectedElements: TextElementKey[]
@@ -32,8 +33,6 @@ export function ThemeStudioEditWorkspace({
   previewViewportWidth,
   previewImageUrlMap,
   popupPreviewAspect,
-  panelFilter,
-  onPanelFilterChange,
   onUpdateTheme,
   replaceThemeFull,
   selectedElements,
@@ -41,13 +40,28 @@ export function ThemeStudioEditWorkspace({
   onPickImageFile,
   onPickImageFolder,
 }: ThemeStudioEditWorkspaceProps) {
-  const pl = useMemo(
-    () => ({
-      content: (theme.previewContentText ?? '').trim() || (theme.target === 'main' ? '提醒' : '休息一下'),
-      time: (theme.previewTimeText ?? '').trim() || '12:00',
-    }),
-    [theme.previewContentText, theme.previewTimeText, theme.target],
-  )
+  const [selectedDecorationLayerId, setSelectedDecorationLayerId] = useState<string | null>(null)
+  const [selectedStructuralLayerId, setSelectedStructuralLayerId] = useState<string | null>(null)
+  useEffect(() => {
+    setSelectedDecorationLayerId(null)
+    setSelectedStructuralLayerId(null)
+  }, [theme.id])
+
+  /** 不传 previewLabels：由 ThemePreviewEditor 按 theme.preview* 与占位标签回落，避免 `pl` 强行写死「提醒」盖住主题内已保存的示例文案 */
+  const handlePickDecoImage = useCallback(() => {
+    void (async () => {
+      const api = window.electronAPI
+      const r = await api?.pickPopupImageFile?.()
+      if (!r?.success) return
+      const layers = ensureThemeLayers(theme).layers ?? []
+      const oldIds = new Set(layers.map((l) => l.id))
+      const patch = addImageDecorationLayer(theme, r.path)
+      if (!patch?.layers) return
+      onUpdateTheme(theme.id, patch)
+      const added = patch.layers.find((l) => l.kind === 'image' && !oldIds.has(l.id))
+      if (added) setSelectedDecorationLayerId(added.id)
+    })()
+  }, [onUpdateTheme, theme])
 
   return (
     <div
@@ -66,7 +80,9 @@ export function ThemeStudioEditWorkspace({
               popupPreviewAspect={popupPreviewAspect}
               selectedElements={selectedElements}
               onSelectElements={onSelectElements}
-              previewLabels={pl}
+              selectedDecorationLayerId={selectedDecorationLayerId}
+              onSelectDecorationLayer={setSelectedDecorationLayerId}
+              onSelectStructuralLayer={setSelectedStructuralLayerId}
               previewWidthMode="fill"
               outerChrome="none"
             />
@@ -74,11 +90,9 @@ export function ThemeStudioEditWorkspace({
         </div>
       </div>
       <div className="flex min-h-0 min-w-0 flex-col overflow-hidden rounded-lg border border-slate-200 bg-white lg:min-h-0">
-        <div className="min-h-0 flex-1 overflow-y-auto overscroll-contain p-3">
         <PopupThemeEditorPanel
+          className="min-h-0 flex-1"
           theme={theme}
-          panelFilter={panelFilter}
-          onPanelFilterChange={onPanelFilterChange}
           onUpdateTheme={onUpdateTheme}
           replaceThemeFull={replaceThemeFull}
           previewViewportWidth={previewViewportWidth}
@@ -86,13 +100,16 @@ export function ThemeStudioEditWorkspace({
           popupPreviewAspect={popupPreviewAspect}
           selectedElements={selectedElements}
           onSelectElements={onSelectElements}
-          previewLabels={pl}
+          selectedDecorationLayerId={selectedDecorationLayerId}
+          onSelectDecorationLayer={setSelectedDecorationLayerId}
+          selectedStructuralLayerId={selectedStructuralLayerId}
+          onSelectStructuralLayer={setSelectedStructuralLayerId}
+          onPickDecoImage={handlePickDecoImage}
           onPickImageFile={onPickImageFile}
           onPickImageFolder={onPickImageFolder}
           previewPlacement="hidden"
           editorSurfaceRef={surfaceRef as RefObject<HTMLDivElement>}
         />
-        </div>
       </div>
     </div>
   )
@@ -140,14 +157,6 @@ function ThemeStudioThumbnail({
 
   const scale = slotW > 0 ? slotW / vw : 1
 
-  const previewLabels = useMemo(
-    () => ({
-      content: (theme.previewContentText ?? '').trim() || (theme.target === 'main' ? '提醒' : '休息一下'),
-      time: (theme.previewTimeText ?? '').trim() || '12:00',
-    }),
-    [theme.previewContentText, theme.previewTimeText, theme.target],
-  )
-
   return (
     <div
       ref={slotRef}
@@ -178,7 +187,6 @@ function ThemeStudioThumbnail({
             popupPreviewAspect={popupPreviewAspect}
             selectedElements={[]}
             onSelectElements={noopSelectElements}
-            previewLabels={previewLabels}
           />
         </div>
       )}
@@ -276,8 +284,6 @@ export type ThemeStudioEditViewProps = {
   previewViewportWidth: number
   previewImageUrlMap: Record<string, string>
   popupPreviewAspect: '16:9' | '4:3'
-  panelFilter: ThemeSettingsPanelFilter
-  onPanelFilterChange: (f: ThemeSettingsPanelFilter) => void
   onUpdateTheme: (themeId: string, patch: Partial<PopupTheme>) => void
   replaceThemeFull: (theme: PopupTheme) => void
   selectedElements: TextElementKey[]
@@ -297,8 +303,6 @@ export function ThemeStudioEditView({
   previewViewportWidth,
   previewImageUrlMap,
   popupPreviewAspect,
-  panelFilter,
-  onPanelFilterChange,
   onUpdateTheme,
   replaceThemeFull,
   selectedElements,
@@ -356,7 +360,7 @@ export function ThemeStudioEditView({
             <button
               type="button"
               onClick={onDeleteTheme}
-              disabled={!canDelete}
+              disabled={canDelete === false}
               title={deleteDisabledTitle}
               className="rounded-md border border-red-200 px-2.5 py-1 text-xs text-red-600 hover:bg-red-50 disabled:cursor-not-allowed disabled:opacity-40"
             >
@@ -371,8 +375,6 @@ export function ThemeStudioEditView({
         previewViewportWidth={previewViewportWidth}
         previewImageUrlMap={previewImageUrlMap}
         popupPreviewAspect={popupPreviewAspect}
-        panelFilter={panelFilter}
-        onPanelFilterChange={onPanelFilterChange}
         onUpdateTheme={onUpdateTheme}
         replaceThemeFull={replaceThemeFull}
         selectedElements={selectedElements}
@@ -402,8 +404,6 @@ export type ThemeStudioFloatingEditorProps = {
   popupPreviewAspect: '16:9' | '4:3'
   /** 浮动编辑工具栏内切换预览画幅（16:9 / 4:3） */
   onPopupPreviewAspectChange?: (aspect: '16:9' | '4:3') => void
-  panelFilter: ThemeSettingsPanelFilter
-  onPanelFilterChange: (f: ThemeSettingsPanelFilter) => void
   getSelectedElements: (id: string) => TextElementKey[]
   setSelectedElements: (id: string, els: TextElementKey[]) => void
   replacePopupTheme: (theme: PopupTheme) => void
@@ -427,8 +427,6 @@ export function ThemeStudioFloatingEditor({
   previewImageUrlMap,
   popupPreviewAspect,
   onPopupPreviewAspectChange,
-  panelFilter,
-  onPanelFilterChange,
   getSelectedElements,
   setSelectedElements,
   replacePopupTheme,
@@ -445,6 +443,38 @@ export function ThemeStudioFloatingEditor({
   const themesRef = useRef(themes)
   themesRef.current = themes
   const [draft, setDraft] = useState<PopupTheme | null>(null)
+  const [draftImageUrlMap, setDraftImageUrlMap] = useState<Record<string, string>>({})
+
+  useEffect(() => {
+    if (!draft) {
+      setDraftImageUrlMap({})
+      return
+    }
+    const api = window.electronAPI?.resolvePreviewImageUrl
+    if (!api) return
+    const paths = collectPopupThemeImagePathsForPreview(draft)
+    if (paths.length === 0) {
+      setDraftImageUrlMap({})
+      return
+    }
+    let disposed = false
+    void Promise.all(
+      paths.map(async (p) => {
+        const r = await api(p)
+        return [p, r.success ? r.url : ''] as const
+      }),
+    ).then((entries) => {
+      if (!disposed) setDraftImageUrlMap(Object.fromEntries(entries))
+    })
+    return () => {
+      disposed = true
+    }
+  }, [draft])
+
+  const mergedFloatingPreviewMap = useMemo(
+    () => ({ ...previewImageUrlMap, ...draftImageUrlMap }),
+    [previewImageUrlMap, draftImageUrlMap],
+  )
 
   const tryCloseStable = useCallback(() => {
     const d = draft
@@ -468,6 +498,20 @@ export function ThemeStudioFloatingEditor({
     setDraft(c)
     baselineRef.current = structuredClone(t) as PopupTheme
   }, [themeId])
+
+  /** 首次进入某主题的编辑且未选层时默认选中绑定文本层，否则右侧「文本内容」与字体区不显示，易被误认为无法输入 */
+  const bindingAutoSelectRef = useRef(new Set<string>())
+  useLayoutEffect(() => {
+    if (!themeId) return
+    if (bindingAutoSelectRef.current.has(themeId)) return
+    const cur = getSelectedElements(themeId)
+    if (cur.length > 0) {
+      bindingAutoSelectRef.current.add(themeId)
+      return
+    }
+    setSelectedElements(themeId, ['content'])
+    bindingAutoSelectRef.current.add(themeId)
+  }, [themeId, getSelectedElements, setSelectedElements])
 
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
@@ -690,7 +734,7 @@ export function ThemeStudioFloatingEditor({
                   <button
                     type="button"
                     onClick={onDeleteTheme}
-                    disabled={!canDeleteTheme}
+                    disabled={canDeleteTheme === false}
                     title={deleteDisabledTitle}
                     className="rounded-md border border-red-200 px-2.5 py-1.5 text-xs text-red-600 hover:bg-red-50 disabled:cursor-not-allowed disabled:opacity-40"
                   >
@@ -706,10 +750,8 @@ export function ThemeStudioFloatingEditor({
             theme={draft}
             surfaceRef={surfaceRef}
             previewViewportWidth={previewViewportWidth}
-            previewImageUrlMap={previewImageUrlMap}
+            previewImageUrlMap={mergedFloatingPreviewMap}
             popupPreviewAspect={popupPreviewAspect}
-            panelFilter={panelFilter}
-            onPanelFilterChange={onPanelFilterChange}
             onUpdateTheme={updateDraft}
             replaceThemeFull={replaceDraftFull}
             selectedElements={getSelectedElements(draft.id)}

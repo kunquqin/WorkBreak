@@ -34,9 +34,9 @@ import {
   type StopwatchRuntime,
 } from '../utils/stopwatchUtils'
 import { type TextElementKey } from '../components/ThemePreviewEditor'
-import { type ThemeSettingsPanelFilter } from '../components/PopupThemeEditorPanel'
 import { ThemeStudioListView, ThemeStudioFloatingEditor, type ThemeStudioFloatingSource } from '../components/ThemeStudio'
 import { buildSplitSchedule } from '../../../shared/splitSchedule'
+import { collectPopupThemeImagePathsForPreview } from '../utils/popupThemePreview'
 
 /** 每次使用时读取，避免模块加载时 preload 尚未注入 */
 function getApi() {
@@ -1777,7 +1777,6 @@ export function Settings() {
   const [expandedEditSub, setExpandedEditSub] = useState<{ categoryId: string; itemId: string } | null>(null)
   const [categoryListFilter, setCategoryListFilter] = useState<CategoryListFilter>('all')
   const [popupPreviewAspect, setPopupPreviewAspect] = useState<PopupPreviewAspect>('16:9')
-  const [themeSettingsPanelFilterMap, setThemeSettingsPanelFilterMap] = useState<Record<string, ThemeSettingsPanelFilter>>({})
   const [themeBatchApplyDraft, setThemeBatchApplyDraft] = useState<ThemeBatchApplyDraft | null>(null)
   const [previewImageUrlMap, setPreviewImageUrlMap] = useState<Record<string, string>>({})
   const [primaryDisplaySize, setPrimaryDisplaySize] = useState<{ width: number; height: number } | null>(null)
@@ -1931,18 +1930,7 @@ export function Settings() {
     const api = getApi()
     if (!api?.resolvePreviewImageUrl) return
     const paths = Array.from(
-      new Set(
-        (settings.popupThemes ?? [])
-          .filter((t) => t.backgroundType === 'image')
-          .flatMap((t) => {
-            const paths: string[] = []
-            if ((t.imagePath ?? '').trim()) paths.push((t.imagePath ?? '').trim())
-            if (Array.isArray(t.imageFolderFiles)) {
-              paths.push(...t.imageFolderFiles.filter((p) => typeof p === 'string' && p.trim().length > 0))
-            }
-            return paths
-          })
-      )
+      new Set((settings.popupThemes ?? []).flatMap((t) => collectPopupThemeImagePathsForPreview(t))),
     )
     let disposed = false
     void Promise.all(
@@ -2376,8 +2364,9 @@ export function Settings() {
     const id = genId()
     const newTheme: PopupTheme = {
       id,
-      name: target === 'main' ? '主弹窗主题' : '休息弹窗主题',
+      name: target === 'main' ? '结束壁纸' : '休息壁纸',
       target,
+      previewContentText: '文本',
       backgroundType: 'solid',
       backgroundColor: '#000000',
       imageSourceType: 'single',
@@ -2387,8 +2376,8 @@ export function Settings() {
       contentColor: '#ffffff',
       timeColor: '#e2e8f0',
       countdownColor: '#ffffff',
-      contentFontSize: target === 'main' ? 56 : 40,
-      timeFontSize: target === 'main' ? 30 : 24,
+      contentFontSize: 180,
+      timeFontSize: 100,
       countdownFontSize: 180,
       textAlign: 'center',
       imageFolderPlayMode: 'sequence',
@@ -2471,7 +2460,6 @@ export function Settings() {
     const theme = popupThemes.find((t) => t.id === themeId)
     if (!theme) return
     const siblings = popupThemes.filter((t) => t.target === theme.target)
-    if (siblings.length <= 1) return
     const fallback = siblings.find((t) => t.id !== themeId)?.id
     const nextThemes = popupThemes.filter((t) => t.id !== themeId)
     const nextCategories = settings.reminderCategories.map((cat) => ({
@@ -2546,10 +2534,6 @@ export function Settings() {
       })
     })
     return list
-  }
-  const getThemePanelFilter = (themeId: string): ThemeSettingsPanelFilter => themeSettingsPanelFilterMap[themeId] ?? 'all'
-  const setThemePanelFilter = (themeId: string, filter: ThemeSettingsPanelFilter) => {
-    setThemeSettingsPanelFilterMap((prev) => ({ ...prev, [themeId]: filter }))
   }
   const setReminderContentPresets = (presets: string[]) => updatePresetPools({ reminderContent: presets })
   const setRestContentPresets = (presets: string[]) => updatePresetPools({ restContent: presets })
@@ -3214,8 +3198,6 @@ export function Settings() {
               previewImageUrlMap={previewImageUrlMap}
               popupPreviewAspect={popupPreviewAspect}
               onPopupPreviewAspectChange={setPopupPreviewAspect}
-              panelFilter={getThemePanelFilter(fe.themeId)}
-              onPanelFilterChange={(f) => setThemePanelFilter(fe.themeId, f)}
               getSelectedElements={getThemeSelectedElements}
               setSelectedElements={setThemeSelectedElements}
               replacePopupTheme={replacePopupTheme}
@@ -3247,8 +3229,7 @@ export function Settings() {
                     }
                   : undefined
               }
-              canDeleteTheme={popupThemes.filter((t) => t.target === th.target).length > 1}
-              deleteDisabledTitle="每个目标至少保留一个主题"
+              canDeleteTheme
             />
           )
         })()}

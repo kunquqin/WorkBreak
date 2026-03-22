@@ -60,9 +60,8 @@ function buildTextShadowValue(e: PopupLayerTextEffects): string {
   return layers.join(', ')
 }
 
-/** 写入弹窗内联样式表（分号分隔，末尾带分号） */
-export function layerTextEffectsCss(theme: PopupTheme | undefined, layer: TextEffectLayer): string {
-  const e = getLayerTextEffects(theme, layer)
+/** 写入弹窗内联样式表（分号分隔，末尾带分号）；装饰文字层等可直接传 effects 对象 */
+export function layerTextEffectsCssFromEffects(e: PopupLayerTextEffects | undefined): string {
   if (!e) return ''
   const parts: string[] = []
   if (e.strokeEnabled === true) {
@@ -79,6 +78,11 @@ export function layerTextEffectsCss(theme: PopupTheme | undefined, layer: TextEf
     if (sh) parts.push(`text-shadow: ${sh}`)
   }
   return parts.length ? `${parts.join('; ')};` : ''
+}
+
+/** 写入弹窗内联样式表（分号分隔，末尾带分号） */
+export function layerTextEffectsCss(theme: PopupTheme | undefined, layer: TextEffectLayer): string {
+  return layerTextEffectsCssFromEffects(getLayerTextEffects(theme, layer))
 }
 
 /** React 内联 style（与 layerTextEffectsCss 一致） */

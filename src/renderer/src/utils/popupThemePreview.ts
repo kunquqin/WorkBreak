@@ -26,6 +26,28 @@ export function isRendererBlockedLocalImagePath(p: string): boolean {
   return false
 }
 
+import type { PopupTheme } from '../types'
+import type { ImageThemeLayer } from '../../../shared/popupThemeLayers'
+
+/** 主题内所有需在预览中 resolve 的本地图片路径（背景 + 图层图片） */
+export function collectPopupThemeImagePathsForPreview(theme: PopupTheme): string[] {
+  const s = new Set<string>()
+  if (theme.backgroundType === 'image') {
+    const p = (theme.imagePath ?? '').trim()
+    if (p) s.add(p)
+    for (const f of theme.imageFolderFiles ?? []) {
+      if (typeof f === 'string' && f.trim()) s.add(f.trim())
+    }
+  }
+  for (const L of theme.layers ?? []) {
+    if (L.kind === 'image') {
+      const p = ((L as ImageThemeLayer).imagePath ?? '').trim()
+      if (p) s.add(p)
+    }
+  }
+  return [...s]
+}
+
 export function rendererSafePreviewImageUrl(imageKey: string, urlByPath: Record<string, string>): string {
   const key = (imageKey ?? '').trim()
   if (!key) return ''

@@ -2,6 +2,20 @@
  * 提醒相关类型与默认值，主进程与渲染进程共用。
  */
 
+import type { PopupThemeLayer } from './popupThemeLayers'
+import { ensureThemeLayers } from './popupThemeLayers'
+
+export { ensureThemeLayers } from './popupThemeLayers'
+export type { PopupThemeLayer } from './popupThemeLayers'
+export {
+  POPUP_LAYER_BACKGROUND_ID,
+  POPUP_LAYER_OVERLAY_ID,
+  POPUP_LAYER_BINDING_CONTENT_ID,
+  POPUP_LAYER_BINDING_TIME_ID,
+  MAX_TEXT_LAYERS,
+  MAX_DECORATION_IMAGE_LAYERS,
+} from './popupThemeLayers'
+
 /** 大类下仅允许一种子项：闹钟 / 倒计时 / 秒表（无提醒弹窗，仅界面计时） */
 export type CategoryKind = 'alarm' | 'countdown' | 'stopwatch'
 export type SubReminderMode = 'fixed' | 'interval' | 'stopwatch'
@@ -69,8 +83,13 @@ export function defaultTextTransform(): TextTransform {
 export interface PopupTheme {
   id: string
   name: string
-  /** 主题结构版本，便于未来多图层等扩展迁移；缺省按 1 */
+  /** 主题结构版本，便于未来多图层等扩展迁移；缺省按 1；含图层栈时为 2 */
   formatVersion?: number
+  /**
+   * 弹窗绘制顺序：数组从底到顶（后者覆盖前者）。
+   * 缺省时由 ensureThemeLayers 从旧字段推导。
+   */
+  layers?: PopupThemeLayer[]
   target: PopupThemeTarget
   backgroundType: PopupBackgroundType
   backgroundColor: string
@@ -312,10 +331,10 @@ export function getDefaultPresetPools(): PresetPools {
 function defaultMainTheme(): PopupTheme {
   return {
     id: 'theme_main_default',
-    name: '主弹窗默认',
+    name: '结束壁纸默认',
     formatVersion: 1,
     target: 'main',
-    previewContentText: '提醒',
+    previewContentText: '文本',
     backgroundType: 'solid',
     backgroundColor: '#000000',
     overlayEnabled: false,
@@ -324,43 +343,43 @@ function defaultMainTheme(): PopupTheme {
     contentColor: '#ffffff',
     timeColor: '#e2e8f0',
     countdownColor: '#ffffff',
-    contentFontSize: 56,
-    timeFontSize: 30,
+    contentFontSize: 180,
+    timeFontSize: 100,
     countdownFontSize: 180,
     textAlign: 'center',
     contentTransform: { x: 50, y: 42, rotation: 0, scale: 1 },
-    /** 时间：横向 max-content 贴字，高度带来可点区域；不设 width% 避免操作框撑满一条 */
-    timeTransform: { x: 50, y: 55, rotation: 0, scale: 1, textBoxHeightPct: 8 },
+    /** 时间单行高度随字，不设 textBoxHeightPct，与预览 Moveable 贴边一致 */
+    timeTransform: { x: 50, y: 55, rotation: 0, scale: 1 },
   }
 }
 
 function defaultRestTheme(): PopupTheme {
   return {
     id: 'theme_rest_default',
-    name: '休息弹窗默认',
+    name: '休息壁纸默认',
     formatVersion: 1,
     target: 'rest',
-    previewContentText: '休息一下',
+    previewContentText: '文本',
     backgroundType: 'solid',
     backgroundColor: '#000000',
     overlayEnabled: false,
     overlayColor: '#000000',
-    overlayOpacity: 0.4,
+    overlayOpacity: 0.45,
     contentColor: '#ffffff',
-    timeColor: '#cbd5e1',
+    timeColor: '#e2e8f0',
     countdownColor: '#ffffff',
-    contentFontSize: 40,
-    timeFontSize: 24,
+    contentFontSize: 180,
+    timeFontSize: 100,
     countdownFontSize: 180,
     textAlign: 'center',
-    contentTransform: { x: 50, y: 30, rotation: 0, scale: 1 },
-    timeTransform: { x: 50, y: 48, rotation: 0, scale: 1, textBoxHeightPct: 9 },
+    contentTransform: { x: 50, y: 42, rotation: 0, scale: 1 },
+    timeTransform: { x: 50, y: 55, rotation: 0, scale: 1 },
     countdownTransform: { x: 50, y: 70, rotation: 0, scale: 1, textBoxHeightPct: 20 },
   }
 }
 
 export function getDefaultPopupThemes(): PopupTheme[] {
-  return [defaultMainTheme(), defaultRestTheme()]
+  return [ensureThemeLayers(defaultMainTheme()), ensureThemeLayers(defaultRestTheme())]
 }
 
 export function getDefaultEntitlements(): AppEntitlements {

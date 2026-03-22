@@ -2,6 +2,19 @@
 
 > 下一段「粘贴用交接提示」见文末代码块。
 
+## 0. 图层删除 / 持久化 / 真弹窗字号（本轮修复）
+
+- **`normalizePopupThemeLayersFromRaw`**：去掉「把 `migrateLegacyLayerStack` 中缺失的固定层再拼进用户数组」的逻辑，用户删除的背景/遮罩等不会在下次 normalize 被补回；**非空 raw 但解析后列表为空**时仍回退整套默认栈（防坏 JSON）。
+- **`main/settings.normalizePopupThemes`**：只要 **`Array.isArray(o.layers)` 就写入 `layers`（**含 `length===0`**），避免空栈未落盘 → 读回 `undefined` → 再走 migrate 导致「删了又回来了」。
+- **`sanitizeLayer`（绑定主文案 `text`）**：缺省 **`fontSize`/颜色/transform/排版** 等与 **`bindingBodyTextFromTheme(theme)`** 对齐，避免旧逻辑 **`|| 28`** + **`syncThemeRootFromBindingTextLayer`** 把根上正确大字覆盖成小字 → **真弹窗主文案过小**。
+- **`removeThemeLayer`**：`theme.layers == null` 时用 **`migrateLegacyLayerStack(theme)`** 作为当前列表再过滤，删除对「仅有根字段、尚未带 layers 的主题」也生效。
+- **`addBackgroundLayer` / `addOverlayLayer`** + **`PopupThemeLayersBar`** 工具栏 **「+ 背景」「+ 遮罩」**（各至多 1，已存在则禁用）。
+- **`reminderWindow.renderLayerFragment`**：绑定主文案层 **`fontSize` 额外回退 `theme.contentFontSize ?? 56`**，双保险。
+- **绑定主文案真弹窗与预览同源（续）**：`renderLayerFragment` 对 **`bindsReminderBody`** 的整段样式（字号/颜色/字重/transform/字间距/行高/对齐/描边阴影）改为与 **`ThemePreviewEditor.renderTextLayerForKey('content')` 一致，一律读 **主题根字段** `content*`，不再用图层 `tl.fontSize`/`tl.transform` 渲染，避免 JSON 里图层与根字段不一致时出现「子项/工坊预览正常、全屏弹窗字极小」。
+- **主题工坊预览文案**：`ThemeStudioEditWorkspace` / **`ThemeStudioThumbnail`** 不再传入强行带「提醒」的 **`previewLabels`**，改由 **`getDisplayText` 走 `theme.previewContentText` / `previewTimeText`** 再回落到画布占位，避免盖住主题内已保存的示例文案。
+- **子项编辑 vs 工坊保存后文案**：`AddSubReminderModal` 的表单 hydrate **`useEffect` 已去掉对 `popupThemes` 的依赖**（否则 `replacePopupTheme` 后整表重灌会把 `content` 又写回 `sourceItem.content`，子项预览永远停在旧句）。并增加 **`mainThemeSampleSigRef` / `restThemeSampleSigRef`** + effect：当前绑定主题的 **`previewContentText` 变化时 `setContent` / `setRestContent`**（需 `themeEditorContext`）。到点弹窗仍读磁盘上的子项 `content`，用户需在子项点 **「更新」** 落盘。
+- **真弹窗仍像「未套主题」**：`reminderWindow` — ① **`transform` 的 `scale` 钳制到 0.1–5**（异常小数避免全屏字极小）；图片层同步钳制。② **去掉弹窗 HTML 的 viewport meta**（减少 Electron 全屏下偶发缩放观感）。③ **`loadFile` 失败时的 fallback** 改为 **`buildReminderHtmlLegacy` 且仍传 `ensureThemeLayers(theme)`**，不再 `theme: undefined`（避免回退成无字号主题）。④ 绑定主文案 / 时间 / 休息叠层倒计时 **字号下限**（16 / 14 / 24 px）防坏 JSON。
+
 ## 1. 本轮已完成（v0.0.10u）
 
 ### 主题预览文字编辑 + Moveable（续）
@@ -49,6 +62,19 @@
 - **预览比例（v0.0.10v）**：`ThemePreviewEditor` 的 **`previewScale`** 改为 **`实测预览容器宽度 / previewViewportWidth`**（上限 1），未测量前仍用 `920/vw` 兜底；修复子项窄栏/展开编辑时文字按固定 920 参考缩放导致**过大、位置观感不对**的问题。
 - **主题编辑文字与文字框（v0.0.10w）**：`TextTransform` 增加 **`textBoxWidthPct` / `textBoxHeightPct`**；`reminderWindow` 与预览一致；Moveable **`resizable`**（四边+四角，`keepRatio: false`）与 **`scalable: { keepRatio: true }`** 并存；`PopupTheme` 增加 **`previewContentText` / `previewTimeText` / `previewCountdownText`**（工坊写回；真实弹窗仍用提醒数据）。`PopupThemeEditorPanel` 透传 **`previewLabels` + `onLiveTextCommit`**；子项展开编辑时主文案回写表单，时间/倒计时可写回 draft 的 preview*；**`getDisplayText`** 优先主题内自定义时间/倒计时再回落到 `previewLabels`。
 - 文档：`docs/POPUP_THEME_PLAN.md` 2.2、V1.5 双击项已更新。
+
+### 弹窗主题 · 图层 V1（v0.0.11+，首轮落地）
+- **数据**：`src/shared/popupThemeLayers.ts`（迁移旧栈、`sanitizeLayer`、装饰 `textEffects`）；**不**再使用 **`bindingCountdown` 图层类型**，历史 JSON 中该条在 **`sanitizeLayer` 丢弃**；`shared/settings` 等导出图层常量。
+- **主进程**：`reminderWindow` 按 **`ensureThemeLayers`** 的 z 序输出片段；装饰 **图片层** 复制到临时 HTML 目录用相对 `url()`；**休息剩余时间**依主题 **`countdown*`** 在 **全部图层之后** 叠加 **`renderRestCountdownOverlayHtml`**（与 `countdownStr` 联动）；`reminders.showReminder` 第四参 **`countdownStr`**（拆分/间隔休息）。
+- **编辑 UI**：`PopupThemeLayersBar`（显隐、折叠、排序、+ 文本/图片）；`PopupThemeEditorPanel` / `ThemeStudioEditWorkspace` 联动选中层；**`ThemePreviewEditor`** 按 layers 渲染绑定层与装饰层、**休息主题**在栈顶后追加倒计时预览层；Moveable/方向键支持装饰层；点绑定文案时 **`onSelectDecorationLayer(null)`** 与装饰互斥；**`ThemeStudioThumbnail`** 的 **`previewLabels`** 含休息 **`countdown`**。
+- **构建**：`vite.config.ts` 为 preload 的 **`build.lib`** 补 **`entry`**，满足当前 Vite 类型中 **`LibraryOptions.entry` 必填**（`npm run build` 通过）。
+
+### 文本层统一 + 预览去倒计时（v0.0.11 续）
+- **`ThemePreviewEditor`**：去掉休息主题预览里多余的 **`countdown`** 叠加层；图层 **`kind: 'text'`**（`bindsReminderBody` 走主文案 `content` ref，否则走装饰 Moveable）；装饰变换写回仍用 **`updateDecorationLayer`**。
+- **`PopupThemeLayersBar`**：收尾 **`removeThemeLayer` / `addTextLayer` / `addTimeLayer` / `MAX_TEXT_LAYERS`**；点击 **「文本层（提醒）」** 选中 **`content`**（与预览 `contentRef` 一致），自由文本层仍用 **`selectedDecorationLayerId`**。
+- **`PopupThemeEditorPanel`**：**`mergedWrappedOnUpdateTheme`**（`mergeContentThemePatchIntoBindingTextLayer`）保证改根 **`content*`** 时同步绑定文本层；**仅选时间**时只显示时间相关字体/颜色/字重等，**仅选主文案**时只显示主文案侧；自由 **文本层** 用 **`updateTextLayer`**，标题改为「文本层 · 属性」。
+- **`addTimeLayer`**：任 **`bindingTime`** 已存在即不可再加（不限定固定 id）。
+- **真弹窗 / 工坊对齐（v0.0.11 修复）**：遮罩 **`opacity` 与 `overlayEnabled` 一致**；**壁纸**优先 **`copyFileSync` 到 HTML 同目录** 用 **`url('./…')`**，失败再回退 **`getBackgroundStyle`**（减轻超大 **data:** 内嵌导致 **`loadFile` 失败 → 整页纯黑**）。**`ThemePreviewEditor`**：**`getTargetRef('countdown')`** 与 **`textLayerPairs`**；**补充文本**双击 **`contentEditable`** + **`updateDecorationLayer` 写回 `text`**。**`PopupThemeEditorPanel`**：单选 **content / time / countdown**（预览内点倒计时）时 **`onPanelFilterChange('text')`**。
 
 ### 悬浮卡片编辑主题（本轮）
 - **主题工坊列表**仍占主内容区；点缩略图或「+ 主题」改为打开 **全屏遮罩 + 固定居中卡片**（左预览右参数 6:4），列表仍在背后，关闭卡片回到列表。
@@ -149,33 +175,60 @@
 
 ## 11. 版本信息
 
-- **版本**：`v0.0.10z-22`（主题撤销重做、方向键微调、分层描边/阴影 + 弹窗/预览一致）；**补充**：设置页 `scrollbar-gutter` + 工坊/列表主内容区盒模型对齐
+- **标签 / package**：**`v0.0.11`**（git tag `v0.0.11`，`package.json` 已对齐）
+- **内容概览**：主题工坊「+ 创建壁纸」、浮动编辑顶栏 **结束壁纸（绿）/ 休息壁纸（蓝）** 切换 `target`；子项「编辑主题」**锁定用途**；休息主题预览含 **content + time + countdown（绑定层）**；**休息结束最后几秒**仍固定黑底（`buildRestEndCountdownHtml`），与主题图层硬切；`ThemeStudioFloatingEditor` 保留 **`bannerMain`** 别名避免 HMR 残留 `ReferenceError`
+- **图层 V1**：数据 + 主进程按序渲染 + 工坊/Panel 图层栏与预览 Moveable 已接（见 **§1 · 弹窗主题 · 图层 V1**）；**待办**：全链路手测、`AddSubReminderModal` 小预览是否需显式传图层相关 props、`POPUP_THEME_PLAN` 里程碑勾选与 V1.5 浮动工具栏等
+
+### 新建主题：预览双击与右侧文案输入「无反应」（修复）
+
+- **原因**：① **时间**绑定层 z 序在主文案之上，重叠区域双击落在时间层，该层对双击不进入 `contentEditable`；② 浮动工坊默认 **`selectedElements` 为空**，`PopupThemeEditorPanel` 的 **`showContentColumn`** 为 false，**「主文案内容」textarea 与主文案字体块不渲染**，易被误认为输入坏了。
+- **修复**：**`ThemePreviewEditor`** 在未选中 **时间** 时对该层 **`pointer-events: none`**，让点击穿透到主文案；**`ThemeStudioFloatingEditor`** 对每个 **`themeId` 仅一次**：若当前无选中则默认 **`setSelectedElements(id, ['content'])`**。
+- **涉及文件**：`src/renderer/src/components/ThemePreviewEditor.tsx`、`ThemeStudio.tsx`
+
+### 主题删除：不再强制每种 target 保留 1 条
+
+- **`removePopupTheme`**：去掉「同 target 仅 1 条则禁止删」；删最后一条时子项上对应 `mainPopupThemeId` / `restPopupThemeId` 置为 `undefined`（无其它同 target 可顶替时）。
+- **浮动工坊「删除」**：`canDeleteTheme` 恒为可删（`disabled` 仅当显式 `canDeleteTheme === false`）。
+- **`normalizePopupThemes`（主进程）**：`[]` 不再被替换为默认两条主题，便于空库测试；**无设置文件**的首次启动仍用 `defaultPopupThemes`。
+
+### 新建主题默认字号 + 时间层操作框贴字边
+
+- **默认字号**：新建主题与内置默认主题 `contentFontSize: 180`、`timeFontSize: 100`（`addPopupTheme`、`getDefaultPopupThemes`）；预览/弹窗无字段时的回退与 `reminderWindow` legacy 一致改为 180/100。
+- **时间层**：默认 `timeTransform` 不再带 `textBoxHeightPct`；预览里时间层 `height: auto` + `max-height`（有 `textBoxHeightPct` 时作上限）、`lineHeight: 1`，避免固定 `height: n%` 导致 Moveable 上下留白过大。真弹窗 `textBoxLayoutCss` 对 time/countdown：`height: auto; max-height: …%`。
+
+### 结束 / 休息壁纸：编辑侧文案与默认参数统一
+
+- **产品**：主题工坊内两种壁纸**同一套**编辑能力与默认排版/字号；区别仅为 `target`（子项关联结束弹窗 vs 休息弹窗）及顶栏切换。图层栏**文本**统一显示为「文本」（不再区分「文本层（提醒）」）；预览占位为「文本」，面板侧「主文案」类用语改为「文本」。
+- **默认主题**：`getDefaultPopupThemes` 中休息默认与结束默认对齐同一套 `content*`/`time*` 字号与 transform（休息仍保留 `countdownTransform`）；示例 `previewContentText` 为「文本」；新建主题 `addPopupTheme` 同样统一字号并带 `previewContentText: '文本'`。
+- **代码**：`ThemePreviewEditor` 导出 `DEFAULT_LAYER_TRANSFORMS`，`DEFAULT_TRANSFORMS.main/rest` 指向同一引用；`getTransform` 回退不再依赖 `theme.target`。
 
 ---
 
 ## 12. 新会话开头可粘贴的交接提示
 
 ```
-【WorkBreak — 新会话交接（v0.0.10z-22）】
+【WorkBreak — 新会话交接（v0.0.11 · 图层 V1 已接主链路）】
 
-请先读 AGENTS.md（重点 **4.11–4.14**，含 4.13 下「主文案栏宽 / 短层 / effectiveEditableKeys / 四角缩放」补充）与 docs/SESSION_HANDOVER.md、docs/POPUP_THEME_PLAN.md。主题预览易错点见 .cursor/rules/theme-preview-editor.mdc。
+请先读：
+- AGENTS.md：**4.11–4.16**（含 4.15 图层 V1 规格、4.16 ThemeStudio 重构注意、4.12 休息结束倒计时与主弹窗图层说明）
+- docs/POPUP_THEME_PLAN.md：**「图层对象管理 V1」** 整节 + §8 里程碑
+- docs/SESSION_HANDOVER.md §1「图层 V1」与 §11
+- .cursor/rules/theme-preview-editor.mdc（预览易错点）
+- .cursor/rules/theme-studio-floating-editor.mdc（浮动编辑 / 勿留未定义变量）
 
-当前状态（本会话相关）：
-- v0.0.10z-22：主题编辑 **撤销/重做**（`usePopupThemeEditHistory` + `replaceThemeFull`）；**方向键 1px** 微调选中层；**分层描边/阴影**（`PopupLayerTextEffects` + `popupTextEffects.ts`，弹窗 HTML 与预览一致）
-- 设置页：`html` **scrollbar-gutter: stable**；**仅主题工坊**有外层白卡，提醒列表无外包大卡片；顶栏 tab 区 **w-full/min-w-0**；**工坊视图不展示**提醒列表页脚；已删列表底「弹窗主题」卡
-- v0.0.10z-21：时间/倒计时固定高度 → overflow:hidden（弹窗+预览），去掉单行误显示滚动条
-- v0.0.10z-20：`shortLayerTextBoxLockWidth`；时间/倒计时默认 max-content 贴字，`textBoxWidthPct` 作 max-width 上限；拉框后锁定定宽；reminderWindow 与 ThemePreviewEditor 一致
-- v0.0.10z-18：四角等比缩放锚点为**所拖角的对角**；Ctrl=中心；`scaleDirectionForPinRef` + `fixedCornerFromScaleDirection`
-- v0.0.10z-17：`effectiveEditableKeys` 勿依赖内联 `onLiveTextCommit`；`hasLiveTextCommit` + `editableKeysSig` + 模块常量数组
-- v0.0.10z-16：主文案 60% 自动栏宽、`contentTextBoxUserSized`、失焦只增高；栏宽 cap 96%
-- 更早：子项内联 Panel、fork/replace、预览比例 ResizeObserver 等见 SESSION_HANDOVER §1
+当前仓库状态：
+- **图层 V1 主链路已落地**：`popupThemeLayers` 迁移、`reminderWindow` 按 layers 渲染、休息 **`countdownStr`**、工坊 **图层栏** + **ThemePreviewEditor** 按 z 序与装饰 Moveable；**`npm run build`** 已通过（preload **`lib.entry`** 已补）
 
-关键约定：
-- 子项保存主题：独占 replace，有他项引用且内容变 → fork + append + 改绑定 id
-- setPopupThemes 只接收数组；合并用 setSettingsState
-- 每完成功能必须更新 SESSION_HANDOVER.md
+**下一步（建议）**：
+1. 手测：**删除图层 → 保存 → 重启**，确认空栈与「+ 背景/遮罩」恢复；真弹窗主文案字号与工坊一致
+2. 手测：图层顺序与真弹窗 z 序、休息弹窗倒计时绑定层、大图装饰临时目录加载
+3. 核对 **子项小预览**（`AddSubReminderModal`）是否需传入图层栏相关 props（当前多为可选）
+4. 更新 **POPUP_THEME_PLAN** 里程碑勾选；可选 **V1.5** 选中态浮动工具栏
 
-建议下一步：
-1. 选中态浮动工具栏（颜色/字号快捷调节，见 POPUP_THEME_PLAN V1.5）
-2. 子项小预览-only 场景是否也要撤销栈（当前仅完整 Panel 有历史）
+图层 V1 产品结论（必须遵守）：
+1. **文本层 / 时间层**：各层可 **增删**；**时间层** 至多 **1**；**主文案绑定** 文本层与根字段 **`content*`** 双向同步（`mergeContentThemePatchIntoBindingTextLayer` / `themePatchFromBindingTextLayer`）。**休息段最后几秒** 仍为固定黑底页，**不**在主题预览里叠倒计时层。
+2. **文本层**（含绑定）合计上限 **`MAX_TEXT_LAYERS`（10）**；**图片** 最多 **5**；**遮罩、背景** 各最多 **1**
+3. **隐藏** = 不绘制；**所有层都隐藏** → 弹窗 **纯黑背景 #000**
+4. **图层顺序** = 真实弹窗 z 序；图层栏 **显示/隐藏 + 折叠 + 排序**；**不做**面板 Docking
+5. **休息段最后几秒** 固定黑底倒计时页，**不**进主题图层
 ```

@@ -33,6 +33,7 @@ export default {
           build: {
             outDir: resolve(__dirname, 'out/preload'),
             lib: {
+              entry: resolve(__dirname, 'src/preload/index.ts'),
               formats: ['cjs'],
               fileName: () => 'index.cjs', // .cjs 才不会被 package.json "type":"module" 当 ESM 解析
             },

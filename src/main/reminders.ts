@@ -99,11 +99,26 @@ function resolvePopupThemeById(themeId: string | undefined, target: 'main' | 're
   return all.find((t) => t.target === target)
 }
 
-function showReminder(title: string, body: string, theme?: PopupTheme) {
+/** 休息弹窗倒计时层用：剩余总毫秒 → m:ss */
+function formatRestCountdownLabel(remainingMs: number): string {
+  const ms = Math.max(0, remainingMs)
+  const totalSec = Math.floor(ms / 1000)
+  const m = Math.floor(totalSec / 60)
+  const s = totalSec % 60
+  return `${m}:${String(s).padStart(2, '0')}`
+}
+
+function showReminder(title: string, body: string, theme?: PopupTheme, countdownStr?: string) {
   const now = new Date()
   const timeStr = `${String(now.getHours()).padStart(2, '0')}:${String(now.getMinutes()).padStart(2, '0')}`
   reminderLog('弹窗', { title, bodyPreview: (body || '').slice(0, 40), timeStr })
-  showReminderPopup({ title, body, timeStr, ...(theme ? { theme } : {}) })
+  showReminderPopup({
+    title,
+    body,
+    timeStr,
+    ...(theme ? { theme } : {}),
+    ...(countdownStr !== undefined && countdownStr !== '' ? { countdownStr } : {}),
+  })
 }
 
 function parseTimeHHmm(hhmm: string): { h: number; m: number } {
@@ -329,7 +344,12 @@ function runFixedTimeCheck() {
             const latest = fixedRestBreakState.get(key)
             if (!latest || latest.signature !== cycleSignature || latest.firedBreakIndexes.has(i)) return
             reminderLog('固定时间·休息段弹窗', { key, phaseIndex: i })
-              showReminder(cat.name, item.restContent ?? '休息一下', resolvePopupThemeById(item.restPopupThemeId, 'rest'))
+              showReminder(
+                cat.name,
+                item.restContent ?? '休息一下',
+                resolvePopupThemeById(item.restPopupThemeId, 'rest'),
+                formatRestCountdownLabel(restEndAt - Date.now()),
+              )
             latest.firedBreakIndexes.add(i)
           }
           if (!cur.firedBreakIndexes.has(i)) {
@@ -468,7 +488,12 @@ function scheduleNextPhase(key: string) {
       // 本段工作结束，进入休息（若休息>0）
       if (st.restDurationMs > 0) {
         reminderLog('间隔·休息段弹窗', { key, phaseIndex: st.phaseIndex })
-        showReminder(st.categoryName, st.restContent || '休息一下', resolvePopupThemeById(st.restPopupThemeId, 'rest'))
+        showReminder(
+          st.categoryName,
+          st.restContent || '休息一下',
+          resolvePopupThemeById(st.restPopupThemeId, 'rest'),
+          formatRestCountdownLabel(st.restDurationMs),
+        )
         st.phase = 'rest'
         st.phaseStartTime = now
         const t = setTimeout(() => scheduleNextPhase(key), st.restDurationMs)

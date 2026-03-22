@@ -143,6 +143,17 @@ export function resolvePopupFontFamilyCss(
   return resolvePresetCss(undefined)
 }
 
+/** 装饰文本层：仅有 preset/system 字段，无 theme 分层回退 */
+export function resolveDecoFontFamilyCss(presetId?: string, systemName?: string): string {
+  const sys = systemName?.trim()
+  if (sys) {
+    const q = quoteFontFamilyForCss(sys)
+    if (q) return stackWithSystemFont(q)
+  }
+  if (presetId && PRESET_CSS.has(presetId)) return PRESET_CSS.get(presetId)!
+  return resolvePresetCss(undefined)
+}
+
 /** 面板里「预设」下拉的 value：分层优先，否则旧全局（仅当该层尚未有自己的分层字段） */
 export function popupFontPresetSelectValue(theme: PopupTheme, layer: PopupTextFontLayer): string {
   const own = layerPresetRaw(theme, layer)

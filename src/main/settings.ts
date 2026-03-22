@@ -3,7 +3,13 @@ import { readFileSync, writeFileSync, existsSync, mkdirSync } from 'node:fs'
 import { join, dirname } from 'node:path'
 import type { AppSettings, CategoryKind, ReminderCategory, SubReminder, PresetPools, PopupLayerTextEffects, PopupTheme, AppEntitlements, TextTransform } from '../shared/settings'
 import { isPopupFontFamilyPresetId, sanitizeSystemFontFamilyName } from '../shared/popupThemeFonts'
-import { getDefaultPresetPools, getStableDefaultCategories, getDefaultPopupThemes, getDefaultEntitlements } from '../shared/settings'
+import {
+  getDefaultPresetPools,
+  getStableDefaultCategories,
+  getDefaultPopupThemes,
+  getDefaultEntitlements,
+  ensureThemeLayers,
+} from '../shared/settings'
 
 export type { AppSettings, ReminderCategory, SubReminder } from '../shared/settings'
 
@@ -336,7 +342,8 @@ function normalizeTextTransform(raw: unknown): TextTransform | undefined {
 }
 
 function normalizePopupThemes(raw: unknown): PopupTheme[] {
-  if (!Array.isArray(raw) || raw.length === 0) return [...defaultPopupThemes]
+  if (!Array.isArray(raw)) return [...defaultPopupThemes]
+  if (raw.length === 0) return []
   const out: PopupTheme[] = raw
     .map((x): PopupTheme | null => {
       if (!x || typeof x !== 'object') return null
@@ -432,7 +439,7 @@ function normalizePopupThemes(raw: unknown): PopupTheme[] {
       const timeFontFamilySystem = layerSys(o.timeFontFamilySystem)
       const countdownFontFamilyPreset = layerPreset(o.countdownFontFamilyPreset)
       const countdownFontFamilySystem = layerSys(o.countdownFontFamilySystem)
-      return {
+      const base: PopupTheme = {
         id,
         name,
         ...(formatVersion !== undefined ? { formatVersion } : {}),
@@ -484,7 +491,10 @@ function normalizePopupThemes(raw: unknown): PopupTheme[] {
         ...(timeFontFamilySystem ? { timeFontFamilySystem } : {}),
         ...(countdownFontFamilyPreset ? { countdownFontFamilyPreset } : {}),
         ...(countdownFontFamilySystem ? { countdownFontFamilySystem } : {}),
+        /** 含空数组也必须落盘，否则读回 undefined 会再走 migrate 导致「删掉的层又回来了」 */
+        ...(Array.isArray(o.layers) ? { layers: o.layers as PopupTheme['layers'] } : {}),
       }
+      return ensureThemeLayers(base)
     })
     .filter((x): x is PopupTheme => x !== null)
   return out.length > 0 ? out : [...defaultPopupThemes]

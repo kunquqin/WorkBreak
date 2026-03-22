@@ -4,7 +4,10 @@ import Moveable from 'react-moveable'
 import type { PopupTheme, TextTransform } from '../types'
 import { rendererSafePreviewImageUrl } from '../utils/popupThemePreview'
 import { layerTextEffectsReactStyle } from '../../../shared/popupTextEffects'
-import { resolvePopupFontFamilyCss } from '../../../shared/popupThemeFonts'
+import { resolvePopupFontFamilyCss, resolveDecoFontFamilyCss } from '../../../shared/popupThemeFonts'
+import { ensureThemeLayers } from '../../../shared/settings'
+import type { ImageThemeLayer, TextThemeLayer } from '../../../shared/popupThemeLayers'
+import { updateDecorationLayer } from '../../../shared/popupThemeLayers'
 
 export type TextElementKey = 'content' | 'time' | 'countdown'
 
@@ -39,6 +42,11 @@ interface ThemePreviewEditorProps {
   previewWidthMode?: 'capped' | 'fill'
   /** card：白底圆角外框+内边距；none：无外框（与工具条直接贴父级，省画面） */
   outerChrome?: 'card' | 'none'
+  /** 选中的装饰层（补充文本 / 图片）；与 selectedElements 互斥，由图层栏或预览点击同步 */
+  selectedDecorationLayerId?: string | null
+  onSelectDecorationLayer?: (id: string | null) => void
+  /** 选中绑定文案/时间时清空「背景/遮罩」结构层选中（主题工坊图层栏） */
+  onSelectStructuralLayer?: (id: string | null) => void
 }
 
 /** Moveable 打组轨道平移多为 translate(xpx,ypx)，偶发 translate3d */
@@ -159,18 +167,16 @@ const DEFAULT_EDITABLE_CONTENT_ONLY: TextElementKey[] = ['content']
 /** 仅主文案可预览内双击编辑；时间层仅 Moveable 变换（与真实弹窗一致） */
 const DEFAULT_EDITABLE_ALL_LAYERS: TextElementKey[] = ['content']
 
-export const DEFAULT_TRANSFORMS: Record<string, Record<TextElementKey, TextTransform>> = {
-  main: {
-    content: { x: 50, y: 42, rotation: 0, scale: 1 },
-    time: { x: 50, y: 55, rotation: 0, scale: 1, textBoxHeightPct: 8 },
-    countdown: { x: 50, y: 70, rotation: 0, scale: 1 },
-  },
-  /** 休息提醒全屏弹窗与主弹窗同为「主文案 + 时间」两层；结束前几秒倒计时为固定样式，不在此预览 */
-  rest: {
-    content: { x: 50, y: 42, rotation: 0, scale: 1 },
-    time: { x: 50, y: 55, rotation: 0, scale: 1, textBoxHeightPct: 8 },
-    countdown: { x: 50, y: 70, rotation: 0, scale: 1 },
-  },
+/** 结束 / 休息壁纸共用同一套默认层变换，仅 `target` 决定子项关联用途 */
+export const DEFAULT_LAYER_TRANSFORMS: Record<TextElementKey, TextTransform> = {
+  content: { x: 50, y: 42, rotation: 0, scale: 1 },
+  /** 时间单行：不设 textBoxHeightPct，高度随字行高，避免预览 Moveable 上下留白过大 */
+  time: { x: 50, y: 55, rotation: 0, scale: 1 },
+  countdown: { x: 50, y: 70, rotation: 0, scale: 1 },
+}
+export const DEFAULT_TRANSFORMS: Record<'main' | 'rest', Record<TextElementKey, TextTransform>> = {
+  main: DEFAULT_LAYER_TRANSFORMS,
+  rest: DEFAULT_LAYER_TRANSFORMS,
 }
 
 const ALIGN_ICONS = {
@@ -226,11 +232,14 @@ export function ThemePreviewEditor({
   previewWidthMode = 'capped',
   outerChrome = 'card',
   fixedPreviewPixelSize,
+  selectedDecorationLayerId = null,
+  onSelectDecorationLayer,
+  onSelectStructuralLayer,
 }: ThemePreviewEditorProps) {
   const containerRef = useRef<HTMLDivElement>(null)
+  const decoRefs = useRef<Record<string, HTMLDivElement | null>>({})
   const contentRef = useRef<HTMLDivElement>(null)
   const timeRef = useRef<HTMLDivElement>(null)
-  const countdownRef = useRef<HTMLDivElement>(null)
   const moveableRef = useRef<Moveable | null>(null)
 
   /**
@@ -260,6 +269,10 @@ export function ThemePreviewEditor({
   const [editingTextKey, setEditingTextKey] = useState<TextElementKey | null>(null)
   const editingTextKeyRef = useRef<TextElementKey | null>(null)
   editingTextKeyRef.current = editingTextKey
+
+  const [editingDecoLayerId, setEditingDecoLayerId] = useState<string | null>(null)
+  const editingDecoLayerIdRef = useRef<string | null>(null)
+  editingDecoLayerIdRef.current = editingDecoLayerId
   /** 避免：点空白 blur 后同一次点击又执行 onSelectElements([]) 清掉选中 */
   const justExitedTextEditRef = useRef(false)
   /** 捕获阶段：指针落在 Moveable 控件上（先于 contentEditable 的 blur） */
@@ -285,6 +298,7 @@ export function ThemePreviewEditor({
   transformSyncLockedRef.current = transformSyncLocked
   /** 与 theme 对齐的 transform 字符串，必须出现在 JSX style 中，防止 React 提交时抹掉 transform */
   const [styleTransformByKey, setStyleTransformByKey] = useState<Partial<Record<TextElementKey, string>>>({})
+  const [decoStyleTransformById, setDecoStyleTransformById] = useState<Record<string, string>>({})
 
   /**
    * 与真实全屏弹窗的横向比例：须用「当前预览盒实际宽度 / 逻辑视口宽」，不能用固定 920。
@@ -299,15 +313,14 @@ export function ThemePreviewEditor({
   const toPreviewPx = (px: number) => Math.max(1, px * previewScale)
 
   /** 预览用逻辑字号：与松手缩放烘焙一致用整数 px，避免先小数再 floor/归一化导致轻微跳变 */
-  const isMain = theme.target === 'main'
-  const contentFontPx = Math.max(1, Math.min(8000, Math.round(theme.contentFontSize ?? 56)))
-  const timeFontPx = Math.max(1, Math.min(8000, Math.round(theme.timeFontSize ?? 30)))
+  const contentFontPx = Math.max(1, Math.min(8000, Math.round(theme.contentFontSize ?? 180)))
+  const timeFontPx = Math.max(1, Math.min(8000, Math.round(theme.timeFontSize ?? 100)))
   const countdownFontPx = Math.max(1, Math.min(8000, Math.round(theme.countdownFontSize ?? 180)))
 
   const getTransform = useCallback((key: TextElementKey): TextTransform => {
     const t = key === 'content' ? theme.contentTransform : key === 'time' ? theme.timeTransform : theme.countdownTransform
-    return t ?? DEFAULT_TRANSFORMS[theme.target]?.[key] ?? { x: 50, y: 50, rotation: 0, scale: 1 }
-  }, [theme.contentTransform, theme.timeTransform, theme.countdownTransform, theme.target])
+    return t ?? DEFAULT_LAYER_TRANSFORMS[key] ?? { x: 50, y: 50, rotation: 0, scale: 1 }
+  }, [theme.contentTransform, theme.timeTransform, theme.countdownTransform])
 
   const getTransformRef = useRef(getTransform)
   getTransformRef.current = getTransform
@@ -321,7 +334,6 @@ export function ThemePreviewEditor({
   const getTargetRef = useCallback((key: TextElementKey | null) => {
     if (key === 'content') return contentRef
     if (key === 'time') return timeRef
-    if (key === 'countdown') return countdownRef
     return null
   }, [])
 
@@ -329,11 +341,29 @@ export function ThemePreviewEditor({
     const refs: HTMLDivElement[] = []
     if (contentRef.current && !selectedElements.includes('content')) refs.push(contentRef.current)
     if (timeRef.current && !selectedElements.includes('time')) refs.push(timeRef.current)
+    const ly = ensureThemeLayers(theme).layers ?? []
+    for (const L of ly) {
+      if (!L.visible) continue
+      if (L.kind === 'image') {
+        const el = decoRefs.current[L.id]
+        if (el && L.id !== selectedDecorationLayerId) refs.push(el)
+        continue
+      }
+      if (L.kind === 'text') {
+        const tl = L as TextThemeLayer
+        if (tl.bindsReminderBody) continue
+        const el = decoRefs.current[L.id]
+        if (el && L.id !== selectedDecorationLayerId) refs.push(el)
+      }
+    }
     return refs
-  }, [selectedElements])
+  }, [selectedElements, selectedDecorationLayerId, theme])
 
   const handleElementClick = useCallback((key: TextElementKey, e: React.MouseEvent) => {
     e.stopPropagation()
+    setEditingDecoLayerId(null)
+    onSelectStructuralLayer?.(null)
+    onSelectDecorationLayer?.(null)
     if (e.shiftKey) {
       if (selectedElements.includes(key)) onSelectElements(selectedElements.filter(k => k !== key))
       else onSelectElements([...selectedElements, key])
@@ -341,27 +371,11 @@ export function ThemePreviewEditor({
       if (selectedElements.length === 1 && selectedElements[0] === key) return
       onSelectElements([key])
     }
-  }, [onSelectElements, selectedElements])
-
-  /** 旧版休息主题曾可选中「倒计时」层；真实弹窗已改为固定黑底倒计时，预览仅两层，需清掉无效选中 */
-  useLayoutEffect(() => {
-    if (theme.target !== 'rest') return
-    if (!selectedElements.includes('countdown')) return
-    onSelectElements(selectedElements.filter((k) => k !== 'countdown'))
-  }, [theme.target, theme.id, selectedElements, onSelectElements])
+  }, [onSelectElements, selectedElements, onSelectDecorationLayer, onSelectStructuralLayer])
 
   const bgImageKey = ((theme.imageSourceType === 'folder' ? theme.imageFolderFiles?.[0] : theme.imagePath) ?? '').trim()
   const bgImageUrl = rendererSafePreviewImageUrl(bgImageKey, previewImageUrlMap)
   const hasBgImage = theme.backgroundType === 'image' && (theme.imagePath || (theme.imageFolderFiles && theme.imageFolderFiles.length > 0))
-
-  const textElements: { key: TextElementKey; ref: React.RefObject<HTMLDivElement>; label: string }[] = [
-    {
-      key: 'content',
-      ref: contentRef as React.RefObject<HTMLDivElement>,
-      label: isMain ? '提醒内容' : '休息提醒内容',
-    },
-    { key: 'time', ref: timeRef as React.RefObject<HTMLDivElement>, label: '12:00' },
-  ]
 
   const getDisplayText = useCallback(
     (key: TextElementKey, fallback: string) => {
@@ -383,13 +397,12 @@ export function ThemePreviewEditor({
     [previewLabels, theme.previewContentText, theme.previewTimeText, theme.previewCountdownText],
   )
 
-  const textLayerPairs = useMemo(
-    (): { key: TextElementKey; ref: React.RefObject<HTMLDivElement | null> }[] => [
+  const textLayerPairs = useMemo((): { key: TextElementKey; ref: React.RefObject<HTMLDivElement | null> }[] => {
+    return [
       { key: 'content', ref: contentRef },
       { key: 'time', ref: timeRef },
-    ],
-    [],
-  )
+    ]
+  }, [])
 
   const multiSelected = selectedElements.length >= 2
 
@@ -405,6 +418,7 @@ export function ThemePreviewEditor({
 
   /** 预览内拖拽时：每指针事件都写 DOM，但 React state + updateRect 合并到每帧一次，减轻卡顿与布局抖动 */
   const pendingMoveablePatchRef = useRef<Partial<Record<TextElementKey, string>>>({})
+  const pendingDecoMoveablePatchRef = useRef<Record<string, string>>({})
   const moveableVisualRafRef = useRef<number | null>(null)
 
   const resetMoveableVisualPipeline = useCallback(() => {
@@ -413,6 +427,7 @@ export function ThemePreviewEditor({
       moveableVisualRafRef.current = null
     }
     pendingMoveablePatchRef.current = {}
+    pendingDecoMoveablePatchRef.current = {}
   }, [])
 
   const flushMoveableVisual = useCallback((mode: 'sync' | 'raf') => {
@@ -423,6 +438,12 @@ export function ThemePreviewEditor({
         const patch = { ...pending }
         pendingMoveablePatchRef.current = {}
         mergeStyleTransforms(patch)
+      }
+      const decoP = pendingDecoMoveablePatchRef.current
+      if (Object.keys(decoP).length > 0) {
+        const dp = { ...decoP }
+        pendingDecoMoveablePatchRef.current = {}
+        setDecoStyleTransformById((prev) => ({ ...prev, ...dp }))
       }
       moveableRef.current?.updateRect()
     }
@@ -453,14 +474,10 @@ export function ThemePreviewEditor({
     const cW = container.offsetWidth
     const cH = container.offsetHeight
     if (cW < 2 || cH < 2) return
-    for (const { ref } of textLayerPairs) {
-      const el = ref.current
-      if (!el) return
-      if (el.offsetWidth < 1 || el.offsetHeight < 1) return
-    }
     const next: Partial<Record<TextElementKey, string>> = {}
     for (const { ref, key } of textLayerPairs) {
-      const el = ref.current!
+      const el = ref.current
+      if (!el || el.offsetWidth < 1 || el.offsetHeight < 1) continue
       const t = getTransform(key)
       const tx = cW * (t.x / 100) - el.offsetWidth / 2
       const ty = cH * (t.y / 100) - el.offsetHeight / 2
@@ -469,28 +486,77 @@ export function ThemePreviewEditor({
     setStyleTransformByKey(prev => {
       let same = true
       for (const k of Object.keys(next) as TextElementKey[]) {
-        if (prev[k] !== next[k]) { same = false; break }
+        if (prev[k] !== next[k]) {
+          same = false
+          break
+        }
       }
       if (same && Object.keys(prev).length === Object.keys(next).length) return prev
       return { ...prev, ...next }
     })
   }, [textLayerPairs, getTransform])
 
+  const recomputeDecoStyleTransformsFromTheme = useCallback(() => {
+    if (transformSyncLockedRef.current) return
+    const container = containerRef.current
+    if (!container) return
+    const cW = container.offsetWidth
+    const cH = container.offsetHeight
+    if (cW < 2 || cH < 2) return
+    const layers = ensureThemeLayers(theme).layers ?? []
+    const next: Record<string, string> = {}
+    for (const L of layers) {
+      if (!L.visible) continue
+      if (L.kind === 'text') {
+        const tl = L as TextThemeLayer
+        if (tl.bindsReminderBody) continue
+      } else if (L.kind !== 'image') {
+        continue
+      }
+      const el = decoRefs.current[L.id]
+      if (!el || el.offsetWidth < 1 || el.offsetHeight < 1) continue
+      const t =
+        L.kind === 'text'
+          ? (L as TextThemeLayer).transform
+          : (L as ImageThemeLayer).transform
+      const tt = t ?? { x: 50, y: 50, rotation: 0, scale: 1 }
+      const tx = cW * (tt.x / 100) - el.offsetWidth / 2
+      const ty = cH * (tt.y / 100) - el.offsetHeight / 2
+      next[L.id] = buildTransform(tx, ty, tt.rotation ?? 0, tt.scale ?? 1)
+    }
+    setDecoStyleTransformById((prev) => {
+      const keys = new Set([...Object.keys(prev), ...Object.keys(next)])
+      let same = true
+      for (const id of keys) {
+        if ((prev[id] ?? '') !== (next[id] ?? '')) {
+          same = false
+          break
+        }
+      }
+      if (same) return prev
+      return { ...prev, ...next }
+    })
+  }, [theme])
+
   // 从 theme 同步 transform（layout 后立刻算 + 延后两帧再算，覆盖首帧尺寸未稳定）
   useLayoutEffect(() => {
     if (transformSyncLocked) return
     let cancelled = false
     recomputeStyleTransformsFromTheme()
+    recomputeDecoStyleTransformsFromTheme()
     const id0 = requestAnimationFrame(() => {
       requestAnimationFrame(() => {
-        if (!cancelled) recomputeStyleTransformsFromTheme()
+        if (!cancelled) {
+          recomputeStyleTransformsFromTheme()
+          recomputeDecoStyleTransformsFromTheme()
+        }
       })
     })
     return () => {
       cancelled = true
       cancelAnimationFrame(id0)
     }
-  }, [transformSyncLocked, recomputeStyleTransformsFromTheme, contentFontPx, timeFontPx, countdownFontPx,
+  }, [transformSyncLocked, recomputeStyleTransformsFromTheme, recomputeDecoStyleTransformsFromTheme, contentFontPx, timeFontPx, countdownFontPx,
     theme.contentFontWeight, theme.timeFontWeight, theme.countdownFontWeight, theme.textAlign,
     theme.contentTextAlign, theme.timeTextAlign, theme.countdownTextAlign,
     theme.contentLetterSpacing, theme.timeLetterSpacing, theme.countdownLetterSpacing,
@@ -506,7 +572,7 @@ export function ThemePreviewEditor({
     theme.timeFontFamilySystem,
     theme.countdownFontFamilyPreset,
     theme.countdownFontFamilySystem,
-    theme.contentTextEffects, theme.timeTextEffects, theme.countdownTextEffects])
+    theme.contentTextEffects, theme.timeTextEffects, theme.countdownTextEffects, theme.layers])
 
   /** 首帧/比例切换后同步测量预览盒宽度（供 previewScale） */
   useLayoutEffect(() => {
@@ -514,7 +580,7 @@ export function ThemePreviewEditor({
     if (!c) return
     const w = Math.round(c.getBoundingClientRect().width)
     if (w > 1) setPreviewContainerWidth((prev) => (prev === w ? prev : w))
-  }, [popupPreviewAspect, isMain, theme.id, previewViewportWidth, fixedPreviewPixelSize?.width, fixedPreviewPixelSize?.height])
+  }, [popupPreviewAspect, theme.target, theme.id, previewViewportWidth, fixedPreviewPixelSize?.width, fixedPreviewPixelSize?.height])
 
   /**
    * 仅观察预览容器：观察各文字层会在 snap→换行→尺寸抖动→recompute 间形成高频循环，表现为小窗预览「过一会儿闪一下」。
@@ -530,6 +596,7 @@ export function ThemePreviewEditor({
       raf = requestAnimationFrame(() => {
         raf = null
         recomputeStyleTransformsFromTheme()
+        recomputeDecoStyleTransformsFromTheme()
       })
     }
     const scheduleRecompute = () => {
@@ -555,7 +622,7 @@ export function ThemePreviewEditor({
       if (debounce != null) clearTimeout(debounce)
       if (raf != null) cancelAnimationFrame(raf)
     }
-  }, [recomputeStyleTransformsFromTheme, isMain])
+  }, [recomputeStyleTransformsFromTheme, recomputeDecoStyleTransformsFromTheme, theme.target])
 
   useEffect(() => {
     const fonts = document.fonts
@@ -563,17 +630,20 @@ export function ThemePreviewEditor({
     let cancelled = false
     fonts.ready.then(() => {
       if (cancelled) return
-      requestAnimationFrame(() => recomputeStyleTransformsFromTheme())
+      requestAnimationFrame(() => {
+        recomputeStyleTransformsFromTheme()
+        recomputeDecoStyleTransformsFromTheme()
+      })
     })
     return () => { cancelled = true }
-  }, [recomputeStyleTransformsFromTheme])
+  }, [recomputeStyleTransformsFromTheme, recomputeDecoStyleTransformsFromTheme])
 
   /** 下方参数区改字号/字重/对齐等导致目标尺寸变化时，同步 Moveable 外框（拖拽中由 applyMoveableFrame 内 updateRect） */
   useLayoutEffect(() => {
     if (transformSyncLocked) return
-    if (selectedElements.length === 0) return
+    if (selectedElements.length === 0 && !selectedDecorationLayerId) return
     moveableRef.current?.updateRect()
-  }, [styleTransformByKey, contentFontPx, timeFontPx, countdownFontPx, theme.textAlign,
+  }, [styleTransformByKey, decoStyleTransformById, contentFontPx, timeFontPx, countdownFontPx, theme.textAlign,
     theme.contentTextAlign, theme.timeTextAlign, theme.countdownTextAlign,
     theme.contentLetterSpacing, theme.timeLetterSpacing, theme.countdownLetterSpacing,
     theme.contentLineHeight, theme.timeLineHeight, theme.countdownLineHeight,
@@ -587,7 +657,7 @@ export function ThemePreviewEditor({
     theme.countdownFontFamilyPreset,
     theme.countdownFontFamilySystem,
     theme.contentTextEffects, theme.timeTextEffects, theme.countdownTextEffects,
-    selectedElements, transformSyncLocked, previewViewportWidth, popupPreviewAspect, editingTextKey])
+    selectedElements, selectedDecorationLayerId, transformSyncLocked, previewViewportWidth, popupPreviewAspect, editingTextKey])
 
   /**
    * 与 useLayoutEffect 中正算 `tx = cW*(x/100)-w/2` 严格互逆；松手时勿用 getBoundingClientRect 中心（旋转后 AABB 中心 ≠ 布局中心），
@@ -605,8 +675,48 @@ export function ThemePreviewEditor({
     return { x, y }
   }, [])
 
+  const finalizeDecorationTransform = useCallback(
+    (el: HTMLElement) => {
+      const id = el.dataset.decoLayerId
+      if (!id || !containerRef.current) return
+      const css = el.style.transform || decoStyleTransformById[id] || ''
+      const { translateX, translateY, rotation, scale } = parseTransformValues(css)
+      const pos = translateToThemePercent(el, translateX, translateY)
+      const list = ensureThemeLayers(theme).layers ?? []
+      const L = list.find((x) => x.id === id)
+      if (!L) return
+      let cur: TextTransform | undefined
+      if (L.kind === 'image') {
+        cur = (L as ImageThemeLayer).transform
+      } else if (L.kind === 'text') {
+        const tl = L as TextThemeLayer
+        if (tl.bindsReminderBody) return
+        cur = tl.transform
+      } else {
+        return
+      }
+      const patchT: TextTransform = {
+        ...(cur ?? { x: 50, y: 50, rotation: 0, scale: 1 }),
+        x: pos.x,
+        y: pos.y,
+        rotation: +rotation.toFixed(2),
+        scale: +scale.toFixed(4),
+      }
+      const patch = updateDecorationLayer(theme, id, { transform: patchT } as Partial<TextThemeLayer>)
+      if (patch) onUpdateTheme(theme.id, patch)
+      const tf = buildTransform(translateX, translateY, rotation, scale)
+      el.style.transform = tf
+      setDecoStyleTransformById((p) => ({ ...p, [id]: tf }))
+    },
+    [decoStyleTransformById, onUpdateTheme, theme, translateToThemePercent],
+  )
+
   const finalizeElement = useCallback((el: HTMLElement | SVGElement) => {
     if (!(el instanceof HTMLElement)) return
+    if (el.dataset.decoLayerId) {
+      finalizeDecorationTransform(el)
+      return
+    }
     const k = (el.dataset.elementKey as TextElementKey) || null
     if (!k || !containerRef.current) return
     const css = el.style.transform || styleTransformByKey[k] || ''
@@ -621,15 +731,51 @@ export function ThemePreviewEditor({
     const tf = buildTransform(translateX, translateY, rotation, scale)
     el.style.transform = tf
     mergeStyleTransforms({ [k]: tf })
-  }, [styleTransformByKey, translateToThemePercent, updateTransform, mergeStyleTransforms])
+  }, [styleTransformByKey, translateToThemePercent, updateTransform, mergeStyleTransforms, finalizeDecorationTransform])
 
   /** 方向键：预览逻辑像素 ±1，多选则各层同时平移；与 finalize 相同 tx/ty → theme x/y 语义 */
   const nudgeSelectedByPreviewPixels = useCallback(
     (dx: number, dy: number) => {
       if (dx === 0 && dy === 0) return
-      if (selectedElements.length === 0) return
       const cont = containerRef.current
       if (!cont || cont.offsetWidth < 2) return
+      if (selectedDecorationLayerId) {
+        const el = decoRefs.current[selectedDecorationLayerId]
+        if (!el) return
+        const css = el.style.transform || decoStyleTransformById[selectedDecorationLayerId] || ''
+        const { translateX, translateY, rotation, scale } = parseTransformValues(css)
+        const nx = translateX + dx
+        const ny = translateY + dy
+        const pos = translateToThemePercent(el, nx, ny)
+        const list = ensureThemeLayers(theme).layers ?? []
+        const L = list.find((x) => x.id === selectedDecorationLayerId)
+        if (!L) return
+        let cur: TextTransform | undefined
+        if (L.kind === 'image') {
+          cur = (L as ImageThemeLayer).transform
+        } else if (L.kind === 'text') {
+          const tl = L as TextThemeLayer
+          if (tl.bindsReminderBody) return
+          cur = tl.transform
+        } else {
+          return
+        }
+        const patchT: TextTransform = {
+          ...(cur ?? { x: 50, y: 50, rotation: 0, scale: 1 }),
+          x: pos.x,
+          y: pos.y,
+          rotation,
+          scale,
+        }
+        const p = updateDecorationLayer(theme, selectedDecorationLayerId, { transform: patchT } as Partial<TextThemeLayer>)
+        if (p) onUpdateTheme(theme.id, p)
+        const tf = buildTransform(nx, ny, rotation, scale)
+        el.style.transform = tf
+        setDecoStyleTransformById((prev) => ({ ...prev, [selectedDecorationLayerId]: tf }))
+        requestAnimationFrame(() => moveableRef.current?.updateRect())
+        return
+      }
+      if (selectedElements.length === 0) return
       const patch: Partial<PopupTheme> = {}
       const domPatch: Partial<Record<TextElementKey, string>> = {}
       for (const key of selectedElements) {
@@ -654,13 +800,15 @@ export function ThemePreviewEditor({
     },
     [
       selectedElements,
+      selectedDecorationLayerId,
+      decoStyleTransformById,
       getTargetRef,
       styleTransformByKey,
       translateToThemePercent,
       getTransform,
       mergeStyleTransforms,
       onUpdateTheme,
-      theme.id,
+      theme,
     ],
   )
 
@@ -668,13 +816,14 @@ export function ThemePreviewEditor({
     if (readOnly) return
     const onKey = (e: KeyboardEvent) => {
       if (editingTextKeyRef.current) return
+      if (editingDecoLayerIdRef.current) return
       if (!['ArrowLeft', 'ArrowRight', 'ArrowUp', 'ArrowDown'].includes(e.key)) return
       const t = e.target as HTMLElement | null
       if (!t?.closest) return
       if (t.closest('input, textarea, select, [contenteditable="true"]')) return
       const scope = keyboardScopeRef?.current ?? containerRef.current
       if (!scope?.contains(t)) return
-      if (selectedElements.length === 0) return
+      if (selectedElements.length === 0 && !selectedDecorationLayerId) return
       e.preventDefault()
       const step = 1
       let dx = 0
@@ -687,7 +836,7 @@ export function ThemePreviewEditor({
     }
     document.addEventListener('keydown', onKey, true)
     return () => document.removeEventListener('keydown', onKey, true)
-  }, [readOnly, selectedElements, keyboardScopeRef, nudgeSelectedByPreviewPixels])
+  }, [readOnly, selectedElements, selectedDecorationLayerId, keyboardScopeRef, nudgeSelectedByPreviewPixels])
 
   /** 拖动四边/四角调整文字区域后：把当前像素宽高写入 textBox*Pct，与真实弹窗 CSS 一致 */
   const finalizeResize = useCallback(
@@ -712,7 +861,7 @@ export function ThemePreviewEditor({
         textBoxHeightPct: Math.max(3, Math.min(100, hPct)),
         ...(k === 'content'
           ? { contentTextBoxUserSized: true as const }
-          : k === 'time' || k === 'countdown'
+          : k === 'time'
             ? { shortLayerTextBoxLockWidth: true as const }
             : {}),
       })
@@ -864,7 +1013,7 @@ export function ThemePreviewEditor({
    */
   const snapShortLayerTightContent = useCallback(
     (k: TextElementKey, el: HTMLElement) => {
-      if (k !== 'time' && k !== 'countdown') return
+      if (k !== 'time') return
       const container = containerRef.current
       if (!container) return
       const cw = Math.max(1, container.offsetWidth)
@@ -890,7 +1039,7 @@ export function ThemePreviewEditor({
       el.style.height = 'auto'
       const wRead = Math.max(1, el.offsetWidth, el.scrollWidth)
 
-      const fontPx = k === 'time' ? timeFontPx : countdownFontPx
+      const fontPx = timeFontPx
       const previewFont = toPreviewPx(fontPx)
       const raw = (el.textContent ?? '').replace(/\u00a0/g, ' ')
       const longestLine = raw.split(/\n/).reduce((m, line) => Math.max(m, line.length), 0) || 1
@@ -929,7 +1078,7 @@ export function ThemePreviewEditor({
       })
       requestAnimationFrame(() => moveableRef.current?.updateRect())
     },
-    [toPreviewPx, updateTransform, timeFontPx, countdownFontPx],
+    [toPreviewPx, updateTransform, timeFontPx],
   )
 
   const syncContentPreviewTextBoxRef = useRef(syncContentPreviewTextBox)
@@ -970,6 +1119,10 @@ export function ThemePreviewEditor({
   const finalizeScaleBakesFontSize = useCallback(
     (el: HTMLElement | SVGElement) => {
       if (!(el instanceof HTMLElement)) return
+      if (el.dataset.decoLayerId) {
+        finalizeDecorationTransform(el)
+        return
+      }
       const k = (el.dataset.elementKey as TextElementKey) || null
       if (!k || !containerRef.current) return
       const snap = snapshotsRef.current.get(k)
@@ -997,8 +1150,8 @@ export function ThemePreviewEditor({
       const yPct = Math.max(0, Math.min(100, (anchorCy / cHo) * 100))
       const current = getTransform(k)
       /** 与预览 `*FontPx` 一致：按当前**已渲染的整数字号**乘缩放比再四舍五入，不写小数，避免与 floor/持久化归整打架 */
-      const baseContentPx = Math.max(1, Math.min(8000, Math.round(theme.contentFontSize ?? 56)))
-      const baseTimePx = Math.max(1, Math.min(8000, Math.round(theme.timeFontSize ?? 30)))
+      const baseContentPx = Math.max(1, Math.min(8000, Math.round(theme.contentFontSize ?? 180)))
+      const baseTimePx = Math.max(1, Math.min(8000, Math.round(theme.timeFontSize ?? 100)))
       const baseCountdownPx = Math.max(1, Math.min(8000, Math.round(theme.countdownFontSize ?? 180)))
       const fontPatch: Partial<PopupTheme> = {}
       if (k === 'content') {
@@ -1063,6 +1216,7 @@ export function ThemePreviewEditor({
       mergeStyleTransforms,
       styleTransformByKey,
       finalizeElement,
+      finalizeDecorationTransform,
       getTargetRef,
       snapShortLayerTightContent,
     ],
@@ -1087,9 +1241,15 @@ export function ThemePreviewEditor({
         node?.blur()
         return
       }
+      const decoId = editingDecoLayerIdRef.current
+      if (decoId) {
+        decoRefs.current[decoId]?.blur()
+        return
+      }
       onSelectElements([])
+      onSelectDecorationLayer?.(null)
     }
-  }, [readOnly, onSelectElements, getTargetRef])
+  }, [readOnly, onSelectElements, getTargetRef, onSelectDecorationLayer])
 
   const handleContainerMouseDown = useCallback((e: React.MouseEvent) => {
     if (readOnly) return
@@ -1100,6 +1260,11 @@ export function ThemePreviewEditor({
       const node = getTargetRef(ek)?.current
       justExitedTextEditRef.current = true
       node?.blur()
+      return
+    }
+    const decoId = editingDecoLayerIdRef.current
+    if (decoId) {
+      decoRefs.current[decoId]?.blur()
       return
     }
     e.preventDefault()
@@ -1124,18 +1289,19 @@ export function ThemePreviewEditor({
         const sR = Math.max(startX, endX), sB = Math.max(startY, endY)
         const cW = container.offsetWidth, cH = container.offsetHeight
         const hits: TextElementKey[] = []
-        for (const { key } of textElements) {
+        for (const { key } of textLayerPairs) {
           const t = getTransform(key)
           const cx = (t.x / 100) * cW, cy = (t.y / 100) * cH
           if (cx >= sL && cx <= sR && cy >= sT && cy <= sB) hits.push(key)
         }
         onSelectElements(hits)
+        onSelectDecorationLayer?.(null)
       }
       setMarqueeRect(null)
     }
     document.addEventListener('mousemove', onMove)
     document.addEventListener('mouseup', onUp)
-  }, [readOnly, textElements, getTransform, onSelectElements, getTargetRef])
+  }, [readOnly, textLayerPairs, getTransform, onSelectElements, getTargetRef, onSelectDecorationLayer])
 
   /** 多选对齐：按各层变换后的轴对齐包围盒（AABB）对齐，与 Figma / 设计工具一致；不用中心点百分比直接比较 */
   const handleAlign = useCallback((mode: 'left' | 'centerH' | 'right' | 'top' | 'centerV' | 'bottom') => {
@@ -1232,10 +1398,15 @@ export function ThemePreviewEditor({
 
   /** 编辑文字时仍保留 Moveable，便于同时拖动 / 旋转 / 缩放 / 调文字框（把手在文字块外侧） */
   const moveableTargets = useMemo(() => {
+    if (selectedDecorationLayerId) {
+      if (editingDecoLayerId && selectedDecorationLayerId === editingDecoLayerId) return []
+      const el = decoRefs.current[selectedDecorationLayerId]
+      return el ? [el] : []
+    }
     return selectedElements
       .map((k) => getTargetRef(k)?.current)
       .filter((e): e is HTMLDivElement => e != null)
-  }, [selectedElements, getTargetRef])
+  }, [selectedElements, selectedDecorationLayerId, getTargetRef, decoStyleTransformById, theme.layers, editingDecoLayerId])
 
   const moveableTarget = useMemo(
     () => moveableTargets.length === 1 ? moveableTargets[0] : moveableTargets,
@@ -1244,13 +1415,16 @@ export function ThemePreviewEditor({
 
   const resizableEnabled = moveableTargets.length === 1
   const moveableKey = useMemo(() => {
+    if (selectedDecorationLayerId) {
+      return `deco:${selectedDecorationLayerId}|${editingTextKey ?? ''}|${editingDecoLayerId ?? ''}|tf`
+    }
     const rb =
       resizableEnabled &&
       editingTextKey != null &&
       selectedElements.length === 1 &&
       selectedElements[0] === editingTextKey
     return `${selectedElements.slice().sort().join(',')}|${editingTextKey ?? ''}|${rb ? 'box' : 'tf'}`
-  }, [selectedElements, editingTextKey, resizableEnabled])
+  }, [selectedDecorationLayerId, selectedElements, editingTextKey, resizableEnabled, editingDecoLayerId])
   /** 仅在「文字编辑态」显示四边/四角拉框，写入 textBoxWidthPct/HeightPct；预览态只用等比缩放（scalable）变换整块 */
   const resizableForTextBounds =
     resizableEnabled &&
@@ -1273,6 +1447,8 @@ export function ThemePreviewEditor({
       ev.target.style.transform = ev.transform
       const k = keyOfEl(ev.target)
       if (k) pendingMoveablePatchRef.current[k] = ev.transform
+      const decoId = ev.target.dataset.decoLayerId
+      if (decoId) pendingDecoMoveablePatchRef.current[decoId] = ev.transform
     }
     flushMoveableVisual('raf')
   }, [flushMoveableVisual])
@@ -1309,9 +1485,7 @@ export function ThemePreviewEditor({
     if (!el) return
     if (editSessionRef.current !== editingTextKey) {
       editSessionRef.current = editingTextKey
-      const defaults: Record<TextElementKey, string> = isMain
-        ? { content: '提醒内容', time: '12:00', countdown: '5' }
-        : { content: '休息提醒内容', time: '12:00', countdown: '5' }
+      const defaults: Record<TextElementKey, string> = { content: '文本', time: '12:00', countdown: '5' }
       el.textContent = getDisplayText(editingTextKey, defaults[editingTextKey] ?? '')
     }
     requestAnimationFrame(() => {
@@ -1324,7 +1498,41 @@ export function ThemePreviewEditor({
       sel?.removeAllRanges()
       sel?.addRange(range)
     })
-  }, [editingTextKey, getTargetRef, isMain, getDisplayText])
+  }, [editingTextKey, getTargetRef, getDisplayText])
+
+  const decoEditSessionRef = useRef<string | null>(null)
+  useLayoutEffect(() => {
+    if (!editingDecoLayerId) {
+      decoEditSessionRef.current = null
+      return
+    }
+    const layers = ensureThemeLayers(theme).layers ?? []
+    const td = layers.find(
+      (x) => x.id === editingDecoLayerId && x.kind === 'text' && !(x as TextThemeLayer).bindsReminderBody,
+    ) as TextThemeLayer | undefined
+    if (!td) return
+    const el = decoRefs.current[editingDecoLayerId]
+    if (!el) return
+    if (decoEditSessionRef.current !== editingDecoLayerId) {
+      decoEditSessionRef.current = editingDecoLayerId
+      el.textContent = td.text ?? ''
+    }
+    requestAnimationFrame(() => {
+      const node = decoRefs.current[editingDecoLayerId]
+      if (!node || document.activeElement === node) return
+      node.focus()
+      const range = document.createRange()
+      range.selectNodeContents(node)
+      const sel = window.getSelection()
+      sel?.removeAllRanges()
+      sel?.addRange(range)
+    })
+  }, [editingDecoLayerId, theme])
+
+  useEffect(() => {
+    if (!editingDecoLayerId) return
+    if (selectedDecorationLayerId !== editingDecoLayerId) setEditingDecoLayerId(null)
+  }, [selectedDecorationLayerId, editingDecoLayerId])
 
   useEffect(() => {
     if (!editingTextKey) {
@@ -1354,6 +1562,8 @@ export function ThemePreviewEditor({
 
   const handleTextPointerDown = useCallback((key: TextElementKey, e: React.MouseEvent) => {
     if (e.button !== 0) return
+    const decoEd = editingDecoLayerIdRef.current
+    if (decoEd) decoRefs.current[decoEd]?.blur()
     const ek = editingTextKeyRef.current
     if (ek && ek !== key) {
       getTargetRef(ek)?.current?.blur()
@@ -1365,14 +1575,198 @@ export function ThemePreviewEditor({
     const inSel = selectedElements.includes(key)
     const multi = selectedElements.length >= 2
     if (multi && inSel) {
+      flushSync(() => {
+        onSelectStructuralLayer?.(null)
+        onSelectDecorationLayer?.(null)
+      })
       scheduleDragStart(e.nativeEvent)
       return
     }
     if (!inSel || selectedElements.length !== 1 || selectedElements[0] !== key) {
-      flushSync(() => onSelectElements([key]))
+      flushSync(() => {
+        onSelectStructuralLayer?.(null)
+        onSelectDecorationLayer?.(null)
+        onSelectElements([key])
+      })
     }
     scheduleDragStart(e.nativeEvent)
-  }, [selectedElements, onSelectElements, scheduleDragStart, editingTextKey, effectiveEditableKeys, getTargetRef])
+  }, [
+    selectedElements,
+    onSelectElements,
+    onSelectDecorationLayer,
+    onSelectStructuralLayer,
+    scheduleDragStart,
+    editingTextKey,
+    effectiveEditableKeys,
+    getTargetRef,
+    editingDecoLayerIdRef,
+  ])
+
+  const renderTextLayerForKey = (layerId: string, key: TextElementKey, zi: number): React.ReactNode => {
+    const ref = getTargetRef(key)!
+    const label = key === 'content' ? '文本' : key === 'time' ? '12:00' : '5:00'
+    const fontSize = key === 'content' ? contentFontPx : key === 'time' ? timeFontPx : countdownFontPx
+    const color = key === 'content' ? theme.contentColor : key === 'countdown' ? (theme.countdownColor || theme.timeColor) : theme.timeColor
+    const tf = styleTransformByKey[key] ?? 'translate(0px,0px) rotate(0deg) scale(1)'
+    const displayText = getDisplayText(key, label)
+    const ta = alignForKey(theme, key)
+    const ls = letterSpacingForKey(theme, key)
+    const lh = lineHeightForKey(theme, key)
+    const isEditing = editingTextKey === key
+    const canEditText = effectiveEditableKeys.includes(key)
+    const tform = getTransform(key)
+    const bw = tform.textBoxWidthPct
+    const bh = tform.textBoxHeightPct
+    const shortLineLayer = key === 'time'
+    const shortLayerLockW = shortLineLayer && tform.shortLayerTextBoxLockWidth === true
+    const shortLayerFlexJustify = ta === 'left' ? 'flex-start' : ta === 'right' ? 'flex-end' : 'center'
+    return (
+      <div
+        key={layerId}
+        ref={ref as React.RefObject<HTMLDivElement>}
+        data-element-key={key}
+        contentEditable={isEditing}
+        suppressContentEditableWarning
+        className={`absolute ${readOnly ? 'cursor-default' : isEditing ? 'cursor-text select-text ring-2 ring-indigo-400/90' : 'cursor-move'} rounded-sm`}
+        style={{
+          left: 0, top: 0,
+          transform: tf,
+          transformOrigin: 'center',
+          /** 时间层叠在文本层之上且区域常重叠；未选中时间时让点击穿透，避免双击落在时间层上无法进入文本编辑 */
+          ...(key === 'time'
+            ? { pointerEvents: selectedElements.includes('time') ? ('auto' as const) : ('none' as const) }
+            : {}),
+          willChange: selectedElements.includes(key) ? 'transform' : undefined,
+          color, fontSize: `${toPreviewPx(fontSize)}px`, fontWeight: getFontWeight(key),
+          lineHeight: lh, textAlign: ta,
+          letterSpacing: `${toPreviewPx(ls)}px`,
+          zIndex: zi,
+          padding: `${toPreviewPx(3)}px`,
+          ...(shortLineLayer
+            ? {
+                display: 'flex',
+                alignItems: 'center',
+                justifyContent: shortLayerFlexJustify,
+                /** 单行时间：行高贴字高，减少 flex 行盒上下「空行」导致操作框纵向变宽 */
+                lineHeight: 1,
+              }
+            : {}),
+          fontFamily: resolvePopupFontFamilyCss(theme, key),
+          outline: 'none',
+          ...layerTextEffectsReactStyle(theme, key),
+          ...(shortLineLayer
+            ? shortLayerLockW && bw != null && Number.isFinite(bw)
+              ? {
+                  width: `${Math.min(96, Math.max(5, bw))}%`,
+                  maxWidth: '100%',
+                  boxSizing: 'border-box' as const,
+                }
+              : {
+                  width: 'max-content',
+                  maxWidth: bw != null && Number.isFinite(bw) ? `${Math.min(96, Math.max(5, bw))}%` : '96%',
+                  boxSizing: 'border-box' as const,
+                }
+            : bw != null && Number.isFinite(bw)
+              ? { width: `${bw}%`, maxWidth: '100%', boxSizing: 'border-box' as const }
+              : { maxWidth: '96%' }),
+          ...(shortLineLayer
+            ? bh != null && Number.isFinite(bh) && isEditing
+              ? { minHeight: `${bh}%`, height: 'auto', maxHeight: '100%', overflow: 'hidden' as const }
+              : {
+                  height: 'auto' as const,
+                  maxHeight:
+                    bh != null && Number.isFinite(bh)
+                      ? `${Math.min(100, Math.max(3, bh))}%`
+                      : '100%',
+                  overflow: 'hidden' as const,
+                }
+            : bh != null && Number.isFinite(bh)
+              ? isEditing
+                ? { minHeight: `${bh}%`, height: 'auto', maxHeight: '100%', overflow: 'visible' as const }
+                : { height: `${bh}%`, maxHeight: '100%', overflow: 'visible' as const }
+              : {}),
+          whiteSpace: (shortLineLayer ? 'nowrap' : 'pre-wrap') as 'nowrap' | 'pre-wrap',
+          wordWrap: (shortLineLayer ? 'normal' : 'break-word') as 'normal' | 'break-word',
+          overflowWrap: (shortLineLayer ? 'normal' : 'break-word') as 'normal' | 'break-word',
+          ...(shortLineLayer ? {} : { wordBreak: 'keep-all' as const }),
+        }}
+        onMouseDownCapture={(e) => {
+          if (e.button !== 0) return
+          if (!canEditText) return
+          if (key === 'time') return
+          if (e.detail === 2) {
+            e.preventDefault()
+            e.stopPropagation()
+            flushSync(() => onSelectElements([key]))
+            setEditingTextKey(key)
+          }
+        }}
+        onMouseDown={(e) => handleTextPointerDown(key, e)}
+        onClick={(e) => handleElementClick(key, e)}
+        onInput={
+          isEditing
+            ? () => {
+                requestAnimationFrame(() => {
+                  const node = getTargetRef(key)?.current
+                  if (node && key === 'content') {
+                    const tr = getTransformRef.current('content')
+                    if (tr.contentTextBoxUserSized === true) snapContentTextBoxHeightOnly(node)
+                    else applyContentTextBoxAutoLayout(node)
+                  }
+                  moveableRef.current?.updateRect()
+                })
+              }
+            : undefined
+        }
+        onBlur={(ev: React.FocusEvent<HTMLDivElement>) => {
+          if (!isEditing) return
+          const keepEditing =
+            moveableChromePointerDownRef.current || isThemePreviewMoveableChrome(ev.relatedTarget)
+          if (keepEditing) {
+            requestAnimationFrame(() => {
+              if (editingTextKeyRef.current !== key) return
+              getTargetRef(key)?.current?.focus()
+            })
+            return
+          }
+          const elBlur = ref.current
+          const text = (elBlur?.textContent ?? '').replace(/\u00a0/g, ' ').replace(/\n+$/g, '')
+          if (onLiveTextCommit) onLiveTextCommit(key, text)
+          else if (key === 'content') onUpdateTheme(theme.id, { previewContentText: text })
+          else if (key === 'time') onUpdateTheme(theme.id, { previewTimeText: text })
+          else onUpdateTheme(theme.id, { previewCountdownText: text })
+          setEditingTextKey(null)
+          requestAnimationFrame(() => {
+            requestAnimationFrame(() => {
+              const node = getTargetRef(key)?.current
+              if (!node) return
+              if (key === 'content') snapContentTextBoxHeightOnly(node)
+              else {
+                const tf0 = getTransformRef.current(key)
+                if (tf0.textBoxWidthPct == null || tf0.textBoxHeightPct == null) {
+                  snapShortLayerTightContent(key, node)
+                }
+              }
+            })
+          })
+        }}
+        onKeyDown={(e) => {
+          if (!isEditing) return
+          if (e.key === 'Escape') {
+            e.preventDefault()
+            setEditingTextKey(null)
+            void ref.current?.blur()
+          }
+          if (e.key === 'Enter' && !e.shiftKey) {
+            e.preventDefault()
+            void ref.current?.blur()
+          }
+        }}
+      >
+        {!isEditing ? displayText : null}
+      </div>
+    )
+  }
 
   const outerWrapClass =
     !showToolbar ? 'w-full' : outerChrome === 'none' ? 'w-full min-w-0' : 'rounded-md border border-slate-200 bg-white p-2'
@@ -1389,7 +1783,7 @@ export function ThemePreviewEditor({
       {showToolbar && (
         <>
           <p className="mb-1.5 px-1 text-[10px] leading-relaxed text-slate-500">
-            <strong className="text-slate-600">预览态</strong>：仅<strong className="text-slate-600">四角</strong>等比缩放（拖某角则锚定<strong className="text-slate-600">对角</strong>；按住 <kbd className="rounded border border-slate-300 bg-slate-50 px-0.5 font-mono text-[9px]">Ctrl</kbd> 为<strong className="text-slate-600">中心点</strong>），松手后<strong className="text-slate-600">字号写入主题</strong>；<strong className="text-slate-600">仅主文案</strong>可双击改字，时间层仅拖拽缩放。双击主文案后出现四边拉框。选中层后可用<strong className="text-slate-600">方向键</strong>按预览逻辑像素平移 1px（焦点在面板内且非输入框时）。主文案未手调框时：栏宽约 ≤60% 画布则贴字边，超出则锁 60% 换行；手拉后可更宽（至约 96%）；失焦后在<strong className="text-slate-600">当前宽度</strong>下自动增高包全文。
+            <strong className="text-slate-600">预览态</strong>：仅<strong className="text-slate-600">四角</strong>等比缩放（拖某角则锚定<strong className="text-slate-600">对角</strong>；按住 <kbd className="rounded border border-slate-300 bg-slate-50 px-0.5 font-mono text-[9px]">Ctrl</kbd> 为<strong className="text-slate-600">中心点</strong>），松手后<strong className="text-slate-600">字号写入主题</strong>；绑定<strong className="text-slate-600">文本</strong>层与装饰<strong className="text-slate-600">文本</strong>层可双击改字，时间层仅拖拽缩放（双击不进入改字）。双击文本层后出现四边拉框。选中层后可用<strong className="text-slate-600">方向键</strong>按预览逻辑像素平移 1px（焦点在面板内且非输入框时）。文本层未手调框时：栏宽约 ≤60% 画布则贴字边，超出则锁 60% 换行；手拉后可更宽（至约 96%）；失焦后在<strong className="text-slate-600">当前宽度</strong>下自动增高包全文。
           </p>
           <div className="mb-1.5 flex items-center gap-0.5 px-1">
             {alignButtons.map(({ mode, icon, title }) => (
@@ -1415,7 +1809,7 @@ export function ThemePreviewEditor({
       )}
 
       <div ref={containerRef}
-        className={`${previewBoxClass} ${editingTextKey ? '' : 'select-none'} ${readOnly ? 'pointer-events-none' : ''}`}
+        className={`${previewBoxClass} ${editingTextKey || editingDecoLayerId ? '' : 'select-none'} ${readOnly ? 'pointer-events-none' : ''}`}
         style={
           fixedPreviewPixelSize
             ? { width: fixedPreviewPixelSize.width, height: fixedPreviewPixelSize.height }
@@ -1423,182 +1817,191 @@ export function ThemePreviewEditor({
         }
         onClick={handleContainerClick} onMouseDown={handleContainerMouseDown}>
 
-        <div className="absolute inset-0" data-layer="bg" style={{
-          background:
-            hasBgImage && bgImageUrl
-              ? `url("${bgImageUrl}") center / cover no-repeat, ${theme.backgroundColor || '#000000'}`
-              : (theme.backgroundColor || '#000000'),
-        }} />
-        <div className="absolute inset-0 pointer-events-none" data-layer="bg" style={{
-          background: theme.overlayColor || '#000000',
-          opacity: theme.overlayEnabled ? Math.max(0, Math.min(1, theme.overlayOpacity ?? 0.45)) : 0,
-        }} />
-
-        {textElements.map(({ key, ref, label }) => {
-          const fontSize = key === 'content' ? contentFontPx : key === 'time' ? timeFontPx : countdownFontPx
-          const color = key === 'content' ? theme.contentColor : key === 'countdown' ? (theme.countdownColor || theme.timeColor) : theme.timeColor
-          const tf = styleTransformByKey[key] ?? 'translate(0px,0px) rotate(0deg) scale(1)'
-          const displayText = getDisplayText(key, label)
-          const ta = alignForKey(theme, key)
-          const ls = letterSpacingForKey(theme, key)
-          const lh = lineHeightForKey(theme, key)
-          const isEditing = editingTextKey === key
-          const canEditText = effectiveEditableKeys.includes(key)
-          const tform = getTransform(key)
-          const bw = tform.textBoxWidthPct
-          const bh = tform.textBoxHeightPct
-          const shortLineLayer = key === 'time' || key === 'countdown'
-          const shortLayerLockW = shortLineLayer && tform.shortLayerTextBoxLockWidth === true
-          const shortLayerFlexJustify =
-            ta === 'left' ? 'flex-start' : ta === 'right' ? 'flex-end' : 'center'
-          return (
-            <div
-              key={key}
-              ref={ref as React.RefObject<HTMLDivElement>}
-              data-element-key={key}
-              contentEditable={isEditing}
-              suppressContentEditableWarning
-              className={`absolute ${readOnly ? 'cursor-default' : isEditing ? 'cursor-text select-text ring-2 ring-indigo-400/90' : 'cursor-move'} rounded-sm`}
-              style={{
-                left: 0, top: 0,
-                transform: tf,
-                transformOrigin: 'center',
-                willChange: selectedElements.includes(key) ? 'transform' : undefined,
-                color, fontSize: `${toPreviewPx(fontSize)}px`, fontWeight: getFontWeight(key),
-                lineHeight: lh, textAlign: ta,
-                letterSpacing: `${toPreviewPx(ls)}px`,
-                zIndex: selectedElements.includes(key) || isEditing ? 10 : 1,
-                padding: `${toPreviewPx(3)}px`,
-                ...(shortLineLayer
-                  ? {
-                      display: 'flex',
-                      alignItems: 'center',
-                      justifyContent: shortLayerFlexJustify,
-                    }
-                  : {}),
-                fontFamily: resolvePopupFontFamilyCss(theme, key),
-                outline: 'none',
-                ...layerTextEffectsReactStyle(theme, key),
-                // 主文案：width 用百分比定宽（与全屏弹窗一致）。时间/倒计时默认 max-content 贴字；拉框后 shortLayerTextBoxLockWidth 才定宽
-                ...(shortLineLayer
-                  ? shortLayerLockW && bw != null && Number.isFinite(bw)
-                    ? {
-                        width: `${Math.min(96, Math.max(5, bw))}%`,
-                        maxWidth: '100%',
-                        boxSizing: 'border-box' as const,
-                      }
-                    : {
-                        width: 'max-content',
-                        maxWidth:
-                          bw != null && Number.isFinite(bw)
-                            ? `${Math.min(96, Math.max(5, bw))}%`
-                            : '96%',
-                        boxSizing: 'border-box' as const,
-                      }
-                  : bw != null && Number.isFinite(bw)
-                    ? { width: `${bw}%`, maxWidth: '100%', boxSizing: 'border-box' as const }
-                    : { maxWidth: '96%' }),
-                ...(bh != null && Number.isFinite(bh)
-                  ? isEditing
-                    ? shortLineLayer
-                      ? {
-                          minHeight: `${bh}%`,
-                          height: 'auto',
-                          maxHeight: '100%',
-                          overflow: 'hidden' as const,
-                        }
-                      : {
-                          minHeight: `${bh}%`,
-                          height: 'auto',
-                          maxHeight: '100%',
-                          overflow: 'visible' as const,
-                        }
-                    : shortLineLayer
-                      ? { height: `${bh}%`, maxHeight: '100%', overflow: 'hidden' as const }
-                      : { height: `${bh}%`, maxHeight: '100%', overflow: 'visible' as const }
-                  : {}),
-                whiteSpace: (shortLineLayer ? 'nowrap' : 'pre-wrap') as 'nowrap' | 'pre-wrap',
-                wordWrap: (shortLineLayer ? 'normal' : 'break-word') as 'normal' | 'break-word',
-                overflowWrap: (shortLineLayer ? 'normal' : 'break-word') as 'normal' | 'break-word',
-                ...(shortLineLayer ? {} : { wordBreak: 'keep-all' as const }),
-              }}
-              onMouseDownCapture={(e) => {
-                if (e.button !== 0) return
-                if (!canEditText) return
-                if (key === 'time' || key === 'countdown') return
-                if (e.detail === 2) {
-                  e.preventDefault()
-                  e.stopPropagation()
-                  flushSync(() => onSelectElements([key]))
-                  setEditingTextKey(key)
-                }
-              }}
-              onMouseDown={(e) => handleTextPointerDown(key, e)}
-              onClick={(e) => handleElementClick(key, e)}
-              onInput={
-                isEditing
-                  ? () => {
-                      requestAnimationFrame(() => {
-                        const node = getTargetRef(key)?.current
-                        if (node && key === 'content') {
-                          const tr = getTransformRef.current('content')
-                          if (tr.contentTextBoxUserSized === true) snapContentTextBoxHeightOnly(node)
-                          else applyContentTextBoxAutoLayout(node)
-                        }
-                        moveableRef.current?.updateRect()
-                      })
-                    }
-                  : undefined
+        {(ensureThemeLayers(theme).layers ?? []).map((L, i) => {
+          const zi = i + 1
+          if (!L.visible) return null
+          switch (L.kind) {
+            case 'background':
+              return (
+                <div
+                  key={L.id}
+                  className="absolute inset-0"
+                  data-layer="bg"
+                  style={{
+                    zIndex: zi,
+                    background:
+                      hasBgImage && bgImageUrl
+                        ? `url("${bgImageUrl}") center / cover no-repeat, ${theme.backgroundColor || '#000000'}`
+                        : (theme.backgroundColor || '#000000'),
+                  }}
+                />
+              )
+            case 'overlay':
+              return (
+                <div
+                  key={L.id}
+                  className="absolute inset-0 pointer-events-none"
+                  data-layer="overlay"
+                  style={{
+                    zIndex: zi,
+                    background: theme.overlayColor || '#000000',
+                    opacity: theme.overlayEnabled ? Math.max(0, Math.min(1, theme.overlayOpacity ?? 0.45)) : 0,
+                  }}
+                />
+              )
+            case 'bindingTime':
+              return renderTextLayerForKey(L.id, 'time', zi)
+            case 'text': {
+              const tl = L as TextThemeLayer
+              if (tl.bindsReminderBody) return renderTextLayerForKey(L.id, 'content', zi)
+              const td = tl
+              const dtf = decoStyleTransformById[L.id] ?? 'translate(0px,0px) rotate(0deg) scale(1)'
+              const fs = Math.max(1, Math.min(8000, Math.round(td.fontSize ?? 28)))
+              const fakeTheme: PopupTheme = {
+                ...theme,
+                contentTextEffects: td.textEffects,
               }
-              onBlur={(ev: React.FocusEvent<HTMLDivElement>) => {
-                if (!isEditing) return
-                const keepEditing =
-                  moveableChromePointerDownRef.current ||
-                  isThemePreviewMoveableChrome(ev.relatedTarget)
-                if (keepEditing) {
-                  requestAnimationFrame(() => {
-                    if (editingTextKeyRef.current !== key) return
-                    getTargetRef(key)?.current?.focus()
-                  })
-                  return
-                }
-                const el = ref.current
-                const text = (el?.textContent ?? '').replace(/\u00a0/g, ' ').replace(/\n+$/g, '')
-                if (onLiveTextCommit) onLiveTextCommit(key, text)
-                else if (key === 'content') onUpdateTheme(theme.id, { previewContentText: text })
-                else if (key === 'time') onUpdateTheme(theme.id, { previewTimeText: text })
-                else onUpdateTheme(theme.id, { previewCountdownText: text })
-                setEditingTextKey(null)
-                requestAnimationFrame(() => {
-                  requestAnimationFrame(() => {
-                    const node = getTargetRef(key)?.current
-                    if (!node) return
-                    if (key === 'content') snapContentTextBoxHeightOnly(node)
-                    else {
-                      const tf = getTransformRef.current(key)
-                      if (tf.textBoxWidthPct == null || tf.textBoxHeightPct == null) {
-                        snapShortLayerTightContent(key, node)
-                      }
+              const isDecoEditing = editingDecoLayerId === L.id
+              return (
+                <div
+                  key={L.id}
+                  ref={(el) => {
+                    decoRefs.current[L.id] = el
+                  }}
+                  data-deco-layer-id={L.id}
+                  contentEditable={isDecoEditing && !readOnly}
+                  suppressContentEditableWarning
+                  className={`absolute rounded-sm ${readOnly ? 'cursor-default' : isDecoEditing ? 'cursor-text select-text ring-2 ring-indigo-400/90' : 'cursor-move'}`}
+                  style={{
+                    left: 0,
+                    top: 0,
+                    transform: dtf,
+                    transformOrigin: 'center',
+                    zIndex: zi,
+                    color: td.color || '#ffffff',
+                    fontSize: `${toPreviewPx(fs)}px`,
+                    fontWeight: td.fontWeight ?? 500,
+                    lineHeight: td.lineHeight ?? 1.35,
+                    textAlign: (td.textAlign ?? theme.textAlign) as 'left' | 'center' | 'right',
+                    letterSpacing: `${toPreviewPx(td.letterSpacing ?? 0)}px`,
+                    padding: `${toPreviewPx(3)}px`,
+                    fontFamily: resolveDecoFontFamilyCss(td.fontFamilyPreset, td.fontFamilySystem),
+                    maxWidth: td.transform?.textBoxWidthPct != null ? `${Math.min(96, Math.max(5, td.transform.textBoxWidthPct))}%` : '96%',
+                    maxHeight: td.transform?.textBoxHeightPct != null ? `${Math.min(100, Math.max(3, td.transform.textBoxHeightPct))}%` : undefined,
+                    whiteSpace: 'pre-wrap',
+                    wordBreak: 'keep-all',
+                    overflowWrap: 'break-word',
+                    outline: 'none',
+                    willChange: selectedDecorationLayerId === L.id ? 'transform' : undefined,
+                    ...layerTextEffectsReactStyle(fakeTheme, 'content'),
+                  }}
+                  onMouseDownCapture={(e) => {
+                    if (readOnly || e.button !== 0) return
+                    if (e.detail === 2) {
+                      e.preventDefault()
+                      e.stopPropagation()
+                      flushSync(() => {
+                        onSelectElements([])
+                        onSelectDecorationLayer?.(L.id)
+                      })
+                      setEditingDecoLayerId(L.id)
                     }
-                  })
-                })
-              }}
-              onKeyDown={(e) => {
-                if (!isEditing) return
-                if (e.key === 'Escape') {
-                  e.preventDefault()
-                  setEditingTextKey(null)
-                  void ref.current?.blur()
-                }
-                if (e.key === 'Enter' && !e.shiftKey) {
-                  e.preventDefault()
-                  void ref.current?.blur()
-                }
-              }}
-            >
-              {!isEditing ? displayText : null}
-            </div>
-          )
+                  }}
+                  onMouseDown={(e) => {
+                    if (readOnly || e.button !== 0) return
+                    if (e.shiftKey) return
+                    if (e.detail >= 2) return
+                    if (editingDecoLayerId === L.id) return
+                    e.stopPropagation()
+                    flushSync(() => {
+                      onSelectElements([])
+                      onSelectDecorationLayer?.(L.id)
+                    })
+                    scheduleDragStart(e.nativeEvent)
+                  }}
+                  onBlur={(ev) => {
+                    if (!isDecoEditing) return
+                    const keepEditing =
+                      moveableChromePointerDownRef.current || isThemePreviewMoveableChrome(ev.relatedTarget)
+                    if (keepEditing) {
+                      requestAnimationFrame(() => {
+                        if (editingDecoLayerIdRef.current !== L.id) return
+                        decoRefs.current[L.id]?.focus()
+                      })
+                      return
+                    }
+                    const elBlur = decoRefs.current[L.id]
+                    const text = (elBlur?.textContent ?? '').replace(/\u00a0/g, ' ').replace(/\n+$/g, '').slice(0, 2000)
+                    const patch = updateDecorationLayer(theme, L.id, { text })
+                    if (patch) onUpdateTheme(theme.id, patch)
+                    setEditingDecoLayerId(null)
+                    requestAnimationFrame(() => moveableRef.current?.updateRect())
+                  }}
+                  onKeyDown={(e) => {
+                    if (!isDecoEditing) return
+                    if (e.key === 'Escape') {
+                      e.preventDefault()
+                      setEditingDecoLayerId(null)
+                      decoRefs.current[L.id]?.blur()
+                    }
+                    if (e.key === 'Enter' && !e.shiftKey) {
+                      e.preventDefault()
+                      decoRefs.current[L.id]?.blur()
+                    }
+                  }}
+                >
+                  {!isDecoEditing ? (td.text ?? '') : null}
+                </div>
+              )
+            }
+            case 'image': {
+              const im = L as ImageThemeLayer
+              const url = rendererSafePreviewImageUrl((im.imagePath ?? '').trim(), previewImageUrlMap)
+              const dtf = decoStyleTransformById[L.id] ?? 'translate(0px,0px) rotate(0deg) scale(1)'
+              const tw = im.transform?.textBoxWidthPct ?? 28
+              const th = im.transform?.textBoxHeightPct ?? 22
+              const fit = im.objectFit === 'contain' ? 'contain' : 'cover'
+              return (
+                <div
+                  key={L.id}
+                  ref={(el) => {
+                    decoRefs.current[L.id] = el
+                  }}
+                  data-deco-layer-id={L.id}
+                  className={`absolute ${readOnly ? 'cursor-default' : 'cursor-move'}`}
+                  style={{
+                    left: 0,
+                    top: 0,
+                    transform: dtf,
+                    transformOrigin: 'center',
+                    zIndex: zi,
+                    width: `${Math.min(96, Math.max(5, tw))}%`,
+                    height: `${Math.min(100, Math.max(3, th))}%`,
+                    maxWidth: '100%',
+                    maxHeight: '100%',
+                    boxSizing: 'border-box',
+                    backgroundImage: url ? `url("${url}")` : 'none',
+                    backgroundSize: fit,
+                    backgroundPosition: 'center',
+                    backgroundRepeat: 'no-repeat',
+                    willChange: selectedDecorationLayerId === L.id ? 'transform' : undefined,
+                  }}
+                  onMouseDown={(e) => {
+                    if (readOnly || e.button !== 0) return
+                    if (e.shiftKey) return
+                    e.stopPropagation()
+                    flushSync(() => {
+                      onSelectElements([])
+                      onSelectDecorationLayer?.(L.id)
+                    })
+                    scheduleDragStart(e.nativeEvent)
+                  }}
+                />
+              )
+            }
+            default:
+              return null
+          }
         })}
 
         {marqueeRect && (
@@ -1663,13 +2066,13 @@ export function ThemePreviewEditor({
               setTransformSyncLocked(true)
               takeSnapshots()
               const cont = containerRef.current
-              if (!cont || selectedElements.length !== 1) {
-                scalePinBoxRef.current = null
-                scaleDirectionForPinRef.current = null
-                return
-              }
-              const el = getTargetRef(selectedElements[0])?.current
-              if (!el) {
+              const el =
+                selectedDecorationLayerId
+                  ? decoRefs.current[selectedDecorationLayerId]
+                  : selectedElements.length === 1
+                    ? getTargetRef(selectedElements[0])?.current
+                    : null
+              if (!cont || !el) {
                 scalePinBoxRef.current = null
                 scaleDirectionForPinRef.current = null
                 return
