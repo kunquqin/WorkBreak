@@ -5,15 +5,38 @@ import type { PopupTheme, TextTransform } from '../types'
 import { rendererSafePreviewImageUrl } from '../utils/popupThemePreview'
 import { layerTextEffectsReactStyle } from '../../../shared/popupTextEffects'
 import { resolvePopupFontFamilyCss, resolveDecoFontFamilyCss } from '../../../shared/popupThemeFonts'
-import { ensureThemeLayers } from '../../../shared/settings'
+import { ensureThemeLayers, POPUP_BACKGROUND_IMAGE_BLUR_MAX_PX } from '../../../shared/settings'
 import type { ImageThemeLayer, TextThemeLayer } from '../../../shared/popupThemeLayers'
-import { POPUP_LAYER_BACKGROUND_ID, updateDecorationLayer } from '../../../shared/popupThemeLayers'
+import {
+  POPUP_LAYER_BACKGROUND_ID,
+  POPUP_LAYER_BINDING_CONTENT_ID,
+  POPUP_LAYER_BINDING_DATE_ID,
+  POPUP_LAYER_BINDING_TIME_ID,
+  POPUP_LAYER_OVERLAY_ID,
+  removeThemeLayers,
+  updateDecorationLayer,
+} from '../../../shared/popupThemeLayers'
+import { formatPopupThemeDateString } from '../../../shared/popupThemeDateFormat'
+import type { PopupThemeEditUpdateMeta } from '../hooks/usePopupThemeEditHistory'
 
-export type TextElementKey = 'content' | 'time' | 'countdown'
+export type TextElementKey = 'content' | 'time' | 'date' | 'countdown'
+
+function themeTransformField(key: TextElementKey): 'contentTransform' | 'timeTransform' | 'dateTransform' | 'countdownTransform' {
+  switch (key) {
+    case 'content':
+      return 'contentTransform'
+    case 'time':
+      return 'timeTransform'
+    case 'date':
+      return 'dateTransform'
+    case 'countdown':
+      return 'countdownTransform'
+  }
+}
 
 interface ThemePreviewEditorProps {
   theme: PopupTheme
-  onUpdateTheme: (themeId: string, patch: Partial<PopupTheme>) => void
+  onUpdateTheme: (themeId: string, patch: Partial<PopupTheme>, meta?: PopupThemeEditUpdateMeta) => void
   previewViewportWidth: number
   previewImageUrlMap: Record<string, string>
   popupPreviewAspect: '16:9' | '4:3'
@@ -47,6 +70,8 @@ interface ThemePreviewEditorProps {
   onSelectDecorationLayer?: (id: string | null) => void
   /** 选中绑定文案/时间时清空「背景/遮罩」结构层选中（主题工坊图层栏） */
   onSelectStructuralLayer?: (id: string | null) => void
+  /** 图层栏选中的背景/遮罩 id；与 Delete/Backspace 删除结构层一致 */
+  selectedStructuralLayerId?: string | null
 }
 
 /** Moveable 打组轨道平移多为 translate(xpx,ypx)，偶发 translate3d */
@@ -282,13 +307,150 @@ function alignFromVerticalAlign(align: 'top' | 'middle' | 'bottom'): 'flex-start
 function letterSpacingForKey(theme: PopupTheme, key: TextElementKey): number {
   if (key === 'content') return theme.contentLetterSpacing ?? 0
   if (key === 'time') return theme.timeLetterSpacing ?? 0
+  if (key === 'date') return theme.dateLetterSpacing ?? 0
   return theme.countdownLetterSpacing ?? 0
 }
 
 function lineHeightForKey(theme: PopupTheme, key: TextElementKey): number {
   if (key === 'content') return theme.contentLineHeight ?? 1.35
   if (key === 'time') return theme.timeLineHeight ?? 1.35
+  if (key === 'date') return theme.dateLineHeight ?? 1
   return theme.countdownLineHeight ?? 1
+}
+
+/** 文件夹壁纸：与真弹窗一致的双层交叉淡化（仅预览可编辑态轮播；readOnly 由父级不传多 url） */
+function FolderBgCrossfade({
+  layerId,
+  zIndex,
+  urls,
+  intervalSec,
+  crossfadeSec,
+  randomMode,
+  bgColor,
+  blur,
+}: {
+  layerId: string
+  zIndex: number
+  urls: string[]
+  intervalSec: number
+  crossfadeSec: number
+  randomMode: boolean
+  bgColor: string
+  blur: number
+}) {
+  const holdMs = Math.max(300, Math.round(intervalSec * 1000))
+  const fadeMs = Math.max(100, Math.round(crossfadeSec * 1000))
+  const blurOut = blur > 0 ? Math.min(200, Math.ceil(blur * 2.5)) : 0
+  const [opA, setOpA] = useState(1)
+  const [opB, setOpB] = useState(0)
+  const [urlA, setUrlA] = useState(urls[0] ?? '')
+  const [urlB, setUrlB] = useState(urls.length >= 2 ? (urls[1 % urls.length] ?? '') : '')
+  const idxRef = useRef(0)
+  const topARef = useRef(true)
+
+  useEffect(() => {
+    if (urls.length < 2) return
+    setUrlA(urls[0] ?? '')
+    setUrlB(urls[1 % urls.length] ?? '')
+    setOpA(1)
+    setOpB(0)
+    idxRef.current = 0
+    topARef.current = true
+    let cancelled = false
+    let timer: ReturnType<typeof setTimeout>
+    const pickNext = (): number => {
+      if (randomMode) {
+        const j = Math.floor(Math.random() * urls.length)
+        return j === idxRef.current ? (j + 1) % urls.length : j
+      }
+      return (idxRef.current + 1) % urls.length
+    }
+    const tick = () => {
+      if (cancelled) return
+      const ni = pickNext()
+      if (topARef.current) {
+        setUrlB(urls[ni] ?? '')
+        setOpB(1)
+        setOpA(0)
+      } else {
+        setUrlA(urls[ni] ?? '')
+        setOpA(1)
+        setOpB(0)
+      }
+      idxRef.current = ni
+      topARef.current = !topARef.current
+      timer = setTimeout(tick, holdMs + fadeMs)
+    }
+    timer = setTimeout(tick, holdMs)
+    return () => {
+      cancelled = true
+      clearTimeout(timer)
+    }
+  }, [urls, holdMs, fadeMs, randomMode])
+
+  const innerBg = (url: string) =>
+    blur > 0 ? (
+      <div className="absolute overflow-hidden" style={{ inset: 0 }}>
+        <div
+          className="absolute"
+          style={{
+            left: -blurOut,
+            top: -blurOut,
+            width: `calc(100% + ${blurOut * 2}px)`,
+            height: `calc(100% + ${blurOut * 2}px)`,
+            backgroundImage: `url("${url}")`,
+            backgroundSize: 'cover',
+            backgroundPosition: 'center',
+            backgroundRepeat: 'no-repeat',
+            filter: `blur(${blur}px)`,
+          }}
+        />
+      </div>
+    ) : (
+      <div
+        className="absolute inset-0"
+        style={{
+          backgroundImage: `url("${url}")`,
+          backgroundSize: 'cover',
+          backgroundPosition: 'center',
+          backgroundRepeat: 'no-repeat',
+        }}
+      />
+    )
+
+  return (
+    <div
+      className="absolute inset-0 overflow-hidden"
+      data-layer="bg"
+      style={{ zIndex: zIndex, backgroundColor: bgColor }}
+      data-bg-folder-slideshow={layerId}
+    >
+      <div
+        className="absolute inset-0"
+        style={{
+          opacity: opA,
+          transition: `opacity ${fadeMs}ms ease-in-out`,
+          overflow: 'hidden',
+          pointerEvents: 'none',
+          backgroundColor: bgColor,
+        }}
+      >
+        {urlA ? innerBg(urlA) : null}
+      </div>
+      <div
+        className="absolute inset-0"
+        style={{
+          opacity: opB,
+          transition: `opacity ${fadeMs}ms ease-in-out`,
+          overflow: 'hidden',
+          pointerEvents: 'none',
+          backgroundColor: bgColor,
+        }}
+      >
+        {urlB ? innerBg(urlB) : null}
+      </div>
+    </div>
+  )
 }
 
 export function ThemePreviewEditor({
@@ -306,11 +468,13 @@ export function ThemePreviewEditor({
   selectedDecorationLayerId = null,
   onSelectDecorationLayer,
   onSelectStructuralLayer,
+  selectedStructuralLayerId = null,
 }: ThemePreviewEditorProps) {
   const containerRef = useRef<HTMLDivElement>(null)
   const decoRefs = useRef<Record<string, HTMLDivElement | null>>({})
   const contentRef = useRef<HTMLDivElement>(null)
   const timeRef = useRef<HTMLDivElement>(null)
+  const dateRef = useRef<HTMLDivElement>(null)
   const moveableRef = useRef<Moveable | null>(null)
 
   /**
@@ -388,19 +552,34 @@ export function ThemePreviewEditor({
   /** 预览用逻辑字号：与松手缩放烘焙一致用整数 px，避免先小数再 floor/归一化导致轻微跳变 */
   const contentFontPx = Math.max(1, Math.min(8000, Math.round(theme.contentFontSize ?? 180)))
   const timeFontPx = Math.max(1, Math.min(8000, Math.round(theme.timeFontSize ?? 100)))
+  const dateFontPx = Math.max(1, Math.min(8000, Math.round(theme.dateFontSize ?? 72)))
   const countdownFontPx = Math.max(1, Math.min(8000, Math.round(theme.countdownFontSize ?? 180)))
 
+  /** 日期预览：定时刷新以便跨日与「仅星期」等仍随真实日期变 */
+  const [datePreviewTick, setDatePreviewTick] = useState(0)
+  useEffect(() => {
+    const id = window.setInterval(() => setDatePreviewTick((n) => n + 1), 30000)
+    return () => clearInterval(id)
+  }, [])
+
   const getTransform = useCallback((key: TextElementKey): TextTransform => {
-    const t = key === 'content' ? theme.contentTransform : key === 'time' ? theme.timeTransform : theme.countdownTransform
+    const t =
+      key === 'content'
+        ? theme.contentTransform
+        : key === 'time'
+          ? theme.timeTransform
+          : key === 'date'
+            ? theme.dateTransform
+            : theme.countdownTransform
     return t ?? DEFAULT_LAYER_TRANSFORMS[key] ?? { x: 50, y: 50, rotation: 0, scale: 1 }
-  }, [theme.contentTransform, theme.timeTransform, theme.countdownTransform])
+  }, [theme.contentTransform, theme.timeTransform, theme.dateTransform, theme.countdownTransform])
 
   const getTransformRef = useRef(getTransform)
   getTransformRef.current = getTransform
 
   const updateTransform = useCallback((key: TextElementKey, patch: Partial<TextTransform>) => {
     const current = getTransform(key)
-    const field = key === 'content' ? 'contentTransform' : key === 'time' ? 'timeTransform' : 'countdownTransform'
+    const field = themeTransformField(key)
     onUpdateTheme(theme.id, { [field]: { ...current, ...patch } })
   }, [getTransform, onUpdateTheme, theme.id])
 
@@ -417,6 +596,7 @@ export function ThemePreviewEditor({
   const getTargetRef = useCallback((key: TextElementKey | null) => {
     if (key === 'content') return contentRef
     if (key === 'time') return timeRef
+    if (key === 'date') return dateRef
     return null
   }, [])
 
@@ -424,6 +604,7 @@ export function ThemePreviewEditor({
     const refs: HTMLDivElement[] = []
     if (contentRef.current && !selectedElements.includes('content')) refs.push(contentRef.current)
     if (timeRef.current && !selectedElements.includes('time')) refs.push(timeRef.current)
+    if (dateRef.current && !selectedElements.includes('date')) refs.push(dateRef.current)
     const ly = ensureThemeLayers(theme).layers ?? []
     for (const L of ly) {
       if (!L.visible) continue
@@ -457,9 +638,25 @@ export function ThemePreviewEditor({
     }
   }, [onSelectElements, selectedElements, onSelectDecorationLayer, onSelectStructuralLayer])
 
-  const bgImageKey = ((theme.imageSourceType === 'folder' ? theme.imageFolderFiles?.[0] : theme.imagePath) ?? '').trim()
-  const bgImageUrl = rendererSafePreviewImageUrl(bgImageKey, previewImageUrlMap)
-  const hasBgImage = theme.backgroundType === 'image' && (theme.imagePath || (theme.imageFolderFiles && theme.imageFolderFiles.length > 0))
+  const folderPreviewUrls = useMemo(() => {
+    if (theme.backgroundType !== 'image' || theme.imageSourceType !== 'folder') return [] as string[]
+    const out: string[] = []
+    for (const f of theme.imageFolderFiles ?? []) {
+      if (typeof f !== 'string' || !f.trim()) continue
+      const u = rendererSafePreviewImageUrl(f.trim(), previewImageUrlMap)
+      if (u) out.push(u)
+    }
+    return out
+  }, [theme.backgroundType, theme.imageSourceType, theme.imageFolderFiles, previewImageUrlMap])
+
+  const singleBgPath = (theme.imagePath ?? '').trim()
+  const bgImageUrl =
+    theme.imageSourceType === 'folder'
+      ? (folderPreviewUrls[0] ?? '')
+      : rendererSafePreviewImageUrl(singleBgPath, previewImageUrlMap)
+  const hasBgImage =
+    theme.backgroundType === 'image' &&
+    (Boolean(singleBgPath) || (theme.imageFolderFiles != null && theme.imageFolderFiles.length > 0))
 
   const getDisplayText = useCallback(
     (key: TextElementKey, fallback: string) => {
@@ -474,19 +671,43 @@ export function ThemePreviewEditor({
         if (pl != null && pl !== '') return pl
         return fallback
       }
+      if (key === 'date') {
+        return formatPopupThemeDateString(theme, new Date(), 'preview') || fallback
+      }
       if (theme.previewCountdownText?.trim()) return theme.previewCountdownText.trim()
       if (pl != null && pl !== '') return pl
       return fallback
     },
-    [previewLabels, theme.previewContentText, theme.previewTimeText, theme.previewCountdownText],
+    [
+      previewLabels,
+      theme,
+      theme.previewContentText,
+      theme.previewTimeText,
+      theme.previewCountdownText,
+      theme.previewDateText,
+      theme.dateLocale,
+      theme.dateShowYear,
+      theme.dateShowMonth,
+      theme.dateShowDay,
+      theme.dateShowWeekday,
+      theme.dateYearFormat,
+      theme.dateMonthFormat,
+      theme.dateDayFormat,
+      theme.dateWeekdayFormat,
+      datePreviewTick,
+    ],
   )
 
   const textLayerPairs = useMemo((): { key: TextElementKey; ref: React.RefObject<HTMLDivElement | null> }[] => {
-    return [
+    const ly = ensureThemeLayers(theme).layers ?? []
+    const hasDate = ly.some((l) => l.kind === 'bindingDate')
+    const out: { key: TextElementKey; ref: React.RefObject<HTMLDivElement | null> }[] = [
       { key: 'content', ref: contentRef },
       { key: 'time', ref: timeRef },
     ]
-  }, [])
+    if (hasDate) out.push({ key: 'date', ref: dateRef })
+    return out
+  }, [theme])
 
   const multiSelected = selectedElements.length >= 2
   const selectedElementsSig = useMemo(() => selectedElements.slice().sort().join('\x1e'), [selectedElements])
@@ -494,18 +715,21 @@ export function ThemePreviewEditor({
   const getFontWeight = useCallback((key: TextElementKey): number => {
     if (key === 'content') return theme.contentFontWeight ?? 600
     if (key === 'time') return theme.timeFontWeight ?? 400
+    if (key === 'date') return theme.dateFontWeight ?? 400
     return theme.countdownFontWeight ?? 700
-  }, [theme.contentFontWeight, theme.timeFontWeight, theme.countdownFontWeight])
+  }, [theme.contentFontWeight, theme.timeFontWeight, theme.dateFontWeight, theme.countdownFontWeight])
   const getFontStyle = useCallback((key: TextElementKey): 'normal' | 'italic' => {
     if (key === 'content') return theme.contentFontItalic === true ? 'italic' : 'normal'
     if (key === 'time') return theme.timeFontItalic === true ? 'italic' : 'normal'
+    if (key === 'date') return theme.dateFontItalic === true ? 'italic' : 'normal'
     return theme.countdownFontItalic === true ? 'italic' : 'normal'
-  }, [theme.contentFontItalic, theme.timeFontItalic, theme.countdownFontItalic])
+  }, [theme.contentFontItalic, theme.timeFontItalic, theme.dateFontItalic, theme.countdownFontItalic])
   const getTextDecoration = useCallback((key: TextElementKey): 'none' | 'underline' => {
     if (key === 'content') return theme.contentUnderline === true ? 'underline' : 'none'
     if (key === 'time') return theme.timeUnderline === true ? 'underline' : 'none'
+    if (key === 'date') return theme.dateUnderline === true ? 'underline' : 'none'
     return theme.countdownUnderline === true ? 'underline' : 'none'
-  }, [theme.contentUnderline, theme.timeUnderline, theme.countdownUnderline])
+  }, [theme.contentUnderline, theme.timeUnderline, theme.dateUnderline, theme.countdownUnderline])
 
   const mergeStyleTransforms = useCallback((patch: Partial<Record<TextElementKey, string>>) => {
     setStyleTransformByKey(prev => ({ ...prev, ...patch }))
@@ -642,37 +866,61 @@ export function ThemePreviewEditor({
 
   /** 样式属性签名：根字段字号/字重等变化时触发双帧重算，覆盖首帧测量未稳定。装饰层 transform 见 `recomputeDecoStyleTransformsFromTheme` 合并策略。 */
   const decoForceStyleSig = useMemo(() => [
-    contentFontPx, timeFontPx, countdownFontPx, previewScale,
-    theme.contentFontWeight, theme.timeFontWeight, theme.countdownFontWeight,
-    theme.contentFontItalic, theme.timeFontItalic, theme.countdownFontItalic,
-    theme.contentUnderline, theme.timeUnderline, theme.countdownUnderline,
-    theme.textAlign, theme.contentTextAlign, theme.timeTextAlign, theme.countdownTextAlign,
-    theme.textVerticalAlign, theme.contentTextVerticalAlign, theme.timeTextVerticalAlign, theme.countdownTextVerticalAlign,
-    theme.contentLetterSpacing, theme.timeLetterSpacing, theme.countdownLetterSpacing,
-    theme.contentLineHeight, theme.timeLineHeight, theme.countdownLineHeight,
-    theme.contentFontSize, theme.timeFontSize, theme.countdownFontSize,
-    theme.contentTransform, theme.timeTransform, theme.countdownTransform, theme.target,
+    contentFontPx, timeFontPx, dateFontPx, countdownFontPx, previewScale,
+    theme.contentFontWeight, theme.timeFontWeight, theme.dateFontWeight, theme.countdownFontWeight,
+    theme.contentFontItalic, theme.timeFontItalic, theme.dateFontItalic, theme.countdownFontItalic,
+    theme.contentUnderline, theme.timeUnderline, theme.dateUnderline, theme.countdownUnderline,
+    theme.textAlign, theme.contentTextAlign, theme.timeTextAlign, theme.dateTextAlign, theme.countdownTextAlign,
+    theme.textVerticalAlign, theme.contentTextVerticalAlign, theme.timeTextVerticalAlign, theme.dateTextVerticalAlign, theme.countdownTextVerticalAlign,
+    theme.contentLetterSpacing, theme.timeLetterSpacing, theme.dateLetterSpacing, theme.countdownLetterSpacing,
+    theme.contentLineHeight, theme.timeLineHeight, theme.dateLineHeight, theme.countdownLineHeight,
+    theme.contentFontSize, theme.timeFontSize, theme.dateFontSize, theme.countdownFontSize,
+    theme.contentTransform, theme.timeTransform, theme.dateTransform, theme.countdownTransform, theme.target,
     theme.popupFontFamilyPreset, theme.popupFontFamilySystem,
     theme.contentFontFamilyPreset, theme.contentFontFamilySystem,
     theme.timeFontFamilyPreset, theme.timeFontFamilySystem,
+    theme.dateFontFamilyPreset, theme.dateFontFamilySystem,
     theme.countdownFontFamilyPreset, theme.countdownFontFamilySystem,
-    theme.contentTextEffects, theme.timeTextEffects, theme.countdownTextEffects,
+    theme.contentTextEffects, theme.timeTextEffects, theme.dateTextEffects, theme.countdownTextEffects,
+    theme.previewDateText,
+    theme.dateLocale,
+    theme.dateShowYear,
+    theme.dateShowMonth,
+    theme.dateShowDay,
+    theme.dateShowWeekday,
+    theme.dateYearFormat,
+    theme.dateMonthFormat,
+    theme.dateDayFormat,
+    theme.dateWeekdayFormat,
+    datePreviewTick,
   ].join('\x1e'), [
-    contentFontPx, timeFontPx, countdownFontPx, previewScale,
-    theme.contentFontWeight, theme.timeFontWeight, theme.countdownFontWeight,
-    theme.contentFontItalic, theme.timeFontItalic, theme.countdownFontItalic,
-    theme.contentUnderline, theme.timeUnderline, theme.countdownUnderline,
-    theme.textAlign, theme.contentTextAlign, theme.timeTextAlign, theme.countdownTextAlign,
-    theme.textVerticalAlign, theme.contentTextVerticalAlign, theme.timeTextVerticalAlign, theme.countdownTextVerticalAlign,
-    theme.contentLetterSpacing, theme.timeLetterSpacing, theme.countdownLetterSpacing,
-    theme.contentLineHeight, theme.timeLineHeight, theme.countdownLineHeight,
-    theme.contentFontSize, theme.timeFontSize, theme.countdownFontSize,
-    theme.contentTransform, theme.timeTransform, theme.countdownTransform, theme.target,
+    contentFontPx, timeFontPx, dateFontPx, countdownFontPx, previewScale,
+    theme.contentFontWeight, theme.timeFontWeight, theme.dateFontWeight, theme.countdownFontWeight,
+    theme.contentFontItalic, theme.timeFontItalic, theme.dateFontItalic, theme.countdownFontItalic,
+    theme.contentUnderline, theme.timeUnderline, theme.dateUnderline, theme.countdownUnderline,
+    theme.textAlign, theme.contentTextAlign, theme.timeTextAlign, theme.dateTextAlign, theme.countdownTextAlign,
+    theme.textVerticalAlign, theme.contentTextVerticalAlign, theme.timeTextVerticalAlign, theme.dateTextVerticalAlign, theme.countdownTextVerticalAlign,
+    theme.contentLetterSpacing, theme.timeLetterSpacing, theme.dateLetterSpacing, theme.countdownLetterSpacing,
+    theme.contentLineHeight, theme.timeLineHeight, theme.dateLineHeight, theme.countdownLineHeight,
+    theme.contentFontSize, theme.timeFontSize, theme.dateFontSize, theme.countdownFontSize,
+    theme.contentTransform, theme.timeTransform, theme.dateTransform, theme.countdownTransform, theme.target,
     theme.popupFontFamilyPreset, theme.popupFontFamilySystem,
     theme.contentFontFamilyPreset, theme.contentFontFamilySystem,
     theme.timeFontFamilyPreset, theme.timeFontFamilySystem,
+    theme.dateFontFamilyPreset, theme.dateFontFamilySystem,
     theme.countdownFontFamilyPreset, theme.countdownFontFamilySystem,
-    theme.contentTextEffects, theme.timeTextEffects, theme.countdownTextEffects,
+    theme.contentTextEffects, theme.timeTextEffects, theme.dateTextEffects, theme.countdownTextEffects,
+    theme.previewDateText,
+    theme.dateLocale,
+    theme.dateShowYear,
+    theme.dateShowMonth,
+    theme.dateShowDay,
+    theme.dateShowWeekday,
+    theme.dateYearFormat,
+    theme.dateMonthFormat,
+    theme.dateDayFormat,
+    theme.dateWeekdayFormat,
+    datePreviewTick,
   ])
   const decoForceStyleSigRef = useRef(decoForceStyleSig)
 
@@ -889,7 +1137,7 @@ export function ThemePreviewEditor({
         const ny = translateY + dy
         const pos = translateToThemePercent(el, nx, ny)
         const cur = getTransform(key)
-        const field = key === 'content' ? 'contentTransform' : key === 'time' ? 'timeTransform' : 'countdownTransform'
+        const field = themeTransformField(key)
         ;(patch as Record<string, TextTransform>)[field] = { ...cur, x: pos.x, y: pos.y, rotation, scale }
         const tf = buildTransform(nx, ny, rotation, scale)
         domPatch[key] = tf
@@ -939,6 +1187,70 @@ export function ThemePreviewEditor({
     document.addEventListener('keydown', onKey, true)
     return () => document.removeEventListener('keydown', onKey, true)
   }, [readOnly, selectedElements, selectedDecorationLayerId, keyboardScopeRef, nudgeSelectedByPreviewPixels])
+
+  /** Delete/Backspace：与图层栏 × 相同（removeThemeLayers），经 onUpdateTheme 进入撤销栈 */
+  useEffect(() => {
+    if (readOnly) return
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key !== 'Backspace' && e.key !== 'Delete') return
+      if (e.ctrlKey || e.metaKey || e.altKey) return
+      if (editingTextKeyRef.current) return
+      if (editingDecoLayerIdRef.current) return
+      const t = e.target as HTMLElement | null
+      if (t?.closest?.('input, textarea, select, [contenteditable="true"]')) return
+      const scope = keyboardScopeRef?.current ?? containerRef.current
+      if (!scope) return
+      const ae = document.activeElement
+      const inScope =
+        (t instanceof HTMLElement && scope.contains(t)) ||
+        (ae instanceof HTMLElement && scope.contains(ae))
+      if (!inScope) return
+
+      const ids: string[] = []
+      if (
+        selectedStructuralLayerId === POPUP_LAYER_BACKGROUND_ID ||
+        selectedStructuralLayerId === POPUP_LAYER_OVERLAY_ID
+      ) {
+        ids.push(selectedStructuralLayerId)
+      }
+      if (marqueeDecorationLayerIds.length > 0) {
+        ids.push(...marqueeDecorationLayerIds)
+      } else if (selectedDecorationLayerId) {
+        ids.push(selectedDecorationLayerId)
+      }
+      for (const key of selectedElements) {
+        if (key === 'content') ids.push(POPUP_LAYER_BINDING_CONTENT_ID)
+        else if (key === 'time') ids.push(POPUP_LAYER_BINDING_TIME_ID)
+        else if (key === 'date') ids.push(POPUP_LAYER_BINDING_DATE_ID)
+      }
+      const unique = [...new Set(ids)]
+      if (unique.length === 0) return
+
+      const patch = removeThemeLayers(theme, unique)
+      if (!patch) return
+
+      e.preventDefault()
+      e.stopPropagation()
+      onUpdateTheme(theme.id, patch)
+      setMarqueeDecorationLayerIds([])
+      onSelectStructuralLayer?.(null)
+      onSelectDecorationLayer?.(null)
+      onSelectElements([])
+    }
+    document.addEventListener('keydown', onKey, true)
+    return () => document.removeEventListener('keydown', onKey, true)
+  }, [
+    readOnly,
+    theme,
+    onUpdateTheme,
+    selectedElements,
+    selectedDecorationLayerId,
+    selectedStructuralLayerId,
+    marqueeDecorationLayerIds,
+    onSelectElements,
+    onSelectDecorationLayer,
+    onSelectStructuralLayer,
+  ])
 
   /** 拖动四边/四角调整文字区域后：把当前像素宽高写入 textBox*Pct，与真实弹窗 CSS 一致 */
   const finalizeResize = useCallback(
@@ -999,7 +1311,7 @@ export function ThemePreviewEditor({
         textBoxHeightPct: Math.max(3, Math.min(100, hPct)),
         ...(k === 'content'
           ? { contentTextBoxUserSized: true as const }
-          : k === 'time'
+          : k === 'time' || k === 'date'
             ? { shortLayerTextBoxLockWidth: true as const }
             : {}),
       })
@@ -1151,7 +1463,7 @@ export function ThemePreviewEditor({
    */
   const snapShortLayerTightContent = useCallback(
     (k: TextElementKey, el: HTMLElement) => {
-      if (k !== 'time') return
+      if (k !== 'time' && k !== 'date') return
       const container = containerRef.current
       if (!container) return
       const cw = Math.max(1, container.offsetWidth)
@@ -1177,15 +1489,23 @@ export function ThemePreviewEditor({
       el.style.height = 'auto'
       const wRead = Math.max(1, el.offsetWidth, el.scrollWidth)
 
-      const fontPx = timeFontPx
+      const fontPx = k === 'date' ? dateFontPx : timeFontPx
       const previewFont = toPreviewPx(fontPx)
+      /** 斜体字形外倾时 scrollWidth 偶发偏紧，加一点像素余量避免右侧被裁切 */
+      const italicSlackPx =
+        (k === 'date' && theme.dateFontItalic === true) || (k === 'time' && theme.timeFontItalic === true)
+          ? Math.ceil(previewFont * 0.55)
+          : 0
       const raw = (el.textContent ?? '').replace(/\u00a0/g, ' ')
       const longestLine = raw.split(/\n/).reduce((m, line) => Math.max(m, line.length), 0) || 1
       /** 时间与倒计时同一套：按字数估宽 + 对称 pad，避免时间用 7em、倒计时用 5em 导致左右留白不一致 */
       const charW = previewFont * 0.58
       const minFromChars = longestLine * charW + pad2
       const minFloor = previewFont * 1.35 + pad2
-      const wIntrinsic = Math.min(maxBodyPx, Math.max(wRead, minFromChars, minFloor))
+      const wIntrinsic = Math.min(
+        maxBodyPx,
+        Math.max(wRead + italicSlackPx, minFromChars + italicSlackPx, minFloor + italicSlackPx),
+      )
 
       el.style.width = `${wIntrinsic}px`
       el.style.maxWidth = 'none'
@@ -1216,7 +1536,7 @@ export function ThemePreviewEditor({
       })
       requestAnimationFrame(() => moveableRef.current?.updateRect())
     },
-    [toPreviewPx, updateTransform, timeFontPx],
+    [toPreviewPx, updateTransform, timeFontPx, dateFontPx, theme.dateFontItalic, theme.timeFontItalic],
   )
 
   /**
@@ -1351,19 +1671,48 @@ export function ThemePreviewEditor({
   syncContentPreviewTextBoxRef.current = syncContentPreviewTextBox
 
   /**
-   * 仅主文案变化才触发 content textBox 的 liveSnap。
-   * 切勿把 time/countdown 的 preview* 或 previewLabels 打进同一 sig：否则改倒计时文案、子项里时间每秒走表
-   * 会误跑 syncContentPreviewTextBox，与短层操作叠在一起 → 主文案框高度被多算、操作框底部异常延伸。
+   * 主文案：文案或**字体/间距/对齐**变化时重算栏宽/高，避免 Moveable 仍按旧度量裁切。
+   * 切勿把 time/date 的 preview* 或「每秒变」的 previewLabels.time 打进本 sig（子项小窗时间会拖垮主文案 snap）。
    */
-  const contentSnapLabelSig = useMemo(() => {
+  const contentLayoutSnapSig = useMemo(() => {
     if (!effectiveEditableKeys.includes('content')) return ''
-    return `c:${previewLabels?.content ?? ''}|${theme.previewContentText ?? ''}`
-  }, [effectiveEditableKeys, previewLabels?.content, theme.previewContentText])
+    return [
+      previewLabels?.content ?? '',
+      theme.previewContentText ?? '',
+      theme.contentFontSize,
+      theme.contentFontWeight,
+      theme.contentFontFamilyPreset ?? '',
+      theme.contentFontFamilySystem ?? '',
+      theme.contentLetterSpacing,
+      theme.contentLineHeight,
+      theme.contentFontItalic === true ? '1' : '0',
+      theme.contentUnderline === true ? '1' : '0',
+      theme.textAlign,
+      theme.contentTextAlign ?? '',
+      theme.contentTextVerticalAlign ?? theme.textVerticalAlign ?? '',
+      JSON.stringify(theme.contentTextEffects ?? {}),
+    ].join('\x1e')
+  }, [
+    effectiveEditableKeys,
+    previewLabels?.content,
+    theme.previewContentText,
+    theme.contentFontSize,
+    theme.contentFontWeight,
+    theme.contentFontFamilyPreset,
+    theme.contentFontFamilySystem,
+    theme.contentLetterSpacing,
+    theme.contentLineHeight,
+    theme.contentFontItalic,
+    theme.contentUnderline,
+    theme.textAlign,
+    theme.contentTextAlign,
+    theme.contentTextVerticalAlign,
+    theme.textVerticalAlign,
+    theme.contentTextEffects,
+  ])
 
   /**
-   * 外部改主文案时同步栏宽/高；时间每秒变不参与 snap（固定框）。用 ref 判断编辑态，避免与 blur 重复。
-   * 勿依赖 selectedElements：取消选中时会误再跑一遍 sync，与 blur 双 rAF 叠加以致 textBox 高度被多算一行、文字上移。
-   * Moveable.updateRect 见下方仅随选中/样式变的 effect。
+   * 外部改主文案或正文字体参数时同步栏宽/高；编辑态不抢焦点。Moveable.updateRect 另见下方 effect。
    */
   useLayoutEffect(() => {
     if (readOnly) return
@@ -1376,7 +1725,107 @@ export function ThemePreviewEditor({
       }
     })
     return () => cancelAnimationFrame(id)
-  }, [readOnly, contentSnapLabelSig, effectiveEditableKeys])
+  }, [readOnly, contentLayoutSnapSig, effectiveEditableKeys])
+
+  /**
+   * 时间/日期短行层：`textBoxWidthPct` 会作为 max-width 残留；切换格式或字体后字符串变长会被 overflow:hidden 裁切，
+   * 需按当前 DOM 重算贴字宽高并刷新 Moveable（与 blur 后 snap 同源）。
+   */
+  const dateTimeIntrinsicSig = useMemo(
+    () =>
+      [
+        theme.previewTimeText ?? '',
+        theme.previewDateText ?? '',
+        previewLabels?.time ?? '',
+        previewLabels?.date ?? '',
+        theme.dateShowYear !== false ? '1' : '0',
+        theme.dateShowMonth !== false ? '1' : '0',
+        theme.dateShowDay !== false ? '1' : '0',
+        theme.dateShowWeekday !== false ? '1' : '0',
+        theme.dateYearFormat ?? '',
+        theme.dateMonthFormat ?? '',
+        theme.dateDayFormat ?? '',
+        theme.dateWeekdayFormat ?? '',
+        theme.dateLocale ?? '',
+        String(datePreviewTick),
+        theme.timeFontSize,
+        theme.dateFontSize,
+        theme.timeFontWeight,
+        theme.dateFontWeight,
+        theme.timeFontFamilyPreset ?? '',
+        theme.dateFontFamilyPreset ?? '',
+        theme.timeFontFamilySystem ?? '',
+        theme.dateFontFamilySystem ?? '',
+        theme.timeLetterSpacing,
+        theme.dateLetterSpacing,
+        theme.timeLineHeight,
+        theme.dateLineHeight,
+        theme.timeFontItalic === true ? '1' : '0',
+        theme.dateFontItalic === true ? '1' : '0',
+        theme.timeUnderline === true ? '1' : '0',
+        theme.dateUnderline === true ? '1' : '0',
+        JSON.stringify(theme.timeTextEffects ?? {}),
+        JSON.stringify(theme.dateTextEffects ?? {}),
+      ].join('\x1e'),
+    [
+      theme.previewTimeText,
+      theme.previewDateText,
+      previewLabels?.time,
+      previewLabels?.date,
+      theme.dateShowYear,
+      theme.dateShowMonth,
+      theme.dateShowDay,
+      theme.dateShowWeekday,
+      theme.dateYearFormat,
+      theme.dateMonthFormat,
+      theme.dateDayFormat,
+      theme.dateWeekdayFormat,
+      theme.dateLocale,
+      datePreviewTick,
+      theme.timeFontSize,
+      theme.dateFontSize,
+      theme.timeFontWeight,
+      theme.dateFontWeight,
+      theme.timeFontFamilyPreset,
+      theme.dateFontFamilyPreset,
+      theme.timeFontFamilySystem,
+      theme.dateFontFamilySystem,
+      theme.timeLetterSpacing,
+      theme.dateLetterSpacing,
+      theme.timeLineHeight,
+      theme.dateLineHeight,
+      theme.timeFontItalic,
+      theme.dateFontItalic,
+      theme.timeUnderline,
+      theme.dateUnderline,
+      theme.timeTextEffects,
+      theme.dateTextEffects,
+    ],
+  )
+
+  useLayoutEffect(() => {
+    if (readOnly) return
+    if (transformSyncLockedRef.current) return
+    let outer = 0
+    let inner = 0
+    outer = requestAnimationFrame(() => {
+      inner = requestAnimationFrame(() => {
+        if (transformSyncLockedRef.current) return
+        /** 勿仅限「当前选中」：否则在面板改日期格式/语言后未选中该层时 textBox 不更新，会裁切 */
+        if (dateRef.current) {
+          snapShortLayerTightContent('date', dateRef.current)
+        }
+        if (timeRef.current) {
+          snapShortLayerTightContent('time', timeRef.current)
+        }
+        moveableRef.current?.updateRect()
+      })
+    })
+    return () => {
+      cancelAnimationFrame(outer)
+      cancelAnimationFrame(inner)
+    }
+  }, [readOnly, dateTimeIntrinsicSig, selectedElementsSig, snapShortLayerTightContent])
 
   /**
    * 角点等比缩放松手后：把 CSS scale 乘进主题字号并 reset scale→1，这样「缩放=改字号」且外框与文字度量一致；
@@ -1476,12 +1925,15 @@ export function ThemePreviewEditor({
       /** 与预览 `*FontPx` 一致：按当前**已渲染的整数字号**乘缩放比再四舍五入，不写小数，避免与 floor/持久化归整打架 */
       const baseContentPx = Math.max(1, Math.min(8000, Math.round(theme.contentFontSize ?? 180)))
       const baseTimePx = Math.max(1, Math.min(8000, Math.round(theme.timeFontSize ?? 100)))
+      const baseDatePx = Math.max(1, Math.min(8000, Math.round(theme.dateFontSize ?? 72)))
       const baseCountdownPx = Math.max(1, Math.min(8000, Math.round(theme.countdownFontSize ?? 180)))
       const fontPatch: Partial<PopupTheme> = {}
       if (k === 'content') {
         fontPatch.contentFontSize = Math.max(1, Math.min(8000, Math.round(baseContentPx * ratio)))
       } else if (k === 'time') {
         fontPatch.timeFontSize = Math.max(1, Math.min(8000, Math.round(baseTimePx * ratio)))
+      } else if (k === 'date') {
+        fontPatch.dateFontSize = Math.max(1, Math.min(8000, Math.round(baseDatePx * ratio)))
       } else {
         fontPatch.countdownFontSize = Math.max(1, Math.min(8000, Math.round(baseCountdownPx * ratio)))
       }
@@ -1496,7 +1948,7 @@ export function ThemePreviewEditor({
       if (current.textBoxHeightPct != null && Number.isFinite(current.textBoxHeightPct)) {
         boxPatch.textBoxHeightPct = Math.min(100, Math.max(1, Math.round(current.textBoxHeightPct * ratio * 10) / 10 + 0.3))
       }
-      const field = k === 'content' ? 'contentTransform' : k === 'time' ? 'timeTransform' : 'countdownTransform'
+      const field = themeTransformField(k)
       onUpdateTheme(theme.id, {
         ...fontPatch,
         [field]: {
@@ -1534,6 +1986,7 @@ export function ThemePreviewEditor({
       theme.id,
       theme.contentFontSize,
       theme.timeFontSize,
+      theme.dateFontSize,
       theme.countdownFontSize,
       getTransform,
       onUpdateTheme,
@@ -1686,7 +2139,7 @@ export function ThemePreviewEditor({
     const unionCx = (minL + maxR) / 2
     const unionCy = (minT + maxB) / 2
 
-    const fieldOf = (k: TextElementKey) => k === 'content' ? 'contentTransform' : k === 'time' ? 'timeTransform' : 'countdownTransform'
+    const fieldOf = (k: TextElementKey) => themeTransformField(k)
     const cW = container.offsetWidth
     const cH = container.offsetHeight
 
@@ -1790,32 +2243,63 @@ export function ThemePreviewEditor({
     getTargetRef,
   ])
 
-  /** 下方参数区改字号/字重/对齐等导致目标尺寸变化时，同步 Moveable 外框（拖拽中由 applyMoveableFrame 内 updateRect） */
+  /**
+   * 参数区改字号/字重/对齐/装饰层图层数据等导致目标尺寸变化时，同步 Moveable 外框。
+   * 必须依赖 `theme.layers`：装饰文本字号写在图层上，不会动根字段 `contentFontSize`，缺此项则面板调字后框不跟。
+   * 双 rAF：等浏览器完成字体/换行布局后再量，避免仍用上帧尺寸。
+   */
   useEffect(() => {
     if (transformSyncLocked) return
     if (selectedElements.length === 0 && !selectedDecorationLayerId) return
     if (moveableTargets.length === 0) return
-    const id = requestAnimationFrame(() => {
-      moveableRef.current?.updateRect()
+    let inner = 0
+    const outer = requestAnimationFrame(() => {
+      inner = requestAnimationFrame(() => {
+        moveableRef.current?.updateRect()
+      })
     })
-    return () => cancelAnimationFrame(id)
-  }, [styleTransformByKey, decoStyleTransformById, contentFontPx, timeFontPx, countdownFontPx, theme.textAlign,
-    theme.contentTextAlign, theme.timeTextAlign, theme.countdownTextAlign,
-    theme.textVerticalAlign, theme.contentTextVerticalAlign, theme.timeTextVerticalAlign, theme.countdownTextVerticalAlign,
-    theme.contentLetterSpacing, theme.timeLetterSpacing, theme.countdownLetterSpacing,
-    theme.contentLineHeight, theme.timeLineHeight, theme.countdownLineHeight,
-    theme.contentFontWeight, theme.timeFontWeight, theme.countdownFontWeight,
-    theme.contentFontItalic, theme.timeFontItalic, theme.countdownFontItalic,
-    theme.contentUnderline, theme.timeUnderline, theme.countdownUnderline,
+    return () => {
+      cancelAnimationFrame(outer)
+      cancelAnimationFrame(inner)
+    }
+  }, [styleTransformByKey, decoStyleTransformById, contentFontPx, timeFontPx, dateFontPx, countdownFontPx, theme.textAlign,
+    theme.contentTextAlign, theme.timeTextAlign, theme.dateTextAlign, theme.countdownTextAlign,
+    theme.textVerticalAlign, theme.contentTextVerticalAlign, theme.timeTextVerticalAlign, theme.dateTextVerticalAlign, theme.countdownTextVerticalAlign,
+    theme.contentLetterSpacing, theme.timeLetterSpacing, theme.dateLetterSpacing, theme.countdownLetterSpacing,
+    theme.contentLineHeight, theme.timeLineHeight, theme.dateLineHeight, theme.countdownLineHeight,
+    theme.contentFontWeight, theme.timeFontWeight, theme.dateFontWeight, theme.countdownFontWeight,
+    theme.contentFontItalic, theme.timeFontItalic, theme.dateFontItalic, theme.countdownFontItalic,
+    theme.contentUnderline, theme.timeUnderline, theme.dateUnderline, theme.countdownUnderline,
     theme.popupFontFamilyPreset,
     theme.popupFontFamilySystem,
     theme.contentFontFamilyPreset,
     theme.contentFontFamilySystem,
     theme.timeFontFamilyPreset,
     theme.timeFontFamilySystem,
+    theme.dateFontFamilyPreset,
+    theme.dateFontFamilySystem,
     theme.countdownFontFamilyPreset,
     theme.countdownFontFamilySystem,
-    theme.contentTextEffects, theme.timeTextEffects, theme.countdownTextEffects,
+    theme.contentTextEffects, theme.timeTextEffects, theme.dateTextEffects, theme.countdownTextEffects,
+    theme.layers,
+    theme.previewContentText,
+    theme.previewTimeText,
+    theme.previewDateText,
+    theme.dateShowYear,
+    theme.dateShowMonth,
+    theme.dateShowDay,
+    theme.dateShowWeekday,
+    theme.dateYearFormat,
+    theme.dateMonthFormat,
+    theme.dateDayFormat,
+    theme.dateWeekdayFormat,
+    theme.dateLocale,
+    datePreviewTick,
+    previewLabels?.content,
+    previewLabels?.time,
+    previewLabels?.date,
+    contentLayoutSnapSig,
+    dateTimeIntrinsicSig,
     selectedElementsSig, selectedDecorationLayerId, transformSyncLocked, previewViewportWidth, popupPreviewAspect, editingTextKey, moveableTargets.length])
 
   const moveableTarget = useMemo(
@@ -1906,7 +2390,12 @@ export function ThemePreviewEditor({
     if (!el) return
     if (editSessionRef.current !== editingTextKey) {
       editSessionRef.current = editingTextKey
-      const defaults: Record<TextElementKey, string> = { content: '文本', time: '12:00', countdown: '5' }
+      const defaults: Record<TextElementKey, string> = {
+        content: '文本',
+        time: '12:00',
+        date: '2025年3月23日',
+        countdown: '5',
+      }
       el.textContent = getDisplayText(editingTextKey, defaults[editingTextKey] ?? '')
     }
     requestAnimationFrame(() => {
@@ -2040,9 +2529,24 @@ export function ThemePreviewEditor({
 
   const renderTextLayerForKey = (layerId: string, key: TextElementKey, zi: number): React.ReactNode => {
     const ref = getTargetRef(key)!
-    const label = key === 'content' ? '文本' : key === 'time' ? '12:00' : '5:00'
-    const fontSize = key === 'content' ? contentFontPx : key === 'time' ? timeFontPx : countdownFontPx
-    const color = key === 'content' ? theme.contentColor : key === 'countdown' ? (theme.countdownColor || theme.timeColor) : theme.timeColor
+    const label =
+      key === 'content' ? '文本' : key === 'time' ? '12:00' : key === 'date' ? '2025年3月23日' : '5:00'
+    const fontSize =
+      key === 'content'
+        ? contentFontPx
+        : key === 'time'
+          ? timeFontPx
+          : key === 'date'
+            ? dateFontPx
+            : countdownFontPx
+    const color =
+      key === 'content'
+        ? theme.contentColor
+        : key === 'countdown'
+          ? (theme.countdownColor || theme.timeColor)
+          : key === 'date'
+            ? (theme.dateColor || theme.timeColor)
+            : theme.timeColor
     const tf = styleTransformByKey[key] ?? 'translate(0px,0px) rotate(0deg) scale(1)'
     const displayText = getDisplayText(key, label)
     const ta = alignForKey(theme, key)
@@ -2053,7 +2557,7 @@ export function ThemePreviewEditor({
     const tform = getTransform(key)
     const bw = tform.textBoxWidthPct
     const bh = tform.textBoxHeightPct
-    const shortLineLayer = key === 'time'
+    const shortLineLayer = key === 'time' || key === 'date'
     const shortLayerLockW = shortLineLayer && tform.shortLayerTextBoxLockWidth === true
     const tv = verticalAlignForKey(theme, key)
     const shortLayerFlexJustify = justifyFromTextAlign(ta)
@@ -2071,11 +2575,10 @@ export function ThemePreviewEditor({
           left: 0, top: 0,
           transform: tf,
           transformOrigin: 'center',
-          willChange: selectedElements.includes(key) ? 'transform' : undefined,
           color, fontSize: `${toPreviewPx(fontSize)}px`, fontWeight: getFontWeight(key),
           fontStyle: getFontStyle(key),
           textDecoration: getTextDecoration(key),
-          lineHeight: lh, textAlign: ta,
+          textAlign: ta,
           letterSpacing: `${toPreviewPx(ls)}px`,
           zIndex: zi,
           padding: `${toPreviewPx(3)}px`,
@@ -2091,6 +2594,7 @@ export function ThemePreviewEditor({
                 display: 'flex',
                 flexDirection: 'column',
                 justifyContent: contentFlexJustify,
+                lineHeight: lh,
               }),
           fontFamily: resolvePopupFontFamilyCss(theme, key),
           outline: 'none',
@@ -2134,7 +2638,7 @@ export function ThemePreviewEditor({
         onMouseDownCapture={(e) => {
           if (e.button !== 0) return
           if (!canEditText) return
-          if (key === 'time') return
+          if (key === 'time' || key === 'date') return
           if (e.detail === 2) {
             e.preventDefault()
             e.stopPropagation()
@@ -2264,7 +2768,68 @@ export function ThemePreviewEditor({
           const zi = i + 1
           if (!L.visible) return null
           switch (L.kind) {
-            case 'background':
+            case 'background': {
+              const blurRaw = Math.round(Number(theme.backgroundImageBlurPx))
+              const bgBlur =
+                Number.isFinite(blurRaw) ? Math.max(0, Math.min(POPUP_BACKGROUND_IMAGE_BLUR_MAX_PX, blurRaw)) : 0
+              const blurOut = bgBlur > 0 ? Math.min(200, Math.ceil(bgBlur * 2.5)) : 0
+              if (
+                !readOnly &&
+                theme.imageSourceType === 'folder' &&
+                folderPreviewUrls.length >= 2
+              ) {
+                return (
+                  <FolderBgCrossfade
+                    key={L.id}
+                    layerId={L.id}
+                    zIndex={zi}
+                    urls={folderPreviewUrls}
+                    intervalSec={theme.imageFolderIntervalSec ?? 30}
+                    crossfadeSec={theme.imageFolderCrossfadeSec ?? 2}
+                    randomMode={theme.imageFolderPlayMode === 'random'}
+                    bgColor={theme.backgroundColor || '#000000'}
+                    blur={bgBlur}
+                  />
+                )
+              }
+              if (hasBgImage && bgImageUrl) {
+                if (bgBlur > 0) {
+                  return (
+                    <div
+                      key={L.id}
+                      className="absolute inset-0 overflow-hidden"
+                      data-layer="bg"
+                      style={{ zIndex: zi, backgroundColor: theme.backgroundColor || '#000000' }}
+                    >
+                      <div
+                        className="absolute"
+                        style={{
+                          left: -blurOut,
+                          top: -blurOut,
+                          width: `calc(100% + ${blurOut * 2}px)`,
+                          height: `calc(100% + ${blurOut * 2}px)`,
+                          backgroundImage: `url("${bgImageUrl}")`,
+                          backgroundSize: 'cover',
+                          backgroundPosition: 'center',
+                          backgroundRepeat: 'no-repeat',
+                          filter: `blur(${bgBlur}px)`,
+                        }}
+                      />
+                    </div>
+                  )
+                }
+                return (
+                  <div
+                    key={L.id}
+                    className="absolute inset-0"
+                    data-layer="bg"
+                    style={{
+                      zIndex: zi,
+                      background: `url("${bgImageUrl}") center / cover no-repeat, ${theme.backgroundColor || '#000000'}`,
+                    }}
+                  />
+                )
+              }
               return (
                 <div
                   key={L.id}
@@ -2272,13 +2837,11 @@ export function ThemePreviewEditor({
                   data-layer="bg"
                   style={{
                     zIndex: zi,
-                    background:
-                      hasBgImage && bgImageUrl
-                        ? `url("${bgImageUrl}") center / cover no-repeat, ${theme.backgroundColor || '#000000'}`
-                        : (theme.backgroundColor || '#000000'),
+                    background: theme.backgroundColor || '#000000',
                   }}
                 />
               )
+            }
             case 'overlay':
               return (
                 <div
@@ -2294,6 +2857,8 @@ export function ThemePreviewEditor({
               )
             case 'bindingTime':
               return renderTextLayerForKey(L.id, 'time', zi)
+            case 'bindingDate':
+              return renderTextLayerForKey(L.id, 'date', zi)
             case 'text': {
               const tl = L as TextThemeLayer
               if (tl.bindsReminderBody) return renderTextLayerForKey(L.id, 'content', zi)
@@ -2329,6 +2894,8 @@ export function ThemePreviewEditor({
                     color: td.color || '#ffffff',
                     fontSize: `${toPreviewPx(fs)}px`,
                     fontWeight: td.fontWeight ?? 500,
+                    fontStyle: td.fontItalic === true ? 'italic' : 'normal',
+                    textDecoration: td.textUnderline === true ? 'underline' : 'none',
                     lineHeight: td.lineHeight ?? 1.35,
                     textAlign: decoAlign,
                     letterSpacing: `${toPreviewPx(td.letterSpacing ?? 0)}px`,
@@ -2350,7 +2917,6 @@ export function ThemePreviewEditor({
                     wordBreak: 'keep-all',
                     overflowWrap: 'break-word',
                     outline: 'none',
-                    willChange: selectedDecorationLayerId === L.id ? 'transform' : undefined,
                     ...layerTextEffectsReactStyle(fakeTheme, 'content'),
                   }}
                   onMouseDownCapture={(e) => {
@@ -2490,7 +3056,6 @@ export function ThemePreviewEditor({
                     backgroundSize: fit,
                     backgroundPosition: 'center',
                     backgroundRepeat: 'no-repeat',
-                    willChange: selectedDecorationLayerId === L.id ? 'transform' : undefined,
                   }}
                   onMouseDown={(e) => {
                     if (readOnly || e.button !== 0) return

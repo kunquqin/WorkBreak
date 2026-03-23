@@ -10,6 +10,8 @@ import {
   getDefaultEntitlements,
   ensureThemeLayers,
   mergeSystemBuiltinPopupThemes,
+  POPUP_BACKGROUND_IMAGE_BLUR_MAX_PX,
+  POPUP_FOLDER_CROSSFADE_MAX_SEC,
 } from '../shared/settings'
 
 export type { AppSettings, ReminderCategory, SubReminder } from '../shared/settings'
@@ -365,6 +367,14 @@ function normalizePopupThemes(raw: unknown): PopupTheme[] {
       const imageFolderIntervalSec = Number.isFinite(imageFolderIntervalSecNum)
         ? Math.max(1, Math.min(3600, Math.floor(imageFolderIntervalSecNum)))
         : 30
+      const imageFolderCrossfadeSecNum = Number(o.imageFolderCrossfadeSec)
+      const imageFolderCrossfadeSec = Number.isFinite(imageFolderCrossfadeSecNum)
+        ? Math.max(0.5, Math.min(POPUP_FOLDER_CROSSFADE_MAX_SEC, imageFolderCrossfadeSecNum))
+        : 2
+      const backgroundImageBlurPxNum = Number(o.backgroundImageBlurPx)
+      const backgroundImageBlurPx = Number.isFinite(backgroundImageBlurPxNum)
+        ? Math.max(0, Math.min(POPUP_BACKGROUND_IMAGE_BLUR_MAX_PX, Math.round(backgroundImageBlurPxNum)))
+        : 0
       const overlayEnabled = typeof o.overlayEnabled === 'boolean' ? o.overlayEnabled : false
       const overlayColor = typeof o.overlayColor === 'string' && o.overlayColor ? o.overlayColor : '#000000'
       const overlayOpacityNum = Number(o.overlayOpacity)
@@ -404,6 +414,7 @@ function normalizePopupThemes(raw: unknown): PopupTheme[] {
         : 0
       const contentColor = typeof o.contentColor === 'string' && o.contentColor ? o.contentColor : '#ffffff'
       const timeColor = typeof o.timeColor === 'string' && o.timeColor ? o.timeColor : '#e2e8f0'
+      const dateColor = typeof o.dateColor === 'string' && o.dateColor ? o.dateColor : '#e2e8f0'
       const countdownColor = typeof o.countdownColor === 'string' && o.countdownColor ? o.countdownColor : '#ffffff'
       const clampThemeFont = (raw: unknown, fallback: number) => {
         const n = Math.floor(Number(raw))
@@ -412,6 +423,7 @@ function normalizePopupThemes(raw: unknown): PopupTheme[] {
       }
       const contentFontSize = clampThemeFont(o.contentFontSize, 180)
       const timeFontSize = clampThemeFont(o.timeFontSize, 100)
+      const dateFontSize = clampThemeFont(o.dateFontSize, 72)
       const countdownFontSize = clampThemeFont(o.countdownFontSize, 180)
       const textAlign =
         o.textAlign === 'left' ||
@@ -429,16 +441,21 @@ function normalizePopupThemes(raw: unknown): PopupTheme[] {
       const contentFontWeight = Number.isFinite(contentFontWeightNum) ? Math.max(100, Math.min(900, Math.round(contentFontWeightNum / 100) * 100)) : undefined
       const timeFontWeightNum = Number(o.timeFontWeight)
       const timeFontWeight = Number.isFinite(timeFontWeightNum) ? Math.max(100, Math.min(900, Math.round(timeFontWeightNum / 100) * 100)) : undefined
+      const dateFontWeightNum = Number(o.dateFontWeight)
+      const dateFontWeight = Number.isFinite(dateFontWeightNum) ? Math.max(100, Math.min(900, Math.round(dateFontWeightNum / 100) * 100)) : undefined
       const countdownFontWeightNum = Number(o.countdownFontWeight)
       const countdownFontWeight = Number.isFinite(countdownFontWeightNum) ? Math.max(100, Math.min(900, Math.round(countdownFontWeightNum / 100) * 100)) : undefined
       const contentFontItalic = o.contentFontItalic === true ? true : undefined
       const timeFontItalic = o.timeFontItalic === true ? true : undefined
+      const dateFontItalic = o.dateFontItalic === true ? true : undefined
       const countdownFontItalic = o.countdownFontItalic === true ? true : undefined
       const contentUnderline = o.contentUnderline === true ? true : undefined
       const timeUnderline = o.timeUnderline === true ? true : undefined
+      const dateUnderline = o.dateUnderline === true ? true : undefined
       const countdownUnderline = o.countdownUnderline === true ? true : undefined
       const contentTransform = normalizeTextTransform(o.contentTransform)
       const timeTransform = normalizeTextTransform(o.timeTransform)
+      const dateTransform = normalizeTextTransform(o.dateTransform)
       const countdownTransform = normalizeTextTransform(o.countdownTransform)
       const alignOrUndef = (v: unknown): 'left' | 'center' | 'right' | 'start' | 'end' | 'justify' | undefined =>
         v === 'left' || v === 'right' || v === 'center' || v === 'start' || v === 'end' || v === 'justify' ? v : undefined
@@ -473,6 +490,7 @@ function normalizePopupThemes(raw: unknown): PopupTheme[] {
       }
       const previewContentText = previewStr(o.previewContentText, 2000)
       const previewTimeText = previewStr(o.previewTimeText, 80)
+      const previewDateText = previewStr(o.previewDateText, 120)
       const previewCountdownText = previewStr(o.previewCountdownText, 80)
       const contentTextEffects = normalizeLayerTextEffects(o.contentTextEffects)
       const timeTextEffects = normalizeLayerTextEffects(o.timeTextEffects)
@@ -493,8 +511,29 @@ function normalizePopupThemes(raw: unknown): PopupTheme[] {
       const contentFontFamilySystem = layerSys(o.contentFontFamilySystem)
       const timeFontFamilyPreset = layerPreset(o.timeFontFamilyPreset)
       const timeFontFamilySystem = layerSys(o.timeFontFamilySystem)
+      const dateFontFamilyPreset = layerPreset(o.dateFontFamilyPreset)
+      const dateFontFamilySystem = layerSys(o.dateFontFamilySystem)
       const countdownFontFamilyPreset = layerPreset(o.countdownFontFamilyPreset)
       const countdownFontFamilySystem = layerSys(o.countdownFontFamilySystem)
+      const dateTextAlign = alignOrUndef(o.dateTextAlign)
+      const dateTextVerticalAlign = verticalAlignOrUndef(o.dateTextVerticalAlign)
+      const dateLetterSpacing = letter(o.dateLetterSpacing)
+      const dateLineHeight = lh(o.dateLineHeight)
+      const dateTextEffects = normalizeLayerTextEffects(o.dateTextEffects)
+      const dateShowYear = o.dateShowYear === false ? false : undefined
+      const dateShowMonth = o.dateShowMonth === false ? false : undefined
+      const dateShowDay = o.dateShowDay === false ? false : undefined
+      const dateShowWeekday = o.dateShowWeekday === false ? false : undefined
+      const dateYearFormat = o.dateYearFormat === '2-digit' ? '2-digit' : o.dateYearFormat === 'numeric' ? 'numeric' : undefined
+      const dateMonthFormat =
+        o.dateMonthFormat === 'long' || o.dateMonthFormat === 'short' || o.dateMonthFormat === '2-digit' || o.dateMonthFormat === 'numeric'
+          ? o.dateMonthFormat
+          : undefined
+      const dateDayFormat = o.dateDayFormat === '2-digit' ? '2-digit' : o.dateDayFormat === 'numeric' ? 'numeric' : undefined
+      const dateWeekdayFormat = o.dateWeekdayFormat === 'long' ? 'long' : o.dateWeekdayFormat === 'short' ? 'short' : undefined
+      const dateLocaleRaw = typeof o.dateLocale === 'string' ? o.dateLocale.trim().slice(0, 40) : ''
+      const dateLocale =
+        dateLocaleRaw && /^[a-zA-Z]{2,3}(-[a-zA-Z0-9]+)*$/.test(dateLocaleRaw) ? dateLocaleRaw : undefined
       const base: PopupTheme = {
         id,
         name,
@@ -508,6 +547,8 @@ function normalizePopupThemes(raw: unknown): PopupTheme[] {
         ...(imageFolderFiles && imageFolderFiles.length > 0 ? { imageFolderFiles } : {}),
         imageFolderPlayMode,
         imageFolderIntervalSec,
+        ...(imageFolderCrossfadeSec !== 2 ? { imageFolderCrossfadeSec } : {}),
+        ...(backgroundImageBlurPx > 0 ? { backgroundImageBlurPx } : {}),
         overlayEnabled,
         overlayColor,
         overlayOpacity,
@@ -518,41 +559,53 @@ function normalizePopupThemes(raw: unknown): PopupTheme[] {
         overlayGradientEndOpacity,
         contentColor,
         timeColor,
+        dateColor,
         countdownColor,
         contentFontSize,
         timeFontSize,
+        dateFontSize,
         countdownFontSize,
         textAlign,
         ...(textVerticalAlign ? { textVerticalAlign } : {}),
         ...(contentFontWeight !== undefined ? { contentFontWeight } : {}),
         ...(timeFontWeight !== undefined ? { timeFontWeight } : {}),
+        ...(dateFontWeight !== undefined ? { dateFontWeight } : {}),
         ...(countdownFontWeight !== undefined ? { countdownFontWeight } : {}),
         ...(contentFontItalic ? { contentFontItalic: true } : {}),
         ...(timeFontItalic ? { timeFontItalic: true } : {}),
+        ...(dateFontItalic ? { dateFontItalic: true } : {}),
         ...(countdownFontItalic ? { countdownFontItalic: true } : {}),
         ...(contentUnderline ? { contentUnderline: true } : {}),
         ...(timeUnderline ? { timeUnderline: true } : {}),
+        ...(dateUnderline ? { dateUnderline: true } : {}),
         ...(countdownUnderline ? { countdownUnderline: true } : {}),
         ...(contentTransform ? { contentTransform } : {}),
         ...(timeTransform ? { timeTransform } : {}),
+        ...(dateTransform ? { dateTransform } : {}),
         ...(countdownTransform ? { countdownTransform } : {}),
         ...(contentTextAlign ? { contentTextAlign } : {}),
         ...(timeTextAlign ? { timeTextAlign } : {}),
+        ...(dateTextAlign ? { dateTextAlign } : {}),
         ...(countdownTextAlign ? { countdownTextAlign } : {}),
         ...(contentTextVerticalAlign ? { contentTextVerticalAlign } : {}),
         ...(timeTextVerticalAlign ? { timeTextVerticalAlign } : {}),
+        ...(dateTextVerticalAlign ? { dateTextVerticalAlign } : {}),
         ...(countdownTextVerticalAlign ? { countdownTextVerticalAlign } : {}),
         ...(contentLetterSpacing !== undefined ? { contentLetterSpacing } : {}),
         ...(timeLetterSpacing !== undefined ? { timeLetterSpacing } : {}),
+        ...(dateLetterSpacing !== undefined ? { dateLetterSpacing } : {}),
         ...(countdownLetterSpacing !== undefined ? { countdownLetterSpacing } : {}),
         ...(contentLineHeight !== undefined ? { contentLineHeight } : {}),
         ...(timeLineHeight !== undefined ? { timeLineHeight } : {}),
+        ...(dateLineHeight !== undefined ? { dateLineHeight } : {}),
         ...(countdownLineHeight !== undefined ? { countdownLineHeight } : {}),
         ...(previewContentText ? { previewContentText } : {}),
         ...(previewTimeText ? { previewTimeText } : {}),
+        ...(previewDateText ? { previewDateText } : {}),
         ...(previewCountdownText ? { previewCountdownText } : {}),
         ...(contentTextEffects ? { contentTextEffects } : {}),
         ...(timeTextEffects ? { timeTextEffects } : {}),
+        ...(dateTextEffects ? { dateTextEffects } : {}),
         ...(countdownTextEffects ? { countdownTextEffects } : {}),
         ...(popupFontFamilyPreset ? { popupFontFamilyPreset } : {}),
         ...(popupFontFamilySystem ? { popupFontFamilySystem } : {}),
@@ -560,8 +613,19 @@ function normalizePopupThemes(raw: unknown): PopupTheme[] {
         ...(contentFontFamilySystem ? { contentFontFamilySystem } : {}),
         ...(timeFontFamilyPreset ? { timeFontFamilyPreset } : {}),
         ...(timeFontFamilySystem ? { timeFontFamilySystem } : {}),
+        ...(dateFontFamilyPreset ? { dateFontFamilyPreset } : {}),
+        ...(dateFontFamilySystem ? { dateFontFamilySystem } : {}),
         ...(countdownFontFamilyPreset ? { countdownFontFamilyPreset } : {}),
         ...(countdownFontFamilySystem ? { countdownFontFamilySystem } : {}),
+        ...(dateShowYear === false ? { dateShowYear: false } : {}),
+        ...(dateShowMonth === false ? { dateShowMonth: false } : {}),
+        ...(dateShowDay === false ? { dateShowDay: false } : {}),
+        ...(dateShowWeekday === false ? { dateShowWeekday: false } : {}),
+        ...(dateYearFormat ? { dateYearFormat } : {}),
+        ...(dateMonthFormat ? { dateMonthFormat } : {}),
+        ...(dateDayFormat ? { dateDayFormat } : {}),
+        ...(dateWeekdayFormat ? { dateWeekdayFormat } : {}),
+        ...(dateLocale ? { dateLocale } : {}),
         /** 含空数组也必须落盘，否则读回 undefined 会再走 migrate 导致「删掉的层又回来了」 */
         ...(Array.isArray(o.layers) ? { layers: o.layers as PopupTheme['layers'] } : {}),
       }

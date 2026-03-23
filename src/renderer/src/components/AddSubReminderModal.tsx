@@ -1,4 +1,4 @@
-import { useState, useEffect, useRef, useMemo } from 'react'
+import { useState, useEffect, useRef } from 'react'
 import type { PopupTheme, SubReminder } from '../types'
 import {
   BUILTIN_MAIN_POPUP_FALLBACK_BODY,
@@ -229,14 +229,6 @@ export function AddSubReminderModal({
   const restThemeOptions = popupThemes.filter((t) => t.target === 'rest')
   const defaultMainThemeId = getDefaultPopupThemeIdForTarget(popupThemes, 'main')
   const defaultRestThemeId = getDefaultPopupThemeIdForTarget(popupThemes, 'rest')
-  const selectedMainTheme = useMemo(
-    () => mainThemeOptions.find((t) => t.id === mainPopupThemeId),
-    [mainThemeOptions, mainPopupThemeId],
-  )
-  const selectedRestTheme = useMemo(
-    () => restThemeOptions.find((t) => t.id === restPopupThemeId),
-    [restThemeOptions, restPopupThemeId],
-  )
   const restManuallySet = useRef(false)
   const restZeroTimer = useRef<ReturnType<typeof setTimeout> | null>(null)
   const baselinePayloadJsonRef = useRef('')
@@ -336,14 +328,6 @@ export function AddSubReminderModal({
     }
     setUseNowAsStart(true)
     setTitle(getDefaultTitle(mode))
-    {
-      const mainTh =
-        popupThemes.find((t) => t.target === 'main' && t.id === defaultMainThemeId) ??
-        popupThemes.find((t) => t.target === 'main')
-      const restTh =
-        popupThemes.find((t) => t.target === 'rest' && t.id === defaultRestThemeId) ??
-        popupThemes.find((t) => t.target === 'rest')
-    }
     setWeekdaysEnabled(Array(7).fill(false))
     setSplitCount(1)
     restManuallySet.current = false
@@ -366,15 +350,15 @@ export function AddSubReminderModal({
     sourceItem?.mode,
     sourceItem && (sourceItem.mode === 'fixed' || sourceItem.mode === 'interval') ? sourceItem.mainPopupThemeId : undefined,
     sourceItem && (sourceItem.mode === 'fixed' || sourceItem.mode === 'interval') ? sourceItem.restPopupThemeId : undefined,
-    sourceItem?.startTime,
-    sourceItem?.time,
+    sourceItem && sourceItem.mode === 'fixed' ? sourceItem.startTime : undefined,
+    sourceItem && sourceItem.mode === 'fixed' ? sourceItem.time : undefined,
     sourceItem && sourceItem.mode === 'interval' ? sourceItem.intervalHours : undefined,
     sourceItem && sourceItem.mode === 'interval' ? sourceItem.intervalMinutes : undefined,
     sourceItem && sourceItem.mode === 'interval' ? sourceItem.intervalSeconds : undefined,
     sourceItem && sourceItem.mode === 'interval' ? sourceItem.repeatCount : undefined,
-    sourceItem?.splitCount,
-    sourceItem?.restDurationSeconds,
-    sourceItem?.title,
+    sourceItem && sourceItem.mode !== 'stopwatch' ? sourceItem.splitCount : undefined,
+    sourceItem && sourceItem.mode !== 'stopwatch' ? sourceItem.restDurationSeconds : undefined,
+    sourceItem && sourceItem.mode !== 'stopwatch' ? sourceItem.title : undefined,
     sourceItem && sourceItem.mode === 'fixed' ? sourceItem.weekdaysEnabled?.join(',') : undefined,
     formInstanceKey,
     layout,

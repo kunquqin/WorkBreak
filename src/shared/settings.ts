@@ -107,6 +107,12 @@ export function defaultTextTransform(): TextTransform {
   return { x: 50, y: 50, rotation: 0, scale: 1 }
 }
 
+/** 背景壁纸模糊滑杆上限（px），与 `main/settings` normalize、`reminderWindow` 钳制一致 */
+export const POPUP_BACKGROUND_IMAGE_BLUR_MAX_PX = 100
+
+/** 文件夹壁纸交叉淡入淡出时长上限（秒），normalize 钳制用 */
+export const POPUP_FOLDER_CROSSFADE_MAX_SEC = 15
+
 export interface PopupTheme {
   id: string
   name: string
@@ -126,6 +132,14 @@ export interface PopupTheme {
   imageFolderFiles?: string[]
   imageFolderPlayMode?: PopupFolderPlayMode
   imageFolderIntervalSec?: number
+  /**
+   * 文件夹轮播时交叉淡化时长（秒），默认 2；与「切换间隔」独立——间隔为每张图**全不透明停留**时间，之后再执行本时长淡化切到下一张。
+   */
+  imageFolderCrossfadeSec?: number
+  /**
+   * 背景为图片时的高斯模糊（px），0 表示不模糊；与主题面板滑杆上限一致。
+   */
+  backgroundImageBlurPx?: number
   overlayEnabled: boolean
   overlayColor: string
   overlayOpacity: number
@@ -196,11 +210,40 @@ export interface PopupTheme {
    */
   previewContentText?: string
   previewTimeText?: string
+  /** 预览固定日期文案（可选）；不设则按 Intl + 下方开关实时格式化 */
+  previewDateText?: string
   previewCountdownText?: string
   /** 主文案描边/阴影 */
   contentTextEffects?: PopupLayerTextEffects
   timeTextEffects?: PopupLayerTextEffects
+  /** 日期绑定层描边/阴影 */
+  dateTextEffects?: PopupLayerTextEffects
   countdownTextEffects?: PopupLayerTextEffects
+
+  /** —— 日期绑定层（与「时间」层并列，唯一；内容不可编辑，仅样式与变换） */
+  dateColor?: string
+  dateFontSize?: number
+  dateFontFamilyPreset?: string
+  dateFontFamilySystem?: string
+  dateFontWeight?: number
+  dateFontItalic?: boolean
+  dateUnderline?: boolean
+  dateTransform?: TextTransform
+  dateTextAlign?: PopupTextAlign
+  dateTextVerticalAlign?: PopupTextVerticalAlign
+  dateLetterSpacing?: number
+  dateLineHeight?: number
+  /** 是否显示各部分；缺省均为 true（与旧主题兼容） */
+  dateShowYear?: boolean
+  dateShowMonth?: boolean
+  dateShowDay?: boolean
+  dateShowWeekday?: boolean
+  dateYearFormat?: 'numeric' | '2-digit'
+  dateMonthFormat?: 'numeric' | '2-digit' | 'short' | 'long'
+  dateDayFormat?: 'numeric' | '2-digit'
+  dateWeekdayFormat?: 'short' | 'long'
+  /** BCP 47，如 zh-CN；缺省用系统 locale */
+  dateLocale?: string
 }
 
 export interface AppEntitlements {

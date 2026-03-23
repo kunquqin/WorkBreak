@@ -8,7 +8,7 @@ export const POPUP_TEXT_SHADOW_BLUR_MAX = 80
 export const POPUP_TEXT_SHADOW_SIZE_MAX = 48
 export const POPUP_TEXT_SHADOW_DISTANCE_MAX = 160
 
-export type TextEffectLayer = 'content' | 'time' | 'countdown'
+export type TextEffectLayer = 'content' | 'time' | 'date' | 'countdown'
 
 export function getLayerTextEffects(
   theme: PopupTheme | undefined,
@@ -17,6 +17,7 @@ export function getLayerTextEffects(
   if (!theme) return undefined
   if (layer === 'content') return theme.contentTextEffects
   if (layer === 'time') return theme.timeTextEffects
+  if (layer === 'date') return theme.dateTextEffects
   return theme.countdownTextEffects
 }
 

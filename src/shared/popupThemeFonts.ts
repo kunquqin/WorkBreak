@@ -5,7 +5,7 @@ import type { PopupTheme } from './settings'
 
 export const DEFAULT_POPUP_FONT_PRESET_ID = 'system_yahei'
 
-export type PopupTextFontLayer = 'content' | 'time' | 'countdown'
+export type PopupTextFontLayer = 'content' | 'time' | 'date' | 'countdown'
 
 export const POPUP_FONT_FAMILY_OPTIONS: ReadonlyArray<{ id: string; label: string; css: string }> = [
   {
@@ -97,6 +97,9 @@ export function hasLayerOwnPopupFont(theme: PopupTheme | undefined, layer: Popup
   if (layer === 'time') {
     return Boolean(theme.timeFontFamilyPreset || theme.timeFontFamilySystem?.trim())
   }
+  if (layer === 'date') {
+    return Boolean(theme.dateFontFamilyPreset || theme.dateFontFamilySystem?.trim())
+  }
   return Boolean(theme.countdownFontFamilyPreset || theme.countdownFontFamilySystem?.trim())
 }
 
@@ -104,6 +107,7 @@ function layerSystemRaw(theme: PopupTheme | undefined, layer: PopupTextFontLayer
   if (!theme) return undefined
   if (layer === 'content') return theme.contentFontFamilySystem?.trim()
   if (layer === 'time') return theme.timeFontFamilySystem?.trim()
+  if (layer === 'date') return theme.dateFontFamilySystem?.trim()
   return theme.countdownFontFamilySystem?.trim()
 }
 
@@ -111,6 +115,7 @@ function layerPresetRaw(theme: PopupTheme | undefined, layer: PopupTextFontLayer
   if (!theme) return undefined
   if (layer === 'content') return theme.contentFontFamilyPreset
   if (layer === 'time') return theme.timeFontFamilyPreset
+  if (layer === 'date') return theme.dateFontFamilyPreset
   return theme.countdownFontFamilyPreset
 }
 
@@ -132,7 +137,7 @@ export function resolvePopupFontFamilyCss(
 
   if (!hasLayerOwnPopupFont(theme, layer)) {
     const legacySys = theme?.popupFontFamilySystem?.trim()
-    if (legacySys && (layer === 'content' || layer === 'time')) {
+    if (legacySys && (layer === 'content' || layer === 'time' || layer === 'date')) {
       const q = quoteFontFamilyForCss(legacySys)
       if (q) return stackWithSystemFont(q)
     }

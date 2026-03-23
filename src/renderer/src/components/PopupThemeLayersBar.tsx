@@ -13,7 +13,8 @@ import type { PopupTheme } from '../types'
 import { ensureThemeLayers } from '../../../shared/settings'
 import {
   addBackgroundLayer,
-  addImageDecorationLayer,
+  addBindingContentLayer,
+  addDateLayer,
   addOverlayLayer,
   addTextLayer,
   addTimeLayer,
@@ -41,7 +42,13 @@ function sortableTranslateOnly(t: Transform | null): string | undefined {
   return `translate3d(${Math.round(x)}px, ${Math.round(y)}px, 0)`
 }
 
-function layerRowLabel(L: PopupThemeLayer): string {
+/** 图层行单行预览：空白压成空格，便于与外层 truncate 的 CSS 省略号配合（类似 PS 文本图层名） */
+function singleLineLayerSnippet(raw: string | undefined): string {
+  const s = (raw ?? '').replace(/\s+/g, ' ').trim()
+  return s.length > 0 ? s : '（空）'
+}
+
+function layerRowLabel(L: PopupThemeLayer, theme: PopupTheme): string {
   switch (L.kind) {
     case 'background':
       return '背景'
@@ -49,22 +56,29 @@ function layerRowLabel(L: PopupThemeLayer): string {
       return '遮罩'
     case 'bindingTime':
       return '时间'
+    case 'bindingDate':
+      return '日期'
     case 'text': {
       const t = L as TextThemeLayer
-      const hint = t.text?.trim()
-        ? ` · ${t.text.trim().slice(0, 12)}${t.text.length > 12 ? '…' : ''}`
-        : ''
-      return `文本${hint}`
+      if (isBindingBodyTextLayer(L)) {
+        /** 绑定层在预览里常改的是根字段，优先用 previewContentText 与界面一致 */
+        const src = theme.previewContentText?.trim() ? theme.previewContentText : t.text
+        return `主文本 · ${singleLineLayerSnippet(src)}`
+      }
+      return `文本 · ${singleLineLayerSnippet(t.text)}`
     }
     case 'image':
       return '图片'
-    default:
-      return L.kind
+    default: {
+      const _exhaustive: never = L
+      return _exhaustive
+    }
   }
 }
 
 function bindingTextKey(L: PopupThemeLayer): TextElementKey | null {
   if (L.kind === 'bindingTime') return 'time'
+  if (L.kind === 'bindingDate') return 'date'
   return null
 }
 
@@ -116,6 +130,7 @@ function EyeIcon({ on, className }: { on: boolean; className?: string }) {
 }
 
 type SortableLayerRowProps = {
+  theme: PopupTheme
   L: PopupThemeLayer
   readOnly: boolean
   selected: boolean
@@ -130,6 +145,7 @@ type SortableLayerRowProps = {
 }
 
 function SortableLayerRow({
+  theme,
   L,
   readOnly,
   selected,
@@ -159,11 +175,11 @@ function SortableLayerRow({
   return (
     <li ref={setNodeRef} style={style} className="list-none">
       <div
-        className={`rounded-md border border-slate-200 bg-white px-2 py-1.5 shadow-sm transition-colors ${
+        className={`min-w-0 rounded-md border border-slate-200 bg-white px-2 py-1.5 shadow-sm transition-colors ${
           selected ? 'border-sky-300 bg-sky-50' : ''
         } ${isDragging ? 'opacity-90 shadow-md' : ''}`}
       >
-        <div className="flex items-center gap-1.5">
+        <div className="flex min-w-0 items-center gap-1.5">
           {!readOnly && (
             <button
               type="button"
@@ -195,6 +211,7 @@ function SortableLayerRow({
           </button>
           <button
             type="button"
+            title={L.kind === 'text' ? layerRowLabel(L, theme) : undefined}
             className="min-w-0 flex-1 truncate text-left text-[11px] text-slate-800"
             onClick={() => {
               if (L.kind === 'text') {
@@ -216,7 +233,7 @@ function SortableLayerRow({
               }
             }}
           >
-            {layerRowLabel(L)}
+            {layerRowLabel(L, theme)}
           </button>
           {!readOnly && (
             <button
@@ -277,7 +294,11 @@ export function PopupThemeLayersBar({
 }: PopupThemeLayersBarProps) {
   const [collapsedUncontrolled, setCollapsedUncontrolled] = useState(false)
   const collapsed = collapsedProp ?? collapsedUncontrolled
-  const setCollapsed = onCollapsedChange ?? setCollapsedUncontrolled
+  const toggleCollapsed = useCallback(() => {
+    const next = !collapsed
+    if (onCollapsedChange) onCollapsedChange(next)
+    else setCollapsedUncontrolled(next)
+  }, [collapsed, onCollapsedChange])
 
   const layers = useMemo(() => ensureThemeLayers(theme).layers ?? [], [theme])
   /** 列表自上而下：前景（z 大）→ 背景（z 小），与存储顺序相反 */
@@ -352,7 +373,9 @@ export function PopupThemeLayersBar({
 
   const textN = countTextLayers(layers)
   const imgN = countImages(layers)
+  const hasBindingMainText = layers.some((l) => l.kind === 'text' && (l as TextThemeLayer).bindsReminderBody)
   const hasTimeLayer = layers.some((l) => l.kind === 'bindingTime')
+  const hasDateLayer = layers.some((l) => l.kind === 'bindingDate')
   const hasBackgroundLayer = layers.some((l) => l.kind === 'background')
   const hasOverlayLayer = layers.some((l) => l.kind === 'overlay')
 
@@ -374,13 +397,31 @@ export function PopupThemeLayersBar({
         <button
           type="button"
           className="text-xs font-medium text-slate-700 hover:text-slate-900"
-          onClick={() => setCollapsed((c) => !c)}
+          onClick={toggleCollapsed}
         >
           图层 {collapsed ? '▸' : '▾'}
         </button>
         <div className="flex flex-wrap items-center gap-1.5">
           {!readOnly && (
             <>
+              {!hasBindingMainText && (
+                <button
+                  type="button"
+                  title="恢复主文案层（随当前壁纸类型填入默认句）"
+                  className="rounded border border-indigo-300 bg-indigo-50 px-2 py-0.5 text-[11px] font-medium text-indigo-800 hover:bg-indigo-100"
+                  onClick={() => {
+                    const patch = addBindingContentLayer(theme)
+                    if (patch) {
+                      onUpdateTheme(theme.id, patch)
+                      onSelectStructuralLayer?.(null)
+                      onSelectDecorationLayer(null)
+                      onSelectElements(['content'])
+                    }
+                  }}
+                >
+                  + 主文本
+                </button>
+              )}
               {textN < MAX_TEXT_LAYERS && (
                 <button
                   type="button"
@@ -413,6 +454,22 @@ export function PopupThemeLayersBar({
                   }}
                 >
                   + 时间
+                </button>
+              )}
+              {!hasDateLayer && (
+                <button
+                  type="button"
+                  title="添加日期层（年月日、星期，由系统格式化）"
+                  className="rounded border border-slate-300 bg-white px-2 py-0.5 text-[11px] text-slate-700 hover:bg-slate-50"
+                  onClick={() => {
+                    const patch = addDateLayer(theme)
+                    if (patch?.layers) {
+                      onUpdateTheme(theme.id, patch)
+                      selectBinding('date')
+                    }
+                  }}
+                >
+                  + 日期
                 </button>
               )}
               {!!onPickDecoImage && imgN < MAX_DECORATION_IMAGE_LAYERS && (
@@ -465,11 +522,13 @@ export function PopupThemeLayersBar({
         <div className="min-h-0 flex-1 overflow-y-auto overscroll-contain pr-0.5">
           <DndContext sensors={sensors} collisionDetection={closestCenter} onDragEnd={handleDragEnd}>
             <SortableContext items={displayLayers.map((l) => l.id)} strategy={verticalListSortingStrategy}>
-              <ul className="flex flex-col gap-2 py-0.5">
+              <ul className="flex min-w-0 flex-col gap-2 py-0.5">
                 {displayLayers.map((L) => {
                   const selected =
                     (L.kind === 'bindingTime' &&
                       selectedElements.includes('time')) ||
+                    (L.kind === 'bindingDate' &&
+                      selectedElements.includes('date')) ||
                     (isBindingBodyTextLayer(L) &&
                       selectedElements.includes('content')) ||
                     (L.kind === 'text' &&
@@ -477,7 +536,7 @@ export function PopupThemeLayersBar({
                       selectedDecorationLayerId === L.id) ||
                     (L.kind === 'image' && selectedDecorationLayerId === L.id) ||
                     ((L.kind === 'background' || L.kind === 'overlay') && selectedStructuralLayerId === L.id)
-                  return <SortableLayerRow key={L.id} L={L} selected={selected} {...rowPropsBase} />
+                  return <SortableLayerRow key={L.id} theme={theme} L={L} selected={selected} {...rowPropsBase} />
                 })}
               </ul>
             </SortableContext>

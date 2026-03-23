@@ -6,7 +6,7 @@ import { PopupThemeEditorPanel } from './PopupThemeEditorPanel'
 import { clonePopupThemeForFork, popupThemeContentEquals } from '../../../shared/popupThemeUtils'
 import { addImageDecorationLayer, mergeContentThemePatchIntoBindingTextLayer } from '../../../shared/popupThemeLayers'
 import { ensureThemeLayers } from '../../../shared/settings'
-import { usePopupThemeEditHistory } from '../hooks/usePopupThemeEditHistory'
+import { usePopupThemeEditHistory, type PopupThemeEditUpdateMeta } from '../hooks/usePopupThemeEditHistory'
 
 function themeDraftDirty(baseline: PopupTheme, draft: PopupTheme): boolean {
   if ((baseline.name ?? '').trim() !== (draft.name ?? '').trim()) return true
@@ -55,13 +55,13 @@ export function ThemeStudioEditWorkspace({
     20,
   )
   const mergedWrappedOnUpdateTheme = useCallback(
-    (id: string, patch: Partial<PopupTheme>) => {
+    (id: string, patch: Partial<PopupTheme>, meta?: PopupThemeEditUpdateMeta) => {
       if (id !== theme.id) {
         wrappedOnUpdateTheme(id, patch)
         return
       }
       const layerSync = mergeContentThemePatchIntoBindingTextLayer(theme, patch)
-      wrappedOnUpdateTheme(id, layerSync ? { ...patch, ...layerSync } : patch)
+      wrappedOnUpdateTheme(id, layerSync ? { ...patch, ...layerSync } : patch, meta)
     },
     [theme.id, theme, wrappedOnUpdateTheme],
   )
@@ -116,6 +116,7 @@ export function ThemeStudioEditWorkspace({
               selectedDecorationLayerId={selectedDecorationLayerId}
               onSelectDecorationLayer={setSelectedDecorationLayerId}
               onSelectStructuralLayer={setSelectedStructuralLayerId}
+              selectedStructuralLayerId={selectedStructuralLayerId}
               previewWidthMode="fill"
               outerChrome="none"
             />
@@ -568,7 +569,7 @@ export function ThemeStudioFloatingEditor({
           <button
             type="button"
             className="rounded-md border border-slate-300 px-3 py-1 text-xs"
-            onClick={onClose}
+            onClick={() => onClose()}
           >
             关闭
           </button>
@@ -661,26 +662,10 @@ export function ThemeStudioFloatingEditor({
             <button
               type="button"
               role="tab"
-              aria-selected={selectedTarget === 'main'}
-              disabled={source.kind === 'subitem' && source.popupTarget !== 'main'}
-              onClick={() => setWallpaperTarget('main')}
-              className={`min-h-[44px] flex-1 px-3 py-2.5 text-sm font-semibold transition-colors ${
-                selectedTarget === 'main'
-                  ? 'bg-green-500 text-white'
-                  : source.kind === 'subitem'
-                    ? 'cursor-not-allowed bg-slate-100 text-slate-400'
-                    : 'bg-green-50 text-green-800 hover:bg-green-100'
-              }`}
-            >
-              结束壁纸
-            </button>
-            <button
-              type="button"
-              role="tab"
               aria-selected={selectedTarget === 'rest'}
               disabled={source.kind === 'subitem' && source.popupTarget !== 'rest'}
               onClick={() => setWallpaperTarget('rest')}
-              className={`min-h-[44px] flex-1 border-l border-slate-200 px-3 py-2.5 text-sm font-semibold transition-colors ${
+              className={`min-h-[44px] flex-1 px-3 py-2.5 text-sm font-semibold transition-colors ${
                 selectedTarget === 'rest'
                   ? 'bg-blue-500 text-white'
                   : source.kind === 'subitem'
@@ -689,6 +674,22 @@ export function ThemeStudioFloatingEditor({
               }`}
             >
               休息壁纸
+            </button>
+            <button
+              type="button"
+              role="tab"
+              aria-selected={selectedTarget === 'main'}
+              disabled={source.kind === 'subitem' && source.popupTarget !== 'main'}
+              onClick={() => setWallpaperTarget('main')}
+              className={`min-h-[44px] flex-1 border-l border-slate-200 px-3 py-2.5 text-sm font-semibold transition-colors ${
+                selectedTarget === 'main'
+                  ? 'bg-green-500 text-white'
+                  : source.kind === 'subitem'
+                    ? 'cursor-not-allowed bg-slate-100 text-slate-400'
+                    : 'bg-green-50 text-green-800 hover:bg-green-100'
+              }`}
+            >
+              结束壁纸
             </button>
           </div>
         </div>

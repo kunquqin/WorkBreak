@@ -1,0 +1,25 @@
+---
+description: 本机字体下拉（SystemFontFamilyPicker）— Portal 层级与 Windows 编码稳定性
+globs: "**/SystemFontFamilyPicker.tsx,**/PopupThemeEditorPanel.tsx,**/main/systemFonts.ts,**/main/index.ts"
+alwaysApply: false
+---
+
+# 本机字体列表易错点
+
+## 1. 列表“空白”先查 Portal 层级
+
+- `SystemFontFamilyPicker` 的下拉列表渲染在 `document.body`（Portal）。
+- 若 `z-index` 低于全屏编辑层（如 `ThemeStudio` / `AddSubReminderModal`），会出现“IPC 已返回字体数量，但下拉看起来空空如也”。
+- 做法：用常量维护 `PORTAL_Z_BACKDROP` / `PORTAL_Z_LIST`，并确保高于主编辑遮罩层级。
+
+## 2. Windows 字体名乱码先查编码链路
+
+- PowerShell 直接文本输出到 Node 可能因宿主编码链路导致中文/多语种乱码。
+- 做法：PowerShell 把每个字体名编码为 `Base64(UTF-16LE)` 输出，Node 端逐行 `base64 -> utf16le` 解码。
+
+## 3. 排查顺序（避免误判）
+
+- 若控制台显示 `getSystemFontFamilies` 返回数量 > 0，但 UI 仍“空”，优先排查：
+  1) 下拉是否被遮罩盖住（z-index）；
+  2) 组件是否把字体 state 重置为 `null/[]`；
+  3) 再看主进程枚举逻辑。

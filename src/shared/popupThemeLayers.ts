@@ -41,9 +41,14 @@ export const POPUP_LAYER_BACKGROUND_ID = 'layer-bg'
 export const POPUP_LAYER_OVERLAY_ID = 'layer-overlay'
 export const POPUP_LAYER_BINDING_CONTENT_ID = 'layer-binding-content'
 export const POPUP_LAYER_BINDING_TIME_ID = 'layer-binding-time'
+export const POPUP_LAYER_BINDING_DATE_ID = 'layer-binding-date'
 
 /** 文本层数量上限（含「提醒文案」绑定层） */
 export const MAX_TEXT_LAYERS = 10
+
+/** 与 `settings.BUILTIN_*_POPUP_FALLBACK_BODY` 文案保持一致（避免 settings↔本模块循环依赖） */
+export const RESTORE_BINDING_BODY_MAIN = '时间到！'
+export const RESTORE_BINDING_BODY_REST = '休息一下'
 export const MAX_DECORATION_IMAGE_LAYERS = 5
 
 export type PopupThemeLayerKind =
@@ -52,6 +57,7 @@ export type PopupThemeLayerKind =
   | 'image'
   | 'text'
   | 'bindingTime'
+  | 'bindingDate'
 
 export interface PopupThemeLayerBase {
   id: string
@@ -91,10 +97,17 @@ export interface TextThemeLayer extends PopupThemeLayerBase {
   fontFamilyPreset?: string
   fontFamilySystem?: string
   textEffects?: PopupLayerTextEffects
+  /** 与主题根 `contentFontItalic` 等语义对齐，仅装饰/独立文本层使用；绑定层仍以根字段为准 */
+  fontItalic?: boolean
+  textUnderline?: boolean
 }
 
 export interface BindingTimeThemeLayer extends PopupThemeLayerBase {
   kind: 'bindingTime'
+}
+
+export interface BindingDateThemeLayer extends PopupThemeLayerBase {
+  kind: 'bindingDate'
 }
 
 export type PopupThemeLayer =
@@ -103,6 +116,7 @@ export type PopupThemeLayer =
   | ImageThemeLayer
   | TextThemeLayer
   | BindingTimeThemeLayer
+  | BindingDateThemeLayer
 
 function newDecoId(prefix: string): string {
   return `${prefix}_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 8)}`
@@ -114,7 +128,8 @@ function defaultFreeTextTransform(): TextTransform {
    * 不预置 textBoxWidth/Height，交给预览按内容尺寸自适应；
    * 用户手动拉框后再写入 textBox*Pct 持久化。
    */
-  return { ...baseTransform(), x: 50, y: 60 }
+  /** y 与绑定主文案默认 42% 对齐，新建装饰句视觉中心接近主文案 */
+  return { ...baseTransform(), x: 50, y: 42 }
 }
 
 function defaultImageTransform(): TextTransform {
@@ -200,6 +215,9 @@ function sanitizeLayer(raw: unknown, theme: PopupTheme): PopupThemeLayer | null 
   if (kind === 'bindingTime' && id === POPUP_LAYER_BINDING_TIME_ID) {
     return { id, kind: 'bindingTime', visible }
   }
+  if (kind === 'bindingDate' && id === POPUP_LAYER_BINDING_DATE_ID) {
+    return { id, kind: 'bindingDate', visible }
+  }
   if (kind === 'bindingCountdown') return null
 
   /** 新版 text 或旧 bindingContent */
@@ -267,6 +285,8 @@ function sanitizeLayer(raw: unknown, theme: PopupTheme): PopupThemeLayer | null 
       ...(fontFamilyPreset ? { fontFamilyPreset } : {}),
       ...(fontFamilySystem ? { fontFamilySystem } : {}),
       ...(te ? { textEffects: te } : {}),
+      ...(o.fontItalic === true ? { fontItalic: true as const } : {}),
+      ...(o.textUnderline === true ? { textUnderline: true as const } : {}),
     }
   }
 
@@ -313,6 +333,8 @@ function sanitizeLayer(raw: unknown, theme: PopupTheme): PopupThemeLayer | null 
       fontFamilyPreset: typeof o.fontFamilyPreset === 'string' ? o.fontFamilyPreset : undefined,
       fontFamilySystem: typeof o.fontFamilySystem === 'string' ? o.fontFamilySystem : undefined,
       ...(te ? { textEffects: te } : {}),
+      ...(o.fontItalic === true ? { fontItalic: true as const } : {}),
+      ...(o.textUnderline === true ? { textUnderline: true as const } : {}),
     }
   }
 
@@ -442,6 +464,39 @@ export function reorderLayers(theme: PopupTheme, fromIndex: number, toIndex: num
   return { layers }
 }
 
+/**
+ * 恢复唯一「主文案」绑定层（用户曾删除时）；文案随 `theme.target`：`main`→时间到！，`rest`→休息一下。
+ * 不计入 MAX_TEXT_LAYERS 限制（与必选层语义一致）。
+ */
+export function addBindingContentLayer(theme: PopupTheme): Partial<PopupTheme> | null {
+  const layers = [...(theme.layers ?? migrateLegacyLayerStack(theme))]
+  if (layers.some((l) => l.kind === 'text' && (l as TextThemeLayer).bindsReminderBody)) return null
+
+  const bodyText = theme.target === 'rest' ? RESTORE_BINDING_BODY_REST : RESTORE_BINDING_BODY_MAIN
+  const draftTheme: PopupTheme = { ...theme, previewContentText: bodyText }
+  const base = bindingBodyTextFromTheme(draftTheme)
+  const L: TextThemeLayer = {
+    id: POPUP_LAYER_BINDING_CONTENT_ID,
+    kind: 'text',
+    visible: true,
+    ...base,
+    text: bodyText,
+  }
+  const timeIdx = layers.findIndex((l) => l.id === POPUP_LAYER_BINDING_TIME_ID && l.kind === 'bindingTime')
+  const dateIdx = layers.findIndex((l) => l.id === POPUP_LAYER_BINDING_DATE_ID && l.kind === 'bindingDate')
+  const clockIndices = [timeIdx, dateIdx].filter((i) => i >= 0).sort((a, b) => a - b)
+  const firstClockIdx = clockIndices[0] ?? -1
+  const insertAt =
+    firstClockIdx >= 0
+      ? firstClockIdx
+      : (() => {
+          const overlayIdx = layers.findIndex((l) => l.id === POPUP_LAYER_OVERLAY_ID && l.kind === 'overlay')
+          return overlayIdx >= 0 ? overlayIdx + 1 : 0
+        })()
+  layers.splice(insertAt, 0, L)
+  return { layers, ...themePatchFromBindingTextLayer(L) }
+}
+
 export function addTextLayer(theme: PopupTheme, bindsReminderBody = false): Partial<PopupTheme> | null {
   const layers = [...(theme.layers ?? migrateLegacyLayerStack(theme))]
   if (countKind(layers, 'text') >= MAX_TEXT_LAYERS) return null
@@ -460,7 +515,7 @@ export function addTextLayer(theme: PopupTheme, bindsReminderBody = false): Part
         bindsReminderBody: false,
         text: '文本',
         color: '#ffffff',
-        fontSize: 28,
+        fontSize: 150,
         fontWeight: 500,
         transform: defaultFreeTextTransform(),
       }
@@ -475,6 +530,24 @@ export function addTimeLayer(theme: PopupTheme): Partial<PopupTheme> | null {
   const L: BindingTimeThemeLayer = { id: POPUP_LAYER_BINDING_TIME_ID, kind: 'bindingTime', visible: true }
   layers.push(L)
   return { layers }
+}
+
+export function addDateLayer(theme: PopupTheme): Partial<PopupTheme> | null {
+  const layers = [...(theme.layers ?? migrateLegacyLayerStack(theme))]
+  if (layers.some((l) => l.kind === 'bindingDate')) return null
+  const L: BindingDateThemeLayer = { id: POPUP_LAYER_BINDING_DATE_ID, kind: 'bindingDate', visible: true }
+  layers.push(L)
+  const patch: Partial<PopupTheme> = { layers }
+  if (!theme.dateTransform) {
+    patch.dateTransform = { x: 50, y: 58, rotation: 0, scale: 1 }
+  }
+  if (theme.dateFontSize == null) {
+    patch.dateFontSize = 72
+  }
+  if (theme.dateColor == null) {
+    patch.dateColor = theme.timeColor || '#e2e8f0'
+  }
+  return patch
 }
 
 export function addImageDecorationLayer(theme: PopupTheme, imagePath: string): Partial<PopupTheme> | null {
@@ -492,11 +565,19 @@ export function addImageDecorationLayer(theme: PopupTheme, imagePath: string): P
   return { layers }
 }
 
-export function removeThemeLayer(theme: PopupTheme, layerId: string): Partial<PopupTheme> | null {
+/** 一次从栈中移除多个图层（与图层栏 × 多次删除结果一致，便于撤销为单步时可由调用方拆步） */
+export function removeThemeLayers(theme: PopupTheme, layerIds: string[]): Partial<PopupTheme> | null {
+  if (!layerIds.length) return null
   const cur = theme.layers ?? migrateLegacyLayerStack(theme)
-  const layers = cur.filter((l) => l.id !== layerId)
+  const drop = new Set(layerIds.filter((id) => typeof id === 'string' && id.length > 0))
+  if (drop.size === 0) return null
+  const layers = cur.filter((l) => !drop.has(l.id))
   if (layers.length === cur.length) return null
   return { layers }
+}
+
+export function removeThemeLayer(theme: PopupTheme, layerId: string): Partial<PopupTheme> | null {
+  return removeThemeLayers(theme, [layerId])
 }
 
 export function addBackgroundLayer(theme: PopupTheme): Partial<PopupTheme> | null {

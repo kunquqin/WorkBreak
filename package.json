@@ -1,7 +1,7 @@
 {
   "name": "workbreak",
   "productName": "WorkBreak",
-  "version": "0.0.14",
+  "version": "0.0.15",
   "type": "module",
   "description": "帮助打工人按时吃饭、起身活动和休息的桌面提醒应用",
   "main": "out/main/index.js",

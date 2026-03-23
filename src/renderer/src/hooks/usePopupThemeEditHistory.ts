@@ -3,6 +3,11 @@ import type { PopupTheme } from '../types'
 
 const DEFAULT_MAX_HISTORY = 20
 
+/** 传给 `wrappedOnUpdateTheme` 第三参：高频 UI（如拾色器拖动）可 `skipHistory` 避免每帧整主题 structuredClone */
+export type PopupThemeEditUpdateMeta = {
+  skipHistory?: boolean
+}
+
 /**
  * 主题编辑撤销 / 重做：在每次 `onUpdateTheme` 前压入当前主题快照，`replaceThemeFull` 恢复整主题。
  * 通过 ref 持有最新的 `onUpdateTheme` / `replaceThemeFull`，避免子项弹窗等内联函数导致闭包过期。
@@ -44,17 +49,19 @@ export function usePopupThemeEditHistory(
   }, [])
 
   const wrappedOnUpdateTheme = useCallback(
-    (themeId: string, patch: Partial<PopupTheme>) => {
+    (themeId: string, patch: Partial<PopupTheme>, meta?: PopupThemeEditUpdateMeta) => {
       if (themeId !== theme.id) {
         onUpdateRef.current(themeId, patch)
         return
       }
       if (!skipRef.current) {
-        pushPast()
+        if (!meta?.skipHistory) {
+          pushPast()
+        }
         futureRef.current = []
       }
       onUpdateRef.current(themeId, patch)
-      bump()
+      if (!meta?.skipHistory) bump()
     },
     [theme.id, pushPast, bump],
   )

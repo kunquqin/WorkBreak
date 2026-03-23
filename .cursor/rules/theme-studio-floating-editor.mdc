@@ -1,0 +1,18 @@
+---
+description: ThemeStudioFloatingEditor 重构 — 勿留未定义变量；HMR 易残留旧 JSX
+globs: "**/ThemeStudio.tsx"
+alwaysApply: false
+---
+
+# ThemeStudio 浮动主题编辑
+
+## 1. 删除或重命名「在 JSX 里用过的」变量
+
+- 若曾用 **`bannerMain`**、**`selectedTarget`** 等参与 **`className` / `aria-*` / 条件渲染**，改名或删除定义后必须 **`rg`/搜索整文件**，确认无残留引用。
+- **Vite HMR** 可能只热更片段，浏览器端短暂出现 **「用了新 JSX、未执行新 `const`」** → **`ReferenceError: xxx is not defined`**。
+- **稳妥做法**：派生状态保留一行别名，例如 **`const bannerMain = selectedTarget === 'main'`**，并尽量在 JSX 中复用该别名，避免散落重复表达式。
+
+## 2. `source.kind === 'subitem'` 与用途锁定
+
+- 从子项打开时 **`popupTarget`** 决定 **结束/休息** 锁定；勿在子项入口允许改 **`target`**，以免与子项 **`mainPopupThemeId` / `restPopupThemeId`** 语义冲突。
+- 主题工坊 **`studio-list`** 入口可在浮动编辑内切换 **休息壁纸（蓝）/ 结束壁纸（绿）**（顶栏左→右），写入草稿 **`draft.target`**，保存进库。

@@ -1,0 +1,23 @@
+---
+description: ThemePreviewEditor / 弹窗主题预览 — 易错点（依赖稳定、短层宽度、overflow）
+globs: "**/ThemePreviewEditor.tsx,**/PopupThemeEditorPanel.tsx,**/reminderWindow.ts,**/shared/settings.ts"
+alwaysApply: false
+---
+
+# 主题预览（ThemePreviewEditor）易错点
+
+## 1. `effectiveEditableKeys` 与 liveSnap 抖动
+
+- 父组件常写 `onLiveTextCommit={(k,t)=>...}`，**每次渲染都是新函数引用**。
+- 若 `useMemo(..., [onLiveTextCommit])` 或依赖含该引用，会得到**新数组** `['content']`，进而 **`liveSnap` 的 `useLayoutEffect`** 在时钟每秒更新时重复跑 → 预览抖动。
+- **做法**：用 **`hasLiveTextCommit = Boolean(onLiveTextCommit)`**；显式 `editableTextKeys` 用 **排序后的签名串** 作依赖；默认层列表用 **模块级常量数组**。
+
+## 2. 时间 / 倒计时不要用 `width: textBoxWidthPct%` 当默认
+
+- 百分比宽度会把层撑成**整条横条**，Moveable 外框不贴文字。
+- **做法**：缺省 **`width: max-content`**，`textBoxWidthPct` 只做 **`max-width` 上限**；**`shortLayerTextBoxLockWidth: true`**（四边 `finalizeResize` 或用户明确要定宽条）时才 `width: …%`。**`reminderWindow.textBoxLayoutCss`** 与预览 **必须一致**。
+
+## 3. 固定高度 + `overflow: auto` + `nowrap` → 假滚动条
+
+- Windows / Chromium 下，**单行 nowrap** 在 **`height: %` + `overflow: auto`** 时仍可能画出**纵向滚动条**（编辑态与弹窗）。
+- **做法**：**time / countdown** 固定高度用 **`overflow: hidden`**；**content** 多行仍 **`overflow: auto`**。
