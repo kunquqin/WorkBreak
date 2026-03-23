@@ -1,4 +1,4 @@
-import { app, BrowserWindow, dialog, ipcMain, Notification, screen, type OpenDialogOptions } from 'electron'
+import { app, BrowserWindow, Menu, dialog, ipcMain, Notification, screen, type OpenDialogOptions } from 'electron'
 import { existsSync, readFileSync, readdirSync } from 'node:fs'
 import { dirname, extname, join, resolve } from 'path'
 import { fileURLToPath } from 'url'
@@ -22,6 +22,109 @@ import {
 import { clearSystemFontListCache, getSystemFontFamilies } from './systemFonts'
 
 let mainWindow: BrowserWindow | null = null
+
+function installAppMenu() {
+  const mod = process.platform === 'darwin' ? 'Cmd' : 'Ctrl'
+  const template: Electron.MenuItemConstructorOptions[] = []
+  if (process.platform === 'darwin') {
+    template.push({
+      label: app.name,
+      submenu: [
+        { role: 'about' },
+        { type: 'separator' },
+        { role: 'services' },
+        { type: 'separator' },
+        { role: 'hide' },
+        { role: 'hideOthers' },
+        { role: 'unhide' },
+        { type: 'separator' },
+        { role: 'quit' },
+      ],
+    })
+  }
+  template.push(
+    {
+      label: 'File',
+      submenu: [
+        {
+          label: '显示主窗口',
+          click: () => {
+            if (!mainWindow || mainWindow.isDestroyed()) return
+            mainWindow.show()
+            mainWindow.focus()
+          },
+        },
+        { type: 'separator' },
+        process.platform === 'darwin' ? { role: 'close' } : { role: 'quit' },
+      ],
+    },
+    {
+      label: 'Edit',
+      submenu: [
+        {
+          label: 'Undo',
+          accelerator: `${mod}+Z`,
+          click: () => {
+            if (!mainWindow || mainWindow.isDestroyed()) return
+            mainWindow.webContents.send('menu-edit-undo')
+          },
+        },
+        {
+          label: 'Redo',
+          accelerator: `${mod}+Y`,
+          click: () => {
+            if (!mainWindow || mainWindow.isDestroyed()) return
+            mainWindow.webContents.send('menu-edit-redo')
+          },
+        },
+        { type: 'separator' },
+        { role: 'cut' },
+        { role: 'copy' },
+        { role: 'paste' },
+        { role: 'selectAll' },
+      ],
+    },
+    {
+      label: 'View',
+      submenu: [
+        { role: 'reload' },
+        { role: 'forceReload' },
+        { role: 'toggleDevTools' },
+        { type: 'separator' },
+        { role: 'resetZoom' },
+        { role: 'zoomIn' },
+        { role: 'zoomOut' },
+        { type: 'separator' },
+        { role: 'togglefullscreen' },
+      ],
+    },
+    {
+      label: 'Window',
+      submenu: [
+        { role: 'minimize' },
+        { role: 'zoom' },
+        ...(process.platform === 'darwin' ? [{ type: 'separator' as const }, { role: 'front' as const }] : []),
+      ],
+    },
+    {
+      label: 'Help',
+      submenu: [
+        {
+          label: '关于 WorkBreak',
+          click: () => {
+            dialog.showMessageBox({
+              type: 'info',
+              title: '关于 WorkBreak',
+              message: 'WorkBreak',
+              detail: '桌面提醒应用',
+            })
+          },
+        },
+      ],
+    },
+  )
+  Menu.setApplicationMenu(Menu.buildFromTemplate(template))
+}
 
 function createWindow() {
   // 用手写CommonJS，避免 Vite 把 preload 打成 ESM；开发时从源码加载
@@ -90,6 +193,7 @@ if (!gotLock) {
 }
 
 app.whenReady().then(() => {
+  installAppMenu()
   createWindow()
   startReminders()
 })

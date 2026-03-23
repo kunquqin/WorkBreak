@@ -2,6 +2,42 @@
 
 > 下一段「粘贴用交接提示」见文末代码块。
 
+## 0.1 文字参数区布局重构（本轮）
+
+- **右侧文字编辑区重排（易用性）**：`PopupThemeEditorPanel` 的「文字」区从“分块切换 + 多段表单”改为更扁平结构：每层（文本/时间）仅保留一行字体控件，信息层次更清晰，操作路径更短。
+- **字体来源融合到同一弹出列表**：`SystemFontFamilyPicker` 新增 `mode`/`presetOptions` 能力，弹出列表顶部可切换 **「预设组合」/「本机已安装」**；无需再在面板中来回切 tab。预设项与本机字体都在同一交互入口中完成选择。
+- **字号改为「滑杆 + 数字输入」并排**：`PopupThemeEditorPanel` 中「文本字号/时间字号」改为左滑杆（快速微调）+ 右数字输入（精确输入）组合，满足快速调节与精细控制两类场景。
+- **兼容性**：保留原有字段写入语义（preset 仍清 system，system 仍清 preset），`npm run build` 已通过。
+- **进一步收敛（本次续调）**：字体区左侧标题文案调整为「字体 / 时间字体」；移除字体选择区外层边框卡片；去掉「重新扫描本机字体」按钮，改为进入面板后后台静默预热本机字体列表（切到本机模式仍可即时复用缓存）。
+- **文字面板二次精简（本次）**：移除「文本内容」标签与同步提示文案；字号提前到颜色上方并改为「字号」；新增「样式」行（字重 + B/U/I）；「当前选中层 · 排版」改为「排版」并去掉蓝底框、层名提示与尾注；「位置与变换」去掉文字区域宽高与清除按钮及层名提示。另补充 `PopupTheme` 的 `content/time/countdown` 斜体与下划线字段，预览与真弹窗渲染链路已同步支持。
+- **文字面板三次收口（本次）**：去掉文本框下方冗余「字体」分组标题，字体行左标签改为常规字重并与其余表单标签一致；字体选择行与字号/颜色等控件对齐同一左右边界。删除上方「文字对齐（全局默认）」重复项，仅保留下方排版对齐；「随全局」选项移除，对齐按钮改为图标三态（左/中/右）。「样式 · 描边与阴影」改为「效果」，并将「文字描边/文字阴影」简化为「描边/阴影」，缩小区块间距；「位置与变换」更名为「变换」，移除右上文本/时间手动切换。
+- **字号行宽度修正（本次）**：字号控件从三列网格中抽离为独占整行布局（`60px 标签 + 1fr 滑杆 + 72px 输入框`），避免滑杆被压短；与上方文本输入框保持同一左右边界。
+- **菜单撤销/重做打通（本次）**：主进程新增应用菜单 `Edit -> Undo/Redo`，分别下发 `menu-edit-undo` / `menu-edit-redo` 到渲染进程；`PopupThemeEditorPanel` 通过 preload 订阅并接入同一历史栈。快捷键统一为 `Ctrl+Z` 撤销、`Ctrl+Y` 重做（去掉 `Ctrl+Shift+Z`）。面板顶部“撤销/重做”按钮区已移除。
+- **右侧参数区外层壳精简（本次）**：`文字`、`遮罩`、`背景`区块去掉外层白卡嵌套，仅保留标题和控件内容。
+- **遮罩参数区 UI（本次）**：`启用遮罩` 去掉外层描边卡片；`遮罩颜色`/`遮罩透明度（0-1）` 改为 **颜色** / **透明度** 各占独立一行；透明度为 **左滑杆 + 右数字输入**（与字号行同网格 `60px + 1fr + 72px`），`step` 0.01，值仍钳制 0–1。
+- **遮罩渐变（本次）**：主题新增 `overlayMode`（纯色/渐变）、`overlayGradientDirection`（8 方向）与 `overlayGradientStartOpacity/EndOpacity`（0–1）；`PopupThemeEditorPanel` 在遮罩区增加模式、方向、起终点透明度控件（均为滑杆+输入）；`ThemePreviewEditor` 与 `main/reminderWindow` 统一按同一方向映射渲染 `linear-gradient`，旧主题默认回落 `solid + overlayOpacity`。
+- **遮罩方向「预设 + 自定义角度」联动（本次）**：新增 `overlayGradientAngleDeg` 与 `overlayGradientDirection: 'custom'`；遮罩方向支持预设下拉 + 表盘 + 角度输入三者同步。选预设会自动写入对应角度（如左→右=90°）；拖表盘/改角度时若命中预设角度自动回切预设，否则方向切到「自定义」，预览与真弹窗统一按角度渲染 `linear-gradient(<deg>, ...)`。
+- **遮罩角度表盘交互修正（本次）**：将角度盘改为固定 `SVG` 真圆（`aspect-square`），避免容器压缩成椭圆；红色拖拽点改为圆周坐标定位（按角度计算 `cx/cy`），并抽出统一 pointer 坐标换算函数，解决拖动时指针偏离。
+- **文本层编辑态统一（本次）**：`ThemePreviewEditor` 移除“装饰文本层进入编辑态时清空 Moveable 目标”的分支。现在绑定文案层（如“时间到！”）与新增文本层在双击编辑时都保留同一套 Moveable 操作组件，避免出现“只有蓝紫描边编辑框、无操作组件”的不一致（子项编辑弹窗同样生效）。
+- **新增文本层与绑定文本层交互再统一（本次）**：修复装饰文本层缩放后字号不跟随（`finalizeScaleBakesFontSize` 对装饰文本改为“烘焙字号并将 transform.scale 归 1”，与绑定层一致）；双击进入编辑时把选择与 `setEditing*` 放入同一 `flushSync`，并立即设置 `moveableTargets`，减少操作组件出现延迟；去掉编辑态额外彩色 ring，仅保留 Moveable 轮廓，避免“粗色描边”观感。
+- **装饰文本编辑范围/贴边能力补齐（本次）**：`ThemePreviewEditor` 的 `resizableForTextBounds` 扩展到装饰文本编辑态（不再只限 content/time/countdown）；`finalizeResize` 新增 `data-deco-layer-id` 分支，将拉框后的像素宽高回写到装饰文本 `transform.textBoxWidthPct/HeightPct`；装饰文本失焦后新增 `snapDecorationTextBoxTight`（未手动拉框时自动贴字收紧），使“新增文本”与默认绑定文案层在编辑范围与退出贴边上表现一致。
+- **装饰文本编辑 + Moveable 把手（本次）**：根因是 `moveableChromePointerDownRef` 的捕获监听只在 `editingTextKey` 时注册，装饰文本编辑时点 resize 会先 blur 且 `relatedTarget` 常落在预览外的 Moveable 节点，原逻辑 `container.contains` 也拦掉了标记 → 误判退出编辑。现改为 `editingTextKey || editingDecoLayerId` 均注册，且命中 Moveable 控件即置位（不再要求点在预览容器内）；`isThemePreviewMoveableChrome` 补充 `.moveable-control`/`.moveable-line`。装饰文本层样式与绑定主文案一致：无 `textBox` 时用 `width:max-content` + `maxWidth:96%`，有 `textBox` 时用百分比宽高，避免操作框远大于文字；`moveableKey` 在装饰文本进入拉框模式时切 `box` 以稳定切换 resizable。
+- **新增文本默认大框根因修复（本次）**：`shared/popupThemeLayers.ts` 的 `defaultFreeTextTransform` 之前默认写了 `textBoxWidthPct:40 / textBoxHeightPct:12`，导致新建文本天然是固定框，表现为“操作组件始终一样大、缩放/编辑后又像回到默认框”。现改为仅 `{ x:50, y:60, rotation:0, scale:1 }`（不预置 textBox），默认走贴字模式；仅在用户手动拉框后才持久化 `textBox*Pct`。
+- **装饰文本与绑定文案几何一致性（本次）**：`ThemePreviewEditor` 中装饰文本渲染宽度语义改为与 `renderTextLayerForKey(content)` 完全一致（仅在存在 `textBoxWidthPct` 时定宽；否则仅 `maxWidth:96%`），消除“同字号下操作框边距不一致”。同时修复装饰文本 `onScaleEnd` 松手位移：改为与绑定层相同的“视觉包围盒中心 → x/y 百分比”回写，并按容器 offset 尺寸反推 `translate`（`scale` 归 1），避免松手后再次跳位。
+- **装饰层缩放手松再跳位（本次根因）**：`recomputeDecoStyleTransformsFromTheme` 曾采用「仅填补尚未写入的 id」合并策略；`finalizeScaleBakesFontSize` 松手时先用旧 `offsetWidth` 写入 `decoStyleTransformById`，主题已更新字号后 DOM 变宽，但后续 recompute 无法覆盖该 id → 表现为一帧后文本相对框偏移。现改为与主文案一致：`{ ...prev, ...next }` 始终用当前测量尺寸从 theme x/y 回写 translate；拖拽/缩放中仍由 `transformSyncLockedRef` 短路，避免与 Moveable 冲突。
+- **装饰文本栏宽 = 绑定主文案「时间到！」同套规则（本次）**：`ThemePreviewEditor` 用 `applyDecoTextBoxAutoLayout` / `snapDecoTextBoxHeightOnly` 复刻主文案的 **60% 内联锁宽 + 96% 上限**、编辑中 **`onInput` 实时更新栏宽/高**、失焦双 rAF 收紧；`finalizeResize` 装饰分支写入 **`contentTextBoxUserSized: true`**（与主文案拉框语义一致）。移除仅 96% 测量的旧 `snapDecorationTextBoxTight`。**`reminderWindow.renderLayerFragment`** 装饰文本 div 补 **`box-sizing:border-box` + `padding:3px`**，与绑定主文案层度量对齐。
+- **浮动编辑弹窗再精简（本次）**：移除顶部「选择该壁纸用于…」提示、移除预览区上方「预览态：仅…」说明；图层栏去掉底部「自上而下…」提示与右侧「隐藏栏」，仅保留图层标题小三角折叠。图层新增按钮在达到上限时改为**隐藏而非仅置灰**（删除后自动恢复显示）。右侧属性参数区新增独立折叠按钮（`属性 ▾/▸`）。
+- **折叠语义修正（本次）**：图层区与属性区从“仅内容折叠”改为“面板级折叠”。图层折叠后外层面板不再保留固定高度空白（收缩为标题行），属性折叠后下半区不再占满剩余空间。仅在两区都展开时显示中间拖拽分隔条；`PopupThemeLayersBar` 增加 `collapsed/onCollapsedChange` 受控折叠接口供父层统一控制面板高度。
+- **图层管理区视觉收口（本次）**：图层管理区外层去掉浅色背景与描边，改为白底无外边框，避免与下方卡片边框叠出“双层描边”。图层行选中态去掉 `ring` 风格，改为与闹钟子项一致的轻量样式（`border-slate-300 + bg-slate-50`）。
+- **图层选中高亮与新建层层级（本次）**：图层行选中背景色进一步对齐子项卡片拖拽高亮（`bg-[rgb(241_245_249)]`）；新增文本/时间/图片层改为默认插入到图层数组末尾（预览与真弹窗的最高 z 顶层），不再默认落在背景上方、遮罩下方。
+- **装饰文本层参数面板升级（本次）**：`PopupThemeEditorPanel` 中“新增文本层（装饰文本）”由旧简版改为完整参数区：文本内容、字体（预设/本机一体下拉）、字号（滑杆+输入）、颜色、样式（字重 + B）、排版（对齐图标、字间距、行高）、效果（描边/阴影开关）、变换（X/Y/旋转/缩放 + 重置）。并在装饰文本选中时隐藏通用「排版/变换」提示区，避免与上方装饰专用参数重复。
+- **弹窗内容来源改为主题优先（本次）**：主进程 `reminderWindow.ts` 取消“提醒项正文注入到绑定文本层”的渲染行为。图层模式下，绑定文本层直接渲染其 `tl.text`；legacy 模式下正文优先取 `theme.previewContentText` / 绑定层 `text`，仅在缺失时回退到调用方 `body`。时间数字仍保持系统实时注入（`timeStr`），时间样式继续由主题控制。
+- **子项文案语义去耦（本次）**：`AddSubReminderModal` 取消“切主题把示例文案回灌到子项 `content/restContent`”与对应同步 effect；小预览双击改字改为直接 `updatePopupTheme(..., { previewContentText })` 写入主题库。子项提交 payload 中 `content/restContent` 仅保留兼容兜底常量，不再承载主题文案来源；UI 提示同步改为“文本改动写入当前主题库”。
+- **主题工坊打开崩溃修复（本次）**：修复 `ThemePreviewEditor` 在 `readOnly`（工坊列表缩略图）下触发的 `Maximum update depth exceeded`。根因是 `useLayoutEffect` 的只读分支每轮都调用 `setMoveableTargets`，在缩略图批量挂载时形成嵌套更新。现改为只读分支直接 `return`，不再维护 Moveable 目标状态；构建与 lint 已通过。
+- **应用菜单恢复完整分组（本次）**：`main/index.ts` 的 `installAppMenu` 从仅 `Edit` 恢复为 `File / Edit / View / Window / Help`（macOS 额外 App 菜单）。保留自定义 `Undo(Ctrl/Cmd+Z)` 与 `Redo(Ctrl/Cmd+Y)` IPC 绑定，同时补回 `Cut/Copy/Paste/Select All`、刷新/开发者工具、窗口与关于项。
+- **主题缩略图进入编辑再次崩溃（本次）**：修复 `ThemePreviewEditor` 中 `moveableRef.updateRect()` 导致的嵌套更新循环。将该同步从 `useLayoutEffect` 改为 `useEffect + requestAnimationFrame`，并增加 `moveableTargets.length` 保护；依赖中将 `selectedElements` 引用改为稳定签名 `selectedElementsSig`，避免数组引用抖动触发无穷更新。
+- **主题工坊打开时报 TDZ（本次）**：修复 `ReferenceError: Cannot access 'moveableTargets' before initialization`。根因是上条修复把 `updateRect` 的 effect 放在 `moveableTargets` 声明之前，依赖数组提前访问变量触发运行时错误。现已将该 effect 下移到 `moveableTargets` 声明之后；构建与 lint 通过。
+
 ## 0. 图层删除 / 持久化 / 真弹窗字号（本轮修复）
 
 - **本机字体列表加载不出/乱码（修复）**：① **`createRequire`** 多候选 **`package.json`** + 缓存 **`resolvedGetFonts`**。② **Electron 主进程下 `font-list` 仍常返回空**：其 Windows 实现经 **`child_process.exec` + `cmd`** 调 PowerShell，stdout 可能始终为空且无抛错。**修复**：**`win32` 优先**用 **`execFile(powershell.exe, ['-EncodedCommand', …])`** 直接跑与 **`font-list` 相同的 WPF 枚举脚本**（不经 cmd）；PowerShell 失败再回退 **`font-list`**。③ **渲染进程**：**`theme.id` 变化时 `setSystemFonts(null)`** 与异步 IPC 回写竞态，可出现 **控制台 count 正确但下拉恒空**；已移除该重置，并增加 **`sharedSystemFontFamilies` 模块缓存** + **`useState` 初始从缓存恢复**。④ **主题工坊 / 子项弹窗全屏层 `z-index` 约 20万～25万**，**`SystemFontFamilyPicker`** 的 **`createPortal` 列表曾用 `z-[10001]`**，列表实际画在遮罩**下面**，表现为「只有占位、展开也没字」；已改为 **`zIndex: 280000/280001`**。⑤ **中文乱码**：PowerShell 输出经宿主编码链路会污染 Unicode；改为脚本端把每个字体名输出为 **Base64(UTF-16LE)**，Node 端再解码，确保多语种名称稳定显示。
@@ -213,6 +249,97 @@
 - **产品**：主题工坊内两种壁纸**同一套**编辑能力与默认排版/字号；区别仅为 `target`（子项关联结束弹窗 vs 休息弹窗）及顶栏切换。图层栏**文本**统一显示为「文本」（不再区分「文本层（提醒）」）；面板侧「主文案」类用语改为「文本」。
 - **默认主题**：`getDefaultPopupThemes` 中休息默认与结束默认对齐同一套 `content*`/`time*` 字号与 transform（休息仍保留 `countdownTransform`）；**系统默认** `previewContentText` 为 **`BUILTIN_MAIN_POPUP_FALLBACK_BODY` / `BUILTIN_REST_POPUP_FALLBACK_BODY`**（「时间到！」/「休息一下」），与子项空文案时主进程兜底一致；**用户新建**主题 `addPopupTheme` 按 target 带相同两套兜底示例句之一。
 - **代码**：`ThemePreviewEditor` 导出 `DEFAULT_LAYER_TRANSFORMS`，`DEFAULT_TRANSFORMS.main/rest` 指向同一引用；`getTransform` 回退不再依赖 `theme.target`。
+
+### 主题工坊：缩略图可见但点击不进入编辑（本轮修复）
+
+- **现象**：列表缩略图点击偶发无响应，未进入 `ThemeStudioFloatingEditor`。
+- **处理**：`ThemeStudioListView` 的卡片外层由原生 `<button>` 改为 `div role="button"`，补齐 `tabIndex` + `Enter/Space` 键盘触发，规避缩略图内部复杂节点导致的点击事件兼容问题。
+- **涉及文件**：`src/renderer/src/components/ThemeStudio.tsx`
+
+### 主题工坊进入编辑时报 `Maximum update depth exceeded`（本轮修复）
+
+- **报错点**：`ThemePreviewEditor.tsx`，`moveableTargets` 同步逻辑内的 `setMoveableTargets`（原 `useLayoutEffect`）。
+- **原因**：在 layout 阶段反复触发目标同步，导致 commit-layout 周期内连续 `setState`，最终触发 React 嵌套更新上限。
+- **处理**：将该段改为 `useEffect`，并增加“无选中元素时直接归零目标”的短路分支，避免 layout 阶段循环更新。
+- **涉及文件**：`src/renderer/src/components/ThemePreviewEditor.tsx`
+
+### 子项新建/编辑弹窗：新增文本层在小预览不可选中/变换（本轮修复）
+
+- **现象**：在 `AddSubReminderModal` 的结束/休息预览里，新增文本层点击后无法进入选中态，不能拖拽/变换。
+- **原因**：`ThemePreviewEditor` 的装饰层选中态依赖 `selectedDecorationLayerId/onSelectDecorationLayer`；子项小预览此前仅传了 `selectedElements/onSelectElements`，未接装饰层选中回调，导致点击文本装饰层后选中状态不生效。
+- **处理**：为主/休息两个小预览分别新增装饰层选中 state，并透传给 `ThemePreviewEditor`；切换主题时同步清空对应选中态，避免旧层 id 残留。
+- **涉及文件**：`src/renderer/src/components/AddSubReminderModal.tsx`
+
+### 子项小预览：装饰文本编辑后点空白“回跳复位”（本轮修复）
+
+- **现象**：新增文本层拖拽/编辑后，点空白触发 blur，文本会闪跳并回到旧位置。
+- **原因**：装饰文本层 `onBlur` 仅回写 `text`，使用了旧 `theme` 快照生成 `layers` patch，可能覆盖刚写入的最新 transform。
+- **处理**：在装饰文本 `onBlur` 提交时，同时从当前 DOM transform 解析并回写 `transform`（x/y/rotation/scale），确保 blur 提交不丢失位置。
+- **涉及文件**：`src/renderer/src/components/ThemePreviewEditor.tsx`
+
+### 子项小预览：拖拽/旋转/缩放结束后点空白仍复位（补充修复）
+
+- **现象**：完成变换后即使视觉位置正确，点击空白后仍会回到旧位置。
+- **原因**：Moveable 的 `*End` 回调在部分手势/浏览器时机下 `isDrag` 可能为 false，导致 `finalizeElement/finalizeScaleBakesFontSize/finalizeResize` 未执行，最终 transform 未持久化到 theme。
+- **处理**：`onDragEnd/onRotateEnd/onScaleEnd/onDragGroupEnd/onRotateGroupEnd/onScaleGroupEnd/onResizeEnd` 统一改为无条件 finalize（目标存在即提交），不再依赖 `isDrag`。
+- **涉及文件**：`src/renderer/src/components/ThemePreviewEditor.tsx`
+
+### 子项编辑重进后主题下拉显示回默认（本轮修复）
+
+- **现象**：子项已绑定 `main/rest` 非默认主题，更新后再次进入编辑，UI 显示却回到默认主题；但到点弹窗仍按已绑定主题触发。
+- **根因**：
+  1) `AddSubReminderModal` 的 hydrate effect 依赖只看 `sourceItem.id`，同一子项 id 下主题 id 变更不触发回填；
+  2) 随后“兜底校验”effect 发现当前 state 不在 options 时会回退默认，覆盖了应显示的已绑定主题。
+- **处理**：
+  1) hydrate effect 依赖补全到 `sourceItem.mainPopupThemeId/restPopupThemeId` 及关键字段；
+  2) 兜底校验 effect 在 `variant='edit'` 下优先对齐 `sourceItem` 已绑定主题，仅当源主题不存在时才回退默认。
+- **涉及文件**：`src/renderer/src/components/AddSubReminderModal.tsx`
+
+### 对齐能力扩展（本轮新增）
+
+- **新增横向对齐**：在原 `left/center/right` 基础上补齐 `start/end/justify`（主题根字段、分层字段、编辑面板、预览、真实弹窗渲染全部打通）。
+- **新增纵向对齐**：新增 `top/middle/bottom`（全局 + content/time/countdown 分层 + 装饰文本层），用于文本框内部竖向排版对齐。
+- **数据模型**：
+  - `PopupTheme`: `textVerticalAlign`、`content/time/countdownTextVerticalAlign`
+  - `TextThemeLayer`: `textVerticalAlign`
+- **渲染策略**：
+  - 预览侧与主进程弹窗侧统一：文本层采用 `display:flex`，横向对齐继续用 `text-align/justify-content`，纵向对齐映射到 `justify-content`（多行）或 `align-items`（单行 time）。
+  - `justify` 在单行层/短层下按左起（`flex-start`）处理，避免单行拉伸异常。
+- **涉及文件**：
+  - `src/shared/settings.ts`
+  - `src/shared/popupThemeLayers.ts`
+  - `src/main/settings.ts`
+  - `src/main/reminderWindow.ts`
+  - `src/renderer/src/components/ThemePreviewEditor.tsx`
+  - `src/renderer/src/components/PopupThemeEditorPanel.tsx`
+
+### 预览区框选上限修复（本轮新增）
+
+- **现象**：主题编辑预览区框选时最多只能选中 2 个文本对象（仅 content/time）。
+- **根因**：框选命中逻辑仅遍历 `textLayerPairs`（`content/time`），未纳入装饰文本层。
+- **处理**：
+  1) 框选命中增加装饰文本层（`kind='text' && !bindsReminderBody`）；
+  2) 新增 `marqueeDecorationLayerIds`，用于承载框选到的多装饰层；
+  3) Moveable 目标合并为「选中的绑定层 + 框选装饰层」，实现不限数量组选择/组拖拽；
+  4) 单击切换到单选时会清空该框选缓存，避免状态残留。
+- **涉及文件**：`src/renderer/src/components/ThemePreviewEditor.tsx`
+
+### 预览区操作范围：去掉硬边界卡边（本轮新增）
+
+- **需求**：移除拖拽/旋转/缩放时“贴边即卡住”的硬限制；保留吸附线；不新增“回画布”按钮。
+- **处理**：`ThemePreviewEditor` 的 Moveable 配置移除 `bounds`（原 `previewMoveableBounds`），保留 `snappable/snapDirections/elementGuidelines/snapContainer`。
+- **结果**：对象可越界操作，吸附线仍正常；交互不再被硬边界截断。
+- **涉及文件**：`src/renderer/src/components/ThemePreviewEditor.tsx`
+
+### 预览区“按下即拖”卡顿优化（本轮新增）
+
+- **现象**：鼠标放到对象上按住拖动会“卡一下”，常常需要先点选一次再拖动；主题工坊与子项弹窗预览均存在。
+- **根因**：拖拽启动被双 `requestAnimationFrame` 延后，且依赖后续 effect 同步 Moveable 目标，导致首次按下时机错过。
+- **处理**：
+  1) 文本层/装饰层 `onMouseDown` 改为“选中后立即 `scheduleDragStart`”，去掉双 rAF 延迟；
+  2) 在选中切换时同步 `setMoveableTargets([当前目标])`，减少首次拖拽等待 Moveable 目标刷新的窗口。
+- **结果**：按住对象可直接拖拽，减少“先点后拖”的顿挫。
+- **涉及文件**：`src/renderer/src/components/ThemePreviewEditor.tsx`
 
 ---
 

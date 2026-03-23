@@ -49,6 +49,7 @@ import { type TextElementKey } from '../components/ThemePreviewEditor'
 import { ThemeStudioListView, ThemeStudioFloatingEditor, type ThemeStudioFloatingSource } from '../components/ThemeStudio'
 import { buildSplitSchedule } from '../../../shared/splitSchedule'
 import { collectPopupThemeImagePathsForPreview } from '../utils/popupThemePreview'
+import { mergeContentThemePatchIntoBindingTextLayer } from '../../../shared/popupThemeLayers'
 
 /** 每次使用时读取，避免模块加载时 preload 尚未注入 */
 function getApi() {
@@ -2427,7 +2428,18 @@ export function Settings() {
       const themes = Array.isArray(prev.popupThemes) ? prev.popupThemes : getDefaultPopupThemes()
       return {
         ...prev,
-        popupThemes: themes.map((t) => (t.id === themeId ? { ...t, ...patch } : t)),
+        popupThemes: themes.map((t) => {
+          if (t.id !== themeId) return t
+          /**
+           * 关键：绑定文本层与根字段 content* / contentTransform 必须同步。
+           * 否则 ThemePreviewEditor 的 ensureThemeLayers 会从旧 binding layer 回写根字段，造成拖拽后点空白复位。
+           */
+          const layerSync =
+            patch.layers === undefined
+              ? mergeContentThemePatchIntoBindingTextLayer(t, patch)
+              : undefined
+          return { ...t, ...patch, ...(layerSync ?? {}) }
+        }),
       }
     })
     setSaveStatus('idle')

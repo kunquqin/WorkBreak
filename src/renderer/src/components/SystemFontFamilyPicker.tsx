@@ -20,6 +20,11 @@ export type SystemFontFamilyPickerProps = {
   /** null = 尚未拉取；[] = 已拉取但为空 */
   fonts: string[] | null
   fontsLoading?: boolean
+  mode?: 'preset' | 'system'
+  onModeChange?: (next: 'preset' | 'system') => void
+  presetOptions?: ReadonlyArray<{ id: string; label: string; css?: string }>
+  presetValue?: string
+  onPresetChange?: (presetId: string) => void
   placeholder?: string
   disabled?: boolean
 }
@@ -51,6 +56,11 @@ export function SystemFontFamilyPicker({
   onChange,
   fonts,
   fontsLoading = false,
+  mode = 'system',
+  onModeChange,
+  presetOptions,
+  presetValue,
+  onPresetChange,
   placeholder = '例如：Consolas',
   disabled = false,
 }: SystemFontFamilyPickerProps) {
@@ -102,12 +112,18 @@ export function SystemFontFamilyPicker({
     return () => document.removeEventListener('keydown', onKey)
   }, [open])
 
-  const filtered = useMemo(() => {
+  const filteredSystemFonts = useMemo(() => {
     const list = fonts ?? []
     const q = listFilter.trim().toLowerCase()
     if (!q) return list
     return list.filter((f) => f.toLowerCase().includes(q))
   }, [fonts, listFilter])
+  const filteredPresetOptions = useMemo(() => {
+    const list = presetOptions ?? []
+    const q = listFilter.trim().toLowerCase()
+    if (!q) return list
+    return list.filter((item) => item.label.toLowerCase().includes(q) || item.id.toLowerCase().includes(q))
+  }, [presetOptions, listFilter])
 
   const handleRowClick = () => {
     if (disabled) return
@@ -120,6 +136,13 @@ export function SystemFontFamilyPicker({
     if (open) setOpen(false)
     else openPicker()
   }
+  const displayValue = useMemo(() => {
+    if (mode === 'preset') {
+      const hit = (presetOptions ?? []).find((item) => item.id === presetValue)
+      return hit?.label ?? ''
+    }
+    return value
+  }, [mode, presetOptions, presetValue, value])
 
   const portal =
     open &&
@@ -144,13 +167,37 @@ export function SystemFontFamilyPicker({
             zIndex: PORTAL_Z_LIST,
           }}
         >
+          {onModeChange && presetOptions && presetOptions.length > 0 && (
+            <div className="shrink-0 border-b border-slate-100 p-1.5">
+              <div className="inline-flex rounded-md border border-slate-300 bg-white p-0.5">
+                <button
+                  type="button"
+                  onClick={() => onModeChange('preset')}
+                  className={`rounded px-2.5 py-1 text-xs font-medium transition-colors ${
+                    mode === 'preset' ? 'bg-slate-800 text-white' : 'text-slate-600 hover:bg-slate-100'
+                  }`}
+                >
+                  预设组合
+                </button>
+                <button
+                  type="button"
+                  onClick={() => onModeChange('system')}
+                  className={`rounded px-2.5 py-1 text-xs font-medium transition-colors ${
+                    mode === 'system' ? 'bg-slate-800 text-white' : 'text-slate-600 hover:bg-slate-100'
+                  }`}
+                >
+                  本机已安装
+                </button>
+              </div>
+            </div>
+          )}
           <div className="shrink-0 border-b border-slate-100 p-1.5">
             <input
               type="search"
               autoFocus
               value={listFilter}
               onChange={(e) => setListFilter(e.target.value)}
-              placeholder="筛选字体名…"
+              placeholder={mode === 'preset' ? '筛选预设名称…' : '筛选字体名…'}
               className="w-full rounded border border-slate-200 bg-white px-2 py-1 text-xs text-slate-800 outline-none focus:border-slate-400"
             />
           </div>
@@ -158,30 +205,61 @@ export function SystemFontFamilyPicker({
             className="overflow-y-auto overflow-x-hidden overscroll-contain py-1"
             style={{ maxHeight: LIST_SCROLL_MAX_CSS }}
           >
-            {fontsLoading && fonts === null && (
-              <p className="px-2 py-2 text-xs text-slate-500">正在读取本机字体…</p>
-            )}
-            {!fontsLoading && fonts !== null && fonts.length === 0 && (
-              <p className="px-2 py-2 text-xs text-amber-700">未读到字体列表，可直接在上方输入框填写字体全名。</p>
-            )}
-            {filtered.map((f) => (
-              <button
-                key={f}
-                type="button"
-                role="option"
-                className="block w-full truncate px-2.5 py-2 text-left text-[15px] leading-snug text-slate-900 hover:bg-slate-100"
-                style={{ fontFamily: systemFontListPreviewStackCss(f) }}
-                title={f}
-                onClick={() => {
-                  onChange(f)
-                  setOpen(false)
-                }}
-              >
-                {f}
-              </button>
-            ))}
-            {fonts != null && fonts.length > 0 && filtered.length === 0 && (
-              <p className="px-2 py-2 text-xs text-slate-500">无匹配项，可缩小筛选或手填。</p>
+            {mode === 'preset' ? (
+              <>
+                {(presetOptions == null || presetOptions.length === 0) && (
+                  <p className="px-2 py-2 text-xs text-amber-700">暂无预设字体组合。</p>
+                )}
+                {filteredPresetOptions.map((item) => (
+                  <button
+                    key={item.id}
+                    type="button"
+                    role="option"
+                    className={`block w-full truncate px-2.5 py-2 text-left text-sm leading-snug hover:bg-slate-100 ${
+                      presetValue === item.id ? 'bg-slate-100 text-slate-900' : 'text-slate-800'
+                    }`}
+                    style={item.css ? { fontFamily: item.css } : undefined}
+                    title={item.label}
+                    onClick={() => {
+                      onPresetChange?.(item.id)
+                      setOpen(false)
+                    }}
+                  >
+                    {item.label}
+                  </button>
+                ))}
+                {presetOptions != null && presetOptions.length > 0 && filteredPresetOptions.length === 0 && (
+                  <p className="px-2 py-2 text-xs text-slate-500">无匹配预设，可调整筛选词。</p>
+                )}
+              </>
+            ) : (
+              <>
+                {fontsLoading && fonts === null && (
+                  <p className="px-2 py-2 text-xs text-slate-500">正在读取本机字体…</p>
+                )}
+                {!fontsLoading && fonts !== null && fonts.length === 0 && (
+                  <p className="px-2 py-2 text-xs text-amber-700">未读到字体列表，可直接在上方输入框填写字体全名。</p>
+                )}
+                {filteredSystemFonts.map((f) => (
+                  <button
+                    key={f}
+                    type="button"
+                    role="option"
+                    className="block w-full truncate px-2.5 py-2 text-left text-[15px] leading-snug text-slate-900 hover:bg-slate-100"
+                    style={{ fontFamily: systemFontListPreviewStackCss(f) }}
+                    title={f}
+                    onClick={() => {
+                      onChange(f)
+                      setOpen(false)
+                    }}
+                  >
+                    {f}
+                  </button>
+                ))}
+                {fonts != null && fonts.length > 0 && filteredSystemFonts.length === 0 && (
+                  <p className="px-2 py-2 text-xs text-slate-500">无匹配项，可缩小筛选或手填。</p>
+                )}
+              </>
             )}
           </div>
         </div>
@@ -203,10 +281,16 @@ export function SystemFontFamilyPicker({
       <input
         type="text"
         disabled={disabled}
-        value={value}
-        onChange={(e) => onChange(e.target.value.trim())}
-        placeholder={placeholder}
-        className="min-w-0 flex-1 cursor-text border-0 bg-transparent px-2.5 py-1.5 text-sm outline-none focus:ring-0 disabled:cursor-not-allowed"
+        value={displayValue}
+        onChange={(e) => {
+          if (mode === 'preset') return
+          onChange(e.target.value.trim())
+        }}
+        placeholder={mode === 'preset' ? '选择预设组合…' : placeholder}
+        readOnly={mode === 'preset'}
+        className={`min-w-0 flex-1 border-0 bg-transparent px-2.5 py-1.5 text-sm outline-none focus:ring-0 disabled:cursor-not-allowed ${
+          mode === 'preset' ? 'cursor-pointer' : 'cursor-text'
+        }`}
       />
       <button
         type="button"

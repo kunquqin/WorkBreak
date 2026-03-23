@@ -204,6 +204,8 @@
 - **预览组件**：`ThemePreviewEditor.tsx`（Moveable + 预览区 + 可选双击内联编辑）。**完整参数区**：`PopupThemeEditorPanel.tsx`（预览 + 分页「全部/文字/遮罩/背景」+ 与设置页一致的表单；**「当前选中层 · 排版」**：随全局/左中右、字间距、行高，对应 `PopupTheme` 分层字段并由 **`reminderWindow.ts`** 输出 CSS）。**设置页主题工坊**与子项弹窗内联详细编辑共用该 Panel。
 - **1:1 缩放映射**：预览区必须与实际全屏弹窗保持视觉一致。`previewViewportWidth` 取自主屏逻辑宽（如 `primaryDisplaySize.width`）；**`ThemePreviewEditor` 用 ResizeObserver 测量预览盒实际宽度**，`previewScale = min(1, 实测宽 / previewViewportWidth)`，再经 `toPreviewPx` 映射字号/字距/内边距。**禁止**用固定参考宽（如常数 920）代替实测宽，否则窄预览栏会出现文字过大、与全屏弹窗比例不一致。
 - **图片预览**：渲染进程无法直接访问 `file://` 协议（Vite 开发服务器为 `http://`），须通过 IPC `resolvePreviewImageUrl` 让主进程读取本地图片并返回 `data:image/` base64 URL。缓存在 `previewImageUrlMap` 避免重复读取。
+- **本机字体列表（SystemFontFamilyPicker）**：列表用 `createPortal(document.body)` 渲染时，**z-index 必须高于当前全屏编辑容器**（ThemeStudio / 子项弹窗可达 20万+）；否则会出现“已拉到字体但下拉看起来为空”。建议使用明确常量并留出安全余量。
+- **Windows 字体枚举编码**：主进程通过 PowerShell 枚举字体名时，输出链路可能污染 Unicode。建议脚本端输出 **Base64(UTF-16LE)**，Node 端再解码，保证中文及多语种字体名稳定显示。
 - **预览不显示关闭按钮**：预览区是只读展示，关闭按钮无实际意义，不渲染。
 - **参数分页**：每张主题卡有独立的分页状态（全部/文字/遮罩/背景），存储在 `themeSettingsPanelFilterMap: Record<themeId, FilterType>` 中，切换一张不影响其他。
 - **可视化编辑**：`react-moveable` 提供拖拽 / 旋转 / 缩放 / 对齐参考线。拖拽时直接操作 DOM（`target.style.left/top`）保证 60fps，松手后 commit 百分比到 React state。

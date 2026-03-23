@@ -19,6 +19,18 @@ export interface ReminderPopupOptions {
   countdownStr?: string
 }
 
+function resolveThemeBodyText(theme: PopupTheme | undefined, fallbackBody: string): string {
+  if (!theme) return fallbackBody
+  const fromPreview = (theme.previewContentText ?? '').trim()
+  if (fromPreview) return fromPreview
+  const fromBinding = theme.layers?.find(
+    (l): l is TextThemeLayer => l.kind === 'text' && (l as TextThemeLayer).bindsReminderBody === true,
+  )
+  const fromLayer = (fromBinding?.text ?? '').trim()
+  if (fromLayer) return fromLayer
+  return fallbackBody
+}
+
 function escapeHtml(s: string): string {
   return s
     .replace(/&/g, '&amp;')
@@ -45,6 +57,49 @@ function clampOpacity(v: number | undefined, fallback: number): number {
   const n = Number(v)
   if (!Number.isFinite(n)) return fallback
   return Math.max(0, Math.min(1, n))
+}
+
+function normalizeAngleDeg(v: number | undefined, fallback: number): number {
+  const n = Number(v)
+  if (!Number.isFinite(n)) return fallback
+  const mod = n % 360
+  return mod < 0 ? mod + 360 : mod
+}
+
+function hexToRgba(hex: string, alpha: number): string {
+  const a = clampOpacity(alpha, 1)
+  const raw = (hex || '').trim()
+  const m = raw.match(/^#([0-9a-fA-F]{3}|[0-9a-fA-F]{6})$/)
+  if (!m) return `rgba(0,0,0,${a})`
+  const h = m[1].length === 3
+    ? m[1].split('').map((c) => c + c).join('')
+    : m[1]
+  const r = Number.parseInt(h.slice(0, 2), 16)
+  const g = Number.parseInt(h.slice(2, 4), 16)
+  const b = Number.parseInt(h.slice(4, 6), 16)
+  return `rgba(${r},${g},${b},${a})`
+}
+
+function overlayGradientCss(theme: PopupTheme | undefined): string {
+  const color = theme?.overlayColor || '#000000'
+  const mode = theme?.overlayMode === 'gradient' ? 'gradient' : 'solid'
+  if (mode !== 'gradient') {
+    return hexToRgba(color, clampOpacity(theme?.overlayOpacity, 0.45))
+  }
+  const start = clampOpacity(theme?.overlayGradientStartOpacity, 0.7)
+  const end = clampOpacity(theme?.overlayGradientEndOpacity, 0)
+  const dir = theme?.overlayGradientDirection ?? 'leftToRight'
+  const angle =
+    dir === 'custom' ? normalizeAngleDeg(theme?.overlayGradientAngleDeg, 90)
+      : dir === 'rightToLeft' ? 270
+        : dir === 'topToBottom' ? 180
+          : dir === 'bottomToTop' ? 0
+            : dir === 'topLeftToBottomRight' ? 135
+              : dir === 'topRightToBottomLeft' ? 225
+                : dir === 'bottomLeftToTopRight' ? 45
+                  : dir === 'bottomRightToTopLeft' ? 315
+                    : 90
+  return `linear-gradient(${angle}deg, ${hexToRgba(color, start)} 0%, ${hexToRgba(color, end)} 100%)`
 }
 
 function readLocalImageAsDataUrl(imagePath: string): string | null {
@@ -200,30 +255,48 @@ function textBoxLayoutCss(t: TextTransform | undefined, layer: TextBoxLayer): st
 /** 与 ThemePreviewEditor 中单行时间层：`shortLineLayer` 下强制 `lineHeight: 1` */
 function layerTypographyCss(theme: PopupTheme | undefined, layer: 'content' | 'time' | 'countdown'): string {
   const baseAlign = theme?.textAlign ?? 'center'
+  const baseVerticalAlign = theme?.textVerticalAlign ?? 'middle'
   let align = baseAlign
+  let verticalAlign = baseVerticalAlign
   let letterSpacing = 0
   let lineHeight = layer === 'countdown' ? 1 : 1.35
   if (layer === 'content') {
     align = theme?.contentTextAlign ?? baseAlign
+    verticalAlign = theme?.contentTextVerticalAlign ?? baseVerticalAlign
     letterSpacing = theme?.contentLetterSpacing ?? 0
     lineHeight = theme?.contentLineHeight ?? 1.35
   } else if (layer === 'time') {
     align = theme?.timeTextAlign ?? baseAlign
+    verticalAlign = theme?.timeTextVerticalAlign ?? baseVerticalAlign
     letterSpacing = theme?.timeLetterSpacing ?? 0
     lineHeight = theme?.timeLineHeight ?? 1
   } else {
     align = theme?.countdownTextAlign ?? baseAlign
+    verticalAlign = theme?.countdownTextVerticalAlign ?? baseVerticalAlign
     letterSpacing = theme?.countdownLetterSpacing ?? 0
     lineHeight = theme?.countdownLineHeight ?? 1
   }
-  return `text-align: ${align}; letter-spacing: ${letterSpacing}px; line-height: ${lineHeight};`
+  return `text-align: ${align}; letter-spacing: ${letterSpacing}px; line-height: ${lineHeight}; --wb-v-align: ${verticalAlign};`
 }
 
 /** 与 ThemePreviewEditor 时间层 `display:flex` + `justifyContent` 一致 */
 function flexJustifyForTextAlign(align: string): string {
-  if (align === 'left') return 'flex-start'
-  if (align === 'right') return 'flex-end'
+  if (align === 'left' || align === 'start') return 'flex-start'
+  if (align === 'right' || align === 'end') return 'flex-end'
   return 'center'
+}
+
+function flexAlignForTextVerticalAlign(align: string): string {
+  if (align === 'top') return 'flex-start'
+  if (align === 'bottom') return 'flex-end'
+  return 'center'
+}
+
+function verticalAlignForThemeLayer(theme: PopupTheme | undefined, layer: 'content' | 'time' | 'countdown'): 'top' | 'middle' | 'bottom' {
+  const base = theme?.textVerticalAlign ?? 'middle'
+  if (layer === 'content') return (theme?.contentTextVerticalAlign ?? base) as 'top' | 'middle' | 'bottom'
+  if (layer === 'time') return (theme?.timeTextVerticalAlign ?? base) as 'top' | 'middle' | 'bottom'
+  return (theme?.countdownTextVerticalAlign ?? base) as 'top' | 'middle' | 'bottom'
 }
 
 /** 预览中各绑定文字层有 `padding: toPreviewPx(3)`；全屏按逻辑像素 3px 对齐 */
@@ -231,10 +304,17 @@ const BINDING_TEXT_PADDING_PX = 3
 
 function textLayerTypographyCss(theme: PopupTheme | undefined, L: TextThemeLayer): string {
   const baseAlign = theme?.textAlign ?? 'center'
+  const baseVerticalAlign = theme?.textVerticalAlign ?? 'middle'
   const align = L.textAlign ?? baseAlign
+  const verticalAlign = L.textVerticalAlign ?? baseVerticalAlign
   const ls = L.letterSpacing ?? 0
   const lh = L.lineHeight ?? 1.35
-  return `text-align: ${align}; letter-spacing: ${ls}px; line-height: ${lh};`
+  return `text-align: ${align}; letter-spacing: ${ls}px; line-height: ${lh}; --wb-v-align: ${verticalAlign};`
+}
+
+function verticalAlignForTextLayer(theme: PopupTheme | undefined, L: TextThemeLayer): 'top' | 'middle' | 'bottom' {
+  const base = theme?.textVerticalAlign ?? 'middle'
+  return (L.textVerticalAlign ?? base) as 'top' | 'middle' | 'bottom'
 }
 
 const REMINDER_CLOSE_CSS = `
@@ -304,15 +384,13 @@ const REMINDER_CLOSE_HTML_SCRIPT = `
 function buildReminderHtmlLegacy(options: ReminderPopupOptions): string {
   const { title, body, timeStr, theme } = options
   const titleEsc = escapeHtml(title)
-  const bodyEsc = escapeHtml(body)
+  const bodyEsc = escapeHtml(resolveThemeBodyText(theme, body))
   const timeEsc = escapeHtml(timeStr)
   const contentFont = safeFontPx(theme?.contentFontSize, 180, 16)
   const timeFont = safeFontPx(theme?.timeFontSize, 100, 14)
   const contentColor = theme?.contentColor || '#ffffff'
   const timeColor = theme?.timeColor || '#e2e8f0'
   const overlayEnabled = Boolean(theme?.overlayEnabled)
-  const overlayColor = theme?.overlayColor || '#000000'
-  const overlayOpacity = clampOpacity(theme?.overlayOpacity, 0.45)
   const bgStyle = getBackgroundStyle(theme)
   const contentFontFamilyCss = resolvePopupFontFamilyCss(theme, 'content')
   const timeFontFamilyCss = resolvePopupFontFamilyCss(theme, 'time')
@@ -320,8 +398,14 @@ function buildReminderHtmlLegacy(options: ReminderPopupOptions): string {
   const timePos = transformStyle(theme?.timeTransform, 50, 55)
   const contentWeight = theme?.contentFontWeight ?? 600
   const timeWeight = theme?.timeFontWeight ?? 400
+  const contentItalic = theme?.contentFontItalic === true ? 'italic' : 'normal'
+  const timeItalic = theme?.timeFontItalic === true ? 'italic' : 'normal'
+  const contentUnderline = theme?.contentUnderline === true ? 'underline' : 'none'
+  const timeUnderline = theme?.timeUnderline === true ? 'underline' : 'none'
   const tyContent = layerTypographyCss(theme, 'content')
   const tyTime = layerTypographyCss(theme, 'time')
+  const contentVA = flexAlignForTextVerticalAlign(verticalAlignForThemeLayer(theme, 'content'))
+  const timeVA = flexAlignForTextVerticalAlign(verticalAlignForThemeLayer(theme, 'time'))
 
   return `<!DOCTYPE html>
 <html lang="zh-CN">
@@ -331,10 +415,10 @@ function buildReminderHtmlLegacy(options: ReminderPopupOptions): string {
   <style>
     * { box-sizing: border-box; margin: 0; padding: 0; }
     html, body { width: 100%; height: 100%; min-height: 100%; margin: 0; color: #fff; font-family: system-ui, sans-serif; overflow: hidden; ${bgStyle} }
-    .overlay { position: fixed; inset: 0; background: ${overlayColor}; opacity: ${overlayEnabled ? overlayOpacity : 0}; pointer-events: none; }
+    .overlay { position: fixed; inset: 0; background: ${overlayGradientCss(theme)}; opacity: ${overlayEnabled ? 1 : 0}; pointer-events: none; }
     .content { position: relative; z-index: 1; width: 100%; height: 100%; }
-    .line1 { ${contentPos} box-sizing: border-box; padding: ${BINDING_TEXT_PADDING_PX}px; font-family: ${contentFontFamilyCss}; font-size: ${contentFont}px; color: ${contentColor}; ${tyContent} font-weight: ${contentWeight}; ${textBoxLayoutCss(theme?.contentTransform, 'content')} ${layerTextEffectsCss(theme, 'content')} }
-    .line2 { ${timePos} box-sizing: border-box; padding: ${BINDING_TEXT_PADDING_PX}px; display: flex; align-items: center; justify-content: ${flexJustifyForTextAlign(theme?.timeTextAlign ?? theme?.textAlign ?? 'center')}; font-family: ${timeFontFamilyCss}; font-size: ${timeFont}px; color: ${timeColor}; ${tyTime} font-weight: ${timeWeight}; ${textBoxLayoutCss(theme?.timeTransform, 'time')} ${layerTextEffectsCss(theme, 'time')} }
+    .line1 { ${contentPos} box-sizing: border-box; padding: ${BINDING_TEXT_PADDING_PX}px; display:flex; flex-direction:column; justify-content:${contentVA}; font-family: ${contentFontFamilyCss}; font-size: ${contentFont}px; color: ${contentColor}; ${tyContent} font-weight: ${contentWeight}; font-style: ${contentItalic}; text-decoration: ${contentUnderline}; ${textBoxLayoutCss(theme?.contentTransform, 'content')} ${layerTextEffectsCss(theme, 'content')} }
+    .line2 { ${timePos} box-sizing: border-box; padding: ${BINDING_TEXT_PADDING_PX}px; display: flex; align-items: ${timeVA}; justify-content: ${flexJustifyForTextAlign(theme?.timeTextAlign ?? theme?.textAlign ?? 'center')}; font-family: ${timeFontFamilyCss}; font-size: ${timeFont}px; color: ${timeColor}; ${tyTime} font-weight: ${timeWeight}; font-style: ${timeItalic}; text-decoration: ${timeUnderline}; ${textBoxLayoutCss(theme?.timeTransform, 'time')} ${layerTextEffectsCss(theme, 'time')} }
     ${REMINDER_CLOSE_CSS}
   </style>
 </head>
@@ -353,7 +437,6 @@ function renderLayerFragment(
   theme: PopupTheme,
   L: PopupThemeLayer,
   z: number,
-  bodyEsc: string,
   timeEsc: string,
   htmlDir: string,
 ): string {
@@ -375,23 +458,27 @@ function renderLayerFragment(
       return `<div style="${escapeInlineStyleForHtmlAttribute(`position:absolute;inset:0;z-index:${z};pointer-events:none;${bg}`)}"></div>`
     }
     case 'overlay': {
-      const overlayColor = theme.overlayColor || '#000000'
-      const overlayOpacity = theme.overlayEnabled ? clampOpacity(theme.overlayOpacity, 0.45) : 0
-      return `<div style="${escapeInlineStyleForHtmlAttribute(`position:absolute;inset:0;z-index:${z};pointer-events:none;background:${overlayColor};opacity:${overlayOpacity};`)}"></div>`
+      const overlayOpacity = theme.overlayEnabled ? 1 : 0
+      return `<div style="${escapeInlineStyleForHtmlAttribute(`position:absolute;inset:0;z-index:${z};pointer-events:none;background:${overlayGradientCss(theme)};opacity:${overlayOpacity};`)}"></div>`
     }
     case 'text': {
       const tl = L as TextThemeLayer
       if (tl.bindsReminderBody) {
-        /** 与 ThemePreviewEditor.renderTextLayerForKey(content) 一致：排版以主题根字段为准，避免图层 JSON 与根字段漂移时出现「预览正常、全屏弹窗字极小」 */
+        /** 文本内容不再从提醒项注入，统一以主题编辑内容为准。 */
+        const srcEsc = escapeHtml((tl.text ?? '').trim())
+        /** 与 ThemePreviewEditor.renderTextLayerForKey(content) 一致：排版以主题根字段为准，保证时间样式等与预览一致。 */
         const fs = safeFontPx(theme.contentFontSize, 180, 16)
         const col = theme.contentColor || '#ffffff'
         const ff = resolvePopupFontFamilyCss(theme, 'content')
         const pos = transformStyle(theme.contentTransform, 50, 42)
         const fw = theme.contentFontWeight ?? 600
+        const fi = theme.contentFontItalic === true ? 'italic' : 'normal'
+        const td = theme.contentUnderline === true ? 'underline' : 'none'
         const ty = layerTypographyCss(theme, 'content')
+        const va = flexAlignForTextVerticalAlign(verticalAlignForThemeLayer(theme, 'content'))
         const fx = layerTextEffectsCss(theme, 'content')
-        const stBody = `${pos} z-index:${z}; pointer-events:none; box-sizing:border-box; padding:${BINDING_TEXT_PADDING_PX}px; font-family:${ff}; font-size:${fs}px; color:${col}; ${ty} font-weight:${fw}; ${textBoxLayoutCss(theme.contentTransform, 'content')} ${fx}`
-        return `<div style="${escapeInlineStyleForHtmlAttribute(stBody)}">${bodyEsc}</div>`
+        const stBody = `${pos} z-index:${z}; pointer-events:none; box-sizing:border-box; padding:${BINDING_TEXT_PADDING_PX}px; display:flex; flex-direction:column; justify-content:${va}; font-family:${ff}; font-size:${fs}px; color:${col}; ${ty} font-weight:${fw}; font-style:${fi}; text-decoration:${td}; ${textBoxLayoutCss(theme.contentTransform, 'content')} ${fx}`
+        return `<div style="${escapeInlineStyleForHtmlAttribute(stBody)}">${srcEsc}</div>`
       }
       const srcEsc = escapeHtml(tl.text ?? '')
       const fs = Math.max(1, Math.min(8000, Math.floor(tl.fontSize ?? 28)))
@@ -400,7 +487,9 @@ function renderLayerFragment(
       const pos = transformStyle(tl.transform, 50, 50)
       const fw = tl.fontWeight ?? 500
       const ty = textLayerTypographyCss(theme, tl)
-      const stDeco = `${pos} z-index:${z}; pointer-events:none; font-family:${ff}; font-size:${fs}px; color:${col}; ${ty} font-weight:${fw}; ${textBoxLayoutCss(tl.transform, 'content')} ${layerTextEffectsCssFromEffects(tl.textEffects)}`
+      const va = flexAlignForTextVerticalAlign(verticalAlignForTextLayer(theme, tl))
+      /** 与绑定主文案层一致：box-sizing + 3px 内边距，避免预览与真弹窗度量偏差 */
+      const stDeco = `${pos} z-index:${z}; pointer-events:none; box-sizing:border-box; padding:${BINDING_TEXT_PADDING_PX}px; display:flex; flex-direction:column; justify-content:${va}; font-family:${ff}; font-size:${fs}px; color:${col}; ${ty} font-weight:${fw}; ${textBoxLayoutCss(tl.transform, 'content')} ${layerTextEffectsCssFromEffects(tl.textEffects)}`
       return `<div style="${escapeInlineStyleForHtmlAttribute(stDeco)}">${srcEsc}</div>`
     }
     case 'bindingTime': {
@@ -409,9 +498,12 @@ function renderLayerFragment(
       const timeFontFamilyCss = resolvePopupFontFamilyCss(theme, 'time')
       const timePos = transformStyle(theme.timeTransform, 50, 55)
       const timeWeight = theme.timeFontWeight ?? 400
+      const timeItalic = theme.timeFontItalic === true ? 'italic' : 'normal'
+      const timeUnderline = theme.timeUnderline === true ? 'underline' : 'none'
       const tyTime = layerTypographyCss(theme, 'time')
       const tj = flexJustifyForTextAlign(theme?.timeTextAlign ?? theme?.textAlign ?? 'center')
-      const stTime = `${timePos} z-index:${z}; pointer-events:none; box-sizing:border-box; padding:${BINDING_TEXT_PADDING_PX}px; display:flex; align-items:center; justify-content:${tj}; font-family:${timeFontFamilyCss}; font-size:${timeFont}px; color:${timeColor}; ${tyTime} font-weight:${timeWeight}; ${textBoxLayoutCss(theme.timeTransform, 'time')} ${layerTextEffectsCss(theme, 'time')}`
+      const tv = flexAlignForTextVerticalAlign(verticalAlignForThemeLayer(theme, 'time'))
+      const stTime = `${timePos} z-index:${z}; pointer-events:none; box-sizing:border-box; padding:${BINDING_TEXT_PADDING_PX}px; display:flex; align-items:${tv}; justify-content:${tj}; font-family:${timeFontFamilyCss}; font-size:${timeFont}px; color:${timeColor}; ${tyTime} font-weight:${timeWeight}; font-style:${timeItalic}; text-decoration:${timeUnderline}; ${textBoxLayoutCss(theme.timeTransform, 'time')} ${layerTextEffectsCss(theme, 'time')}`
       return `<div style="${escapeInlineStyleForHtmlAttribute(stTime)}">${timeEsc}</div>`
     }
     case 'image': {
@@ -436,14 +528,13 @@ function renderLayerFragment(
 }
 
 function buildReminderHtmlWithLayers(options: ReminderPopupOptions, theme: PopupTheme, htmlDir: string): string {
-  const { title, body, timeStr } = options
+  const { title, timeStr } = options
   const titleEsc = escapeHtml(title)
-  const bodyEsc = escapeHtml(body)
   const timeEsc = escapeHtml(timeStr)
   const layers = theme.layers ?? []
   const parts: string[] = []
   for (let i = 0; i < layers.length; i++) {
-    parts.push(renderLayerFragment(theme, layers[i]!, i, bodyEsc, timeEsc, htmlDir))
+    parts.push(renderLayerFragment(theme, layers[i]!, i, timeEsc, htmlDir))
   }
   const stageInner = parts.join('\n')
   return `<!DOCTYPE html>

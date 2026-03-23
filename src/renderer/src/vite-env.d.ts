@@ -31,6 +31,8 @@ declare global {
         { success: true; fonts: string[] } | { success: false; fonts: string[]; error: string }
       >
       clearSystemFontListCache: () => Promise<void>
+      onMenuUndo?: (cb: () => void) => () => void
+      onMenuRedo?: (cb: () => void) => () => void
     }
   }
 }

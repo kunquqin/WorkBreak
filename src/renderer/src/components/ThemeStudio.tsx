@@ -285,11 +285,18 @@ export function ThemeStudioListView({
       <div className="min-h-0 flex-1 overflow-y-auto overscroll-contain">
         <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4">
           {filtered.map((t) => (
-            <button
+            <div
               key={t.id}
-              type="button"
+              role="button"
+              tabIndex={0}
               onClick={() => onOpenEdit(t.id)}
-              className="group flex flex-col overflow-hidden rounded-xl border border-slate-200 bg-white text-left shadow-sm transition-shadow hover:border-slate-300 hover:shadow-md"
+              onKeyDown={(e) => {
+                if (e.key === 'Enter' || e.key === ' ') {
+                  e.preventDefault()
+                  onOpenEdit(t.id)
+                }
+              }}
+              className="group flex flex-col overflow-hidden rounded-xl border border-slate-200 bg-white text-left shadow-sm transition-shadow hover:border-slate-300 hover:shadow-md focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-slate-400"
             >
               <ThemeStudioThumbnail
                 theme={t}
@@ -303,7 +310,7 @@ export function ThemeStudioListView({
                   {t.target === 'main' ? '结束壁纸' : '休息壁纸'}
                 </p>
               </div>
-            </button>
+            </div>
           ))}
         </div>
         {filtered.length === 0 && (
@@ -684,11 +691,6 @@ export function ThemeStudioFloatingEditor({
               休息壁纸
             </button>
           </div>
-          <p className="border-t border-slate-100 bg-slate-50 px-3 py-1.5 text-center text-[11px] leading-snug text-slate-500">
-            {source.kind === 'subitem'
-              ? `与闹钟/倒计时里「${source.popupTarget === 'main' ? '结束' : '休息'}弹窗」卡片一致，用途不可在此切换`
-              : '选择该壁纸用于结束提醒或休息提醒全屏弹窗；保存后写入主题库'}
-          </p>
         </div>
         <div className="flex shrink-0 flex-wrap items-center justify-between gap-2 border-b border-slate-200 bg-slate-50 px-3 py-2">
           <div className="flex min-w-0 flex-wrap items-center gap-2">

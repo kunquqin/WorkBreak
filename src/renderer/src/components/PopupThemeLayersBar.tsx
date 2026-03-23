@@ -159,8 +159,8 @@ function SortableLayerRow({
   return (
     <li ref={setNodeRef} style={style} className="list-none">
       <div
-        className={`rounded-md border border-slate-200 bg-white px-2 py-1.5 shadow-sm ${
-          selected ? 'ring-1 ring-indigo-400 ring-offset-1' : ''
+        className={`rounded-md border border-slate-200 bg-white px-2 py-1.5 shadow-sm transition-colors ${
+          selected ? 'border-sky-300 bg-sky-50' : ''
         } ${isDragging ? 'opacity-90 shadow-md' : ''}`}
       >
         <div className="flex items-center gap-1.5">
@@ -251,9 +251,9 @@ export type PopupThemeLayersBarProps = {
   readOnly?: boolean
   /** 外层分区高度内占满并内部滚动 */
   className?: string
-  /** 列表区域与工具栏整体隐藏（由父级控制以便调整分栏布局） */
-  railHidden?: boolean
-  onRailHiddenChange?: (hidden: boolean) => void
+  /** 图层区折叠状态（可受控） */
+  collapsed?: boolean
+  onCollapsedChange?: (collapsed: boolean) => void
   /** 当前选中的结构层（背景 / 遮罩）id，用于行高亮 */
   selectedStructuralLayerId?: string | null
   /** 在图层栏选中背景或遮罩 */
@@ -270,15 +270,14 @@ export function PopupThemeLayersBar({
   onPickDecoImage,
   readOnly = false,
   className = '',
-  railHidden: railHiddenProp,
-  onRailHiddenChange,
+  collapsed: collapsedProp,
+  onCollapsedChange,
   selectedStructuralLayerId = null,
   onSelectStructuralLayer,
 }: PopupThemeLayersBarProps) {
-  const [collapsed, setCollapsed] = useState(false)
-  const [railHiddenUncontrolled, setRailHiddenUncontrolled] = useState(false)
-  const railHidden = railHiddenProp ?? railHiddenUncontrolled
-  const setRailHidden = onRailHiddenChange ?? setRailHiddenUncontrolled
+  const [collapsedUncontrolled, setCollapsedUncontrolled] = useState(false)
+  const collapsed = collapsedProp ?? collapsedUncontrolled
+  const setCollapsed = onCollapsedChange ?? setCollapsedUncontrolled
 
   const layers = useMemo(() => ensureThemeLayers(theme).layers ?? [], [theme])
   /** 列表自上而下：前景（z 大）→ 背景（z 小），与存储顺序相反 */
@@ -357,20 +356,6 @@ export function PopupThemeLayersBar({
   const hasBackgroundLayer = layers.some((l) => l.kind === 'background')
   const hasOverlayLayer = layers.some((l) => l.kind === 'overlay')
 
-  if (railHidden) {
-    return (
-      <div className={`flex justify-end ${className}`}>
-        <button
-          type="button"
-          className="text-[11px] text-indigo-600 hover:underline"
-          onClick={() => setRailHidden(false)}
-        >
-          显示图层列表
-        </button>
-      </div>
-    )
-  }
-
   const rowPropsBase = {
     readOnly,
     onSelectBinding: selectBinding,
@@ -396,92 +381,84 @@ export function PopupThemeLayersBar({
         <div className="flex flex-wrap items-center gap-1.5">
           {!readOnly && (
             <>
-              <button
-                type="button"
-                disabled={textN >= MAX_TEXT_LAYERS}
-                title={textN >= MAX_TEXT_LAYERS ? `文本最多 ${MAX_TEXT_LAYERS} 个` : '添加文本层'}
-                className="rounded border border-slate-300 bg-white px-2 py-0.5 text-[11px] text-slate-700 hover:bg-slate-50 disabled:cursor-not-allowed disabled:opacity-40"
-                onClick={() => {
-                  const oldIds = new Set(layers.map((l) => l.id))
-                  const patch = addTextLayer(theme, false)
-                  if (patch?.layers) {
-                    onUpdateTheme(theme.id, patch)
-                    const added = patch.layers.find((l) => l.kind === 'text' && !oldIds.has(l.id))
-                    if (added) selectDeco(added.id)
-                  }
-                }}
-              >
-                + 文本
-              </button>
-              <button
-                type="button"
-                disabled={hasTimeLayer}
-                title={hasTimeLayer ? '时间层最多 1 个' : '添加时间层'}
-                className="rounded border border-slate-300 bg-white px-2 py-0.5 text-[11px] text-slate-700 hover:bg-slate-50 disabled:cursor-not-allowed disabled:opacity-40"
-                onClick={() => {
-                  const patch = addTimeLayer(theme)
-                  if (patch?.layers) {
-                    onUpdateTheme(theme.id, patch)
-                    selectBinding('time')
-                  }
-                }}
-              >
-                + 时间
-              </button>
-              <button
-                type="button"
-                disabled={!onPickDecoImage || imgN >= MAX_DECORATION_IMAGE_LAYERS}
-                title={
-                  !onPickDecoImage
-                    ? '当前环境未提供选图'
-                    : imgN >= MAX_DECORATION_IMAGE_LAYERS
-                      ? `图片层最多 ${MAX_DECORATION_IMAGE_LAYERS} 个`
-                      : '添加图片层'
-                }
-                className="rounded border border-slate-300 bg-white px-2 py-0.5 text-[11px] text-slate-700 hover:bg-slate-50 disabled:cursor-not-allowed disabled:opacity-40"
-                onClick={() => void onPickDecoImage?.()}
-              >
-                + 图片
-              </button>
-              <button
-                type="button"
-                disabled={hasBackgroundLayer}
-                title={hasBackgroundLayer ? '已有背景层' : '添加背景层（壁纸/纯色）'}
-                className="rounded border border-slate-300 bg-white px-2 py-0.5 text-[11px] text-slate-700 hover:bg-slate-50 disabled:cursor-not-allowed disabled:opacity-40"
-                onClick={() => {
-                  const patch = addBackgroundLayer(theme)
-                  if (patch) {
-                    onUpdateTheme(theme.id, patch)
-                    pickStructural(POPUP_LAYER_BACKGROUND_ID)
-                  }
-                }}
-              >
-                + 背景
-              </button>
-              <button
-                type="button"
-                disabled={hasOverlayLayer}
-                title={hasOverlayLayer ? '已有遮罩层' : '添加遮罩层'}
-                className="rounded border border-slate-300 bg-white px-2 py-0.5 text-[11px] text-slate-700 hover:bg-slate-50 disabled:cursor-not-allowed disabled:opacity-40"
-                onClick={() => {
-                  const patch = addOverlayLayer(theme)
-                  if (patch) {
-                    onUpdateTheme(theme.id, patch)
-                    pickStructural(POPUP_LAYER_OVERLAY_ID)
-                  }
-                }}
-              >
-                + 遮罩
-              </button>
+              {textN < MAX_TEXT_LAYERS && (
+                <button
+                  type="button"
+                  title="添加文本层"
+                  className="rounded border border-slate-300 bg-white px-2 py-0.5 text-[11px] text-slate-700 hover:bg-slate-50"
+                  onClick={() => {
+                    const oldIds = new Set(layers.map((l) => l.id))
+                    const patch = addTextLayer(theme, false)
+                    if (patch?.layers) {
+                      onUpdateTheme(theme.id, patch)
+                      const added = patch.layers.find((l) => l.kind === 'text' && !oldIds.has(l.id))
+                      if (added) selectDeco(added.id)
+                    }
+                  }}
+                >
+                  + 文本
+                </button>
+              )}
+              {!hasTimeLayer && (
+                <button
+                  type="button"
+                  title="添加时间层"
+                  className="rounded border border-slate-300 bg-white px-2 py-0.5 text-[11px] text-slate-700 hover:bg-slate-50"
+                  onClick={() => {
+                    const patch = addTimeLayer(theme)
+                    if (patch?.layers) {
+                      onUpdateTheme(theme.id, patch)
+                      selectBinding('time')
+                    }
+                  }}
+                >
+                  + 时间
+                </button>
+              )}
+              {!!onPickDecoImage && imgN < MAX_DECORATION_IMAGE_LAYERS && (
+                <button
+                  type="button"
+                  title="添加图片层"
+                  className="rounded border border-slate-300 bg-white px-2 py-0.5 text-[11px] text-slate-700 hover:bg-slate-50"
+                  onClick={() => void onPickDecoImage?.()}
+                >
+                  + 图片
+                </button>
+              )}
+              {!hasBackgroundLayer && (
+                <button
+                  type="button"
+                  title="添加背景层（壁纸/纯色）"
+                  className="rounded border border-slate-300 bg-white px-2 py-0.5 text-[11px] text-slate-700 hover:bg-slate-50"
+                  onClick={() => {
+                    const patch = addBackgroundLayer(theme)
+                    if (patch) {
+                      onUpdateTheme(theme.id, patch)
+                      pickStructural(POPUP_LAYER_BACKGROUND_ID)
+                    }
+                  }}
+                >
+                  + 背景
+                </button>
+              )}
+              {!hasOverlayLayer && (
+                <button
+                  type="button"
+                  title="添加遮罩层"
+                  className="rounded border border-slate-300 bg-white px-2 py-0.5 text-[11px] text-slate-700 hover:bg-slate-50"
+                  onClick={() => {
+                    const patch = addOverlayLayer(theme)
+                    if (patch) {
+                      onUpdateTheme(theme.id, patch)
+                      pickStructural(POPUP_LAYER_OVERLAY_ID)
+                    }
+                  }}
+                >
+                  + 遮罩
+                </button>
+              )}
             </>
           )}
-          <button
-            type="button"
-            className="text-[11px] text-slate-500 hover:text-slate-700"
-            onClick={() => setRailHidden(true)}
-          >
-            隐藏栏
-          </button>
         </div>
       </div>
       {!collapsed && (
@@ -492,11 +469,9 @@ export function PopupThemeLayersBar({
                 {displayLayers.map((L) => {
                   const selected =
                     (L.kind === 'bindingTime' &&
-                      selectedElements.length === 1 &&
-                      selectedElements[0] === 'time') ||
+                      selectedElements.includes('time')) ||
                     (isBindingBodyTextLayer(L) &&
-                      selectedElements.length === 1 &&
-                      selectedElements[0] === 'content') ||
+                      selectedElements.includes('content')) ||
                     (L.kind === 'text' &&
                       !isBindingBodyTextLayer(L) &&
                       selectedDecorationLayerId === L.id) ||
@@ -509,10 +484,6 @@ export function PopupThemeLayersBar({
           </DndContext>
         </div>
       )}
-      <p className="mt-1 shrink-0 text-[10px] leading-snug text-slate-500">
-        自上而下：越靠上越靠前。各层可删；删空则弹窗黑底。文本 {textN}/{MAX_TEXT_LAYERS}，时间至多 1，图片 {imgN}/
-        {MAX_DECORATION_IMAGE_LAYERS}。
-      </p>
     </div>
   )
 }

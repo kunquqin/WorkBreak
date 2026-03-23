@@ -2,7 +2,7 @@
  * 弹窗主题：图层顺序、可见性（文本 / 时间 / 图片 / 背景 / 遮罩）。
  * 文本层统一为 kind: 'text'；其中 bindsReminderBody 为 true 的层接收提醒主文案注入。
  */
-import type { PopupLayerTextEffects, PopupTextAlign, PopupTheme, TextTransform } from './settings'
+import type { PopupLayerTextEffects, PopupTextAlign, PopupTextVerticalAlign, PopupTheme, TextTransform } from './settings'
 
 function sanitizeLayerTextEffects(raw: unknown): PopupLayerTextEffects | undefined {
   if (!raw || typeof raw !== 'object') return undefined
@@ -85,6 +85,7 @@ export interface TextThemeLayer extends PopupThemeLayerBase {
   fontSize: number
   fontWeight?: number
   textAlign?: PopupTextAlign
+  textVerticalAlign?: PopupTextVerticalAlign
   letterSpacing?: number
   lineHeight?: number
   fontFamilyPreset?: string
@@ -108,7 +109,12 @@ function newDecoId(prefix: string): string {
 }
 
 function defaultFreeTextTransform(): TextTransform {
-  return { ...baseTransform(), x: 50, y: 60, textBoxWidthPct: 40, textBoxHeightPct: 12 }
+  /**
+   * 新增装饰文本默认应为「贴字」而非固定大框：
+   * 不预置 textBoxWidth/Height，交给预览按内容尺寸自适应；
+   * 用户手动拉框后再写入 textBox*Pct 持久化。
+   */
+  return { ...baseTransform(), x: 50, y: 60 }
 }
 
 function defaultImageTransform(): TextTransform {
@@ -124,6 +130,7 @@ function bindingBodyTextFromTheme(theme: PopupTheme): Omit<TextThemeLayer, 'id' 
     fontSize: Math.max(1, Math.min(8000, Math.floor(theme.contentFontSize ?? 180))),
     fontWeight: theme.contentFontWeight ?? 600,
     textAlign: theme.contentTextAlign,
+    textVerticalAlign: theme.contentTextVerticalAlign,
     letterSpacing: theme.contentLetterSpacing,
     lineHeight: theme.contentLineHeight,
     fontFamilyPreset: theme.contentFontFamilyPreset,
@@ -223,7 +230,13 @@ function sanitizeLayer(raw: unknown, theme: PopupTheme): PopupThemeLayer | null 
       (baseBody ? baseBody.transform : binds ? { x: 50, y: 42, rotation: 0, scale: 1 } : defaultFreeTextTransform())
     const te = sanitizeLayerTextEffects(o.textEffects) ?? baseBody?.textEffects
     const align =
-      o.textAlign === 'left' || o.textAlign === 'right' || o.textAlign === 'center' ? o.textAlign : baseBody?.textAlign
+      o.textAlign === 'left' || o.textAlign === 'right' || o.textAlign === 'center' || o.textAlign === 'start' || o.textAlign === 'end' || o.textAlign === 'justify'
+        ? o.textAlign
+        : baseBody?.textAlign
+    const verticalAlign =
+      o.textVerticalAlign === 'top' || o.textVerticalAlign === 'middle' || o.textVerticalAlign === 'bottom'
+        ? o.textVerticalAlign
+        : baseBody?.textVerticalAlign
     const letterSpacing = Number.isFinite(Number(o.letterSpacing))
       ? Math.max(-2, Math.min(20, Number(o.letterSpacing)))
       : baseBody?.letterSpacing
@@ -248,6 +261,7 @@ function sanitizeLayer(raw: unknown, theme: PopupTheme): PopupThemeLayer | null 
       ...(fontWeight !== undefined ? { fontWeight } : {}),
       transform,
       ...(align ? { textAlign: align } : {}),
+      ...(verticalAlign ? { textVerticalAlign: verticalAlign } : {}),
       ...(letterSpacing !== undefined ? { letterSpacing } : {}),
       ...(lineHeight !== undefined ? { lineHeight } : {}),
       ...(fontFamilyPreset ? { fontFamilyPreset } : {}),
@@ -286,7 +300,14 @@ function sanitizeLayer(raw: unknown, theme: PopupTheme): PopupThemeLayer | null 
       fontSize: fs,
       fontWeight: Number.isFinite(fw) ? Math.max(100, Math.min(900, Math.round(fw / 100) * 100)) : undefined,
       transform,
-      textAlign: o.textAlign === 'left' || o.textAlign === 'right' || o.textAlign === 'center' ? o.textAlign : undefined,
+      textAlign:
+        o.textAlign === 'left' || o.textAlign === 'right' || o.textAlign === 'center' || o.textAlign === 'start' || o.textAlign === 'end' || o.textAlign === 'justify'
+          ? o.textAlign
+          : undefined,
+      textVerticalAlign:
+        o.textVerticalAlign === 'top' || o.textVerticalAlign === 'middle' || o.textVerticalAlign === 'bottom'
+          ? o.textVerticalAlign
+          : undefined,
       letterSpacing: Number.isFinite(Number(o.letterSpacing)) ? Math.max(-2, Math.min(20, Number(o.letterSpacing))) : undefined,
       lineHeight: Number.isFinite(Number(o.lineHeight)) ? Math.max(0.8, Math.min(3, Number(o.lineHeight))) : undefined,
       fontFamilyPreset: typeof o.fontFamilyPreset === 'string' ? o.fontFamilyPreset : undefined,
@@ -376,6 +397,7 @@ export function mergeContentThemePatchIntoBindingTextLayer(theme: PopupTheme, pa
   if (patch.contentFontSize !== undefined) u.fontSize = patch.contentFontSize
   if (patch.contentFontWeight !== undefined) u.fontWeight = patch.contentFontWeight
   if (patch.contentTextAlign !== undefined) u.textAlign = patch.contentTextAlign
+  if (patch.contentTextVerticalAlign !== undefined) u.textVerticalAlign = patch.contentTextVerticalAlign
   if (patch.contentLetterSpacing !== undefined) u.letterSpacing = patch.contentLetterSpacing
   if (patch.contentLineHeight !== undefined) u.lineHeight = patch.contentLineHeight
   if (patch.contentFontFamilyPreset !== undefined) u.fontFamilyPreset = patch.contentFontFamilyPreset
@@ -442,9 +464,8 @@ export function addTextLayer(theme: PopupTheme, bindsReminderBody = false): Part
         fontWeight: 500,
         transform: defaultFreeTextTransform(),
       }
-  const bgIdx = layers.findIndex((l) => l.kind === 'background')
-  const insertAt = bgIdx >= 0 ? bgIdx + 1 : 0
-  layers.splice(insertAt, 0, L)
+  // 新增层默认放到顶层（最高 z），避免被既有遮罩/文本层压住。
+  layers.push(L)
   return { layers }
 }
 
@@ -452,9 +473,7 @@ export function addTimeLayer(theme: PopupTheme): Partial<PopupTheme> | null {
   const layers = [...(theme.layers ?? migrateLegacyLayerStack(theme))]
   if (layers.some((l) => l.kind === 'bindingTime')) return null
   const L: BindingTimeThemeLayer = { id: POPUP_LAYER_BINDING_TIME_ID, kind: 'bindingTime', visible: true }
-  const bgIdx = layers.findIndex((l) => l.kind === 'background')
-  const insertAt = bgIdx >= 0 ? bgIdx + 1 : 0
-  layers.splice(insertAt, 0, L)
+  layers.push(L)
   return { layers }
 }
 
@@ -469,9 +488,7 @@ export function addImageDecorationLayer(theme: PopupTheme, imagePath: string): P
     transform: defaultImageTransform(),
     objectFit: 'contain',
   }
-  const bgIdx = layers.findIndex((l) => l.kind === 'background')
-  const insertAt = bgIdx >= 0 ? bgIdx + 1 : 0
-  layers.splice(insertAt, 0, L)
+  layers.push(L)
   return { layers }
 }
 
@@ -536,6 +553,7 @@ export function themePatchFromBindingTextLayer(layer: TextThemeLayer): Partial<P
     contentFontSize: layer.fontSize,
     contentFontWeight: layer.fontWeight,
     contentTextAlign: layer.textAlign,
+    contentTextVerticalAlign: layer.textVerticalAlign,
     contentLetterSpacing: layer.letterSpacing,
     contentLineHeight: layer.lineHeight,
     contentFontFamilyPreset: layer.fontFamilyPreset,

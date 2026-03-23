@@ -17,4 +17,14 @@ contextBridge.exposeInMainWorld('electronAPI', {
   pickPopupImageFolder: () => ipcRenderer.invoke('pickPopupImageFolder'),
   getSystemFontFamilies: () => ipcRenderer.invoke('getSystemFontFamilies'),
   clearSystemFontListCache: () => ipcRenderer.invoke('clearSystemFontListCache'),
+  onMenuUndo: (cb) => {
+    const fn = () => cb()
+    ipcRenderer.on('menu-edit-undo', fn)
+    return () => ipcRenderer.removeListener('menu-edit-undo', fn)
+  },
+  onMenuRedo: (cb) => {
+    const fn = () => cb()
+    ipcRenderer.on('menu-edit-redo', fn)
+    return () => ipcRenderer.removeListener('menu-edit-redo', fn)
+  },
 })

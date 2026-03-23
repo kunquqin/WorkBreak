@@ -369,6 +369,39 @@ function normalizePopupThemes(raw: unknown): PopupTheme[] {
       const overlayColor = typeof o.overlayColor === 'string' && o.overlayColor ? o.overlayColor : '#000000'
       const overlayOpacityNum = Number(o.overlayOpacity)
       const overlayOpacity = Number.isFinite(overlayOpacityNum) ? Math.max(0, Math.min(1, overlayOpacityNum)) : 0.45
+      const overlayMode = o.overlayMode === 'gradient' ? 'gradient' : 'solid'
+      const overlayGradientDirection =
+        o.overlayGradientDirection === 'rightToLeft' ||
+        o.overlayGradientDirection === 'topToBottom' ||
+        o.overlayGradientDirection === 'bottomToTop' ||
+        o.overlayGradientDirection === 'topLeftToBottomRight' ||
+        o.overlayGradientDirection === 'topRightToBottomLeft' ||
+        o.overlayGradientDirection === 'bottomLeftToTopRight' ||
+        o.overlayGradientDirection === 'bottomRightToTopLeft' ||
+        o.overlayGradientDirection === 'custom'
+          ? o.overlayGradientDirection
+          : 'leftToRight'
+      const overlayGradientAngleDegNum = Number(o.overlayGradientAngleDeg)
+      const overlayGradientAngleDeg = Number.isFinite(overlayGradientAngleDegNum)
+        ? ((overlayGradientAngleDegNum % 360) + 360) % 360
+        : (
+          overlayGradientDirection === 'rightToLeft' ? 270
+            : overlayGradientDirection === 'topToBottom' ? 180
+              : overlayGradientDirection === 'bottomToTop' ? 0
+                : overlayGradientDirection === 'topLeftToBottomRight' ? 135
+                  : overlayGradientDirection === 'topRightToBottomLeft' ? 225
+                    : overlayGradientDirection === 'bottomLeftToTopRight' ? 45
+                      : overlayGradientDirection === 'bottomRightToTopLeft' ? 315
+                        : 90
+        )
+      const overlayGradientStartOpacityNum = Number(o.overlayGradientStartOpacity)
+      const overlayGradientStartOpacity = Number.isFinite(overlayGradientStartOpacityNum)
+        ? Math.max(0, Math.min(1, overlayGradientStartOpacityNum))
+        : 0.7
+      const overlayGradientEndOpacityNum = Number(o.overlayGradientEndOpacity)
+      const overlayGradientEndOpacity = Number.isFinite(overlayGradientEndOpacityNum)
+        ? Math.max(0, Math.min(1, overlayGradientEndOpacityNum))
+        : 0
       const contentColor = typeof o.contentColor === 'string' && o.contentColor ? o.contentColor : '#ffffff'
       const timeColor = typeof o.timeColor === 'string' && o.timeColor ? o.timeColor : '#e2e8f0'
       const countdownColor = typeof o.countdownColor === 'string' && o.countdownColor ? o.countdownColor : '#ffffff'
@@ -380,21 +413,43 @@ function normalizePopupThemes(raw: unknown): PopupTheme[] {
       const contentFontSize = clampThemeFont(o.contentFontSize, 180)
       const timeFontSize = clampThemeFont(o.timeFontSize, 100)
       const countdownFontSize = clampThemeFont(o.countdownFontSize, 180)
-      const textAlign = o.textAlign === 'left' || o.textAlign === 'right' ? o.textAlign : 'center'
+      const textAlign =
+        o.textAlign === 'left' ||
+        o.textAlign === 'right' ||
+        o.textAlign === 'start' ||
+        o.textAlign === 'end' ||
+        o.textAlign === 'justify'
+          ? o.textAlign
+          : 'center'
+      const textVerticalAlign =
+        o.textVerticalAlign === 'top' || o.textVerticalAlign === 'middle' || o.textVerticalAlign === 'bottom'
+          ? o.textVerticalAlign
+          : undefined
       const contentFontWeightNum = Number(o.contentFontWeight)
       const contentFontWeight = Number.isFinite(contentFontWeightNum) ? Math.max(100, Math.min(900, Math.round(contentFontWeightNum / 100) * 100)) : undefined
       const timeFontWeightNum = Number(o.timeFontWeight)
       const timeFontWeight = Number.isFinite(timeFontWeightNum) ? Math.max(100, Math.min(900, Math.round(timeFontWeightNum / 100) * 100)) : undefined
       const countdownFontWeightNum = Number(o.countdownFontWeight)
       const countdownFontWeight = Number.isFinite(countdownFontWeightNum) ? Math.max(100, Math.min(900, Math.round(countdownFontWeightNum / 100) * 100)) : undefined
+      const contentFontItalic = o.contentFontItalic === true ? true : undefined
+      const timeFontItalic = o.timeFontItalic === true ? true : undefined
+      const countdownFontItalic = o.countdownFontItalic === true ? true : undefined
+      const contentUnderline = o.contentUnderline === true ? true : undefined
+      const timeUnderline = o.timeUnderline === true ? true : undefined
+      const countdownUnderline = o.countdownUnderline === true ? true : undefined
       const contentTransform = normalizeTextTransform(o.contentTransform)
       const timeTransform = normalizeTextTransform(o.timeTransform)
       const countdownTransform = normalizeTextTransform(o.countdownTransform)
-      const alignOrUndef = (v: unknown): 'left' | 'center' | 'right' | undefined =>
-        v === 'left' || v === 'right' || v === 'center' ? v : undefined
+      const alignOrUndef = (v: unknown): 'left' | 'center' | 'right' | 'start' | 'end' | 'justify' | undefined =>
+        v === 'left' || v === 'right' || v === 'center' || v === 'start' || v === 'end' || v === 'justify' ? v : undefined
+      const verticalAlignOrUndef = (v: unknown): 'top' | 'middle' | 'bottom' | undefined =>
+        v === 'top' || v === 'middle' || v === 'bottom' ? v : undefined
       const contentTextAlign = alignOrUndef(o.contentTextAlign)
       const timeTextAlign = alignOrUndef(o.timeTextAlign)
       const countdownTextAlign = alignOrUndef(o.countdownTextAlign)
+      const contentTextVerticalAlign = verticalAlignOrUndef(o.contentTextVerticalAlign)
+      const timeTextVerticalAlign = verticalAlignOrUndef(o.timeTextVerticalAlign)
+      const countdownTextVerticalAlign = verticalAlignOrUndef(o.countdownTextVerticalAlign)
       const letter = (v: unknown) => {
         const n = Number(v)
         return Number.isFinite(n) ? Math.max(-2, Math.min(20, n)) : undefined
@@ -456,6 +511,11 @@ function normalizePopupThemes(raw: unknown): PopupTheme[] {
         overlayEnabled,
         overlayColor,
         overlayOpacity,
+        overlayMode,
+        overlayGradientDirection,
+        overlayGradientAngleDeg,
+        overlayGradientStartOpacity,
+        overlayGradientEndOpacity,
         contentColor,
         timeColor,
         countdownColor,
@@ -463,15 +523,25 @@ function normalizePopupThemes(raw: unknown): PopupTheme[] {
         timeFontSize,
         countdownFontSize,
         textAlign,
+        ...(textVerticalAlign ? { textVerticalAlign } : {}),
         ...(contentFontWeight !== undefined ? { contentFontWeight } : {}),
         ...(timeFontWeight !== undefined ? { timeFontWeight } : {}),
         ...(countdownFontWeight !== undefined ? { countdownFontWeight } : {}),
+        ...(contentFontItalic ? { contentFontItalic: true } : {}),
+        ...(timeFontItalic ? { timeFontItalic: true } : {}),
+        ...(countdownFontItalic ? { countdownFontItalic: true } : {}),
+        ...(contentUnderline ? { contentUnderline: true } : {}),
+        ...(timeUnderline ? { timeUnderline: true } : {}),
+        ...(countdownUnderline ? { countdownUnderline: true } : {}),
         ...(contentTransform ? { contentTransform } : {}),
         ...(timeTransform ? { timeTransform } : {}),
         ...(countdownTransform ? { countdownTransform } : {}),
         ...(contentTextAlign ? { contentTextAlign } : {}),
         ...(timeTextAlign ? { timeTextAlign } : {}),
         ...(countdownTextAlign ? { countdownTextAlign } : {}),
+        ...(contentTextVerticalAlign ? { contentTextVerticalAlign } : {}),
+        ...(timeTextVerticalAlign ? { timeTextVerticalAlign } : {}),
+        ...(countdownTextVerticalAlign ? { countdownTextVerticalAlign } : {}),
         ...(contentLetterSpacing !== undefined ? { contentLetterSpacing } : {}),
         ...(timeLetterSpacing !== undefined ? { timeLetterSpacing } : {}),
         ...(countdownLetterSpacing !== undefined ? { countdownLetterSpacing } : {}),

@@ -77,6 +77,54 @@ function buildTransform(tx: number, ty: number, rotation: number, scale: number)
   return `translate(${tx}px, ${ty}px) rotate(${rotation}deg) scale(${scale})`
 }
 
+function clamp01(v: number | undefined, fallback: number): number {
+  const n = Number(v)
+  if (!Number.isFinite(n)) return fallback
+  return Math.max(0, Math.min(1, n))
+}
+
+function normalizeAngleDeg(v: number | undefined, fallback: number): number {
+  const n = Number(v)
+  if (!Number.isFinite(n)) return fallback
+  const mod = n % 360
+  return mod < 0 ? mod + 360 : mod
+}
+
+function hexToRgba(hex: string, alpha: number): string {
+  const a = clamp01(alpha, 1)
+  const raw = (hex || '').trim()
+  const m = raw.match(/^#([0-9a-fA-F]{3}|[0-9a-fA-F]{6})$/)
+  if (!m) return `rgba(0,0,0,${a})`
+  const h = m[1].length === 3
+    ? m[1].split('').map((c) => c + c).join('')
+    : m[1]
+  const r = Number.parseInt(h.slice(0, 2), 16)
+  const g = Number.parseInt(h.slice(2, 4), 16)
+  const b = Number.parseInt(h.slice(4, 6), 16)
+  return `rgba(${r},${g},${b},${a})`
+}
+
+function getOverlayBackground(theme: PopupTheme): string {
+  const color = theme.overlayColor || '#000000'
+  if ((theme.overlayMode ?? 'solid') !== 'gradient') {
+    return hexToRgba(color, clamp01(theme.overlayOpacity, 0.45))
+  }
+  const start = clamp01(theme.overlayGradientStartOpacity, 0.7)
+  const end = clamp01(theme.overlayGradientEndOpacity, 0)
+  const dir = theme.overlayGradientDirection ?? 'leftToRight'
+  const angle =
+    dir === 'custom' ? normalizeAngleDeg(theme.overlayGradientAngleDeg, 90)
+      : dir === 'rightToLeft' ? 270
+        : dir === 'topToBottom' ? 180
+          : dir === 'bottomToTop' ? 0
+            : dir === 'topLeftToBottomRight' ? 135
+              : dir === 'topRightToBottomLeft' ? 225
+                : dir === 'bottomLeftToTopRight' ? 45
+                  : dir === 'bottomRightToTopLeft' ? 315
+                    : 90
+  return `linear-gradient(${angle}deg, ${hexToRgba(color, start)} 0%, ${hexToRgba(color, end)} 100%)`
+}
+
 /** 元素 AABB 四角相对黑底预览容器左上角的像素坐标（与 Moveable 校正 translate 一致） */
 type ScaleFixedCorner = 'tl' | 'tr' | 'bl' | 'br'
 
@@ -143,10 +191,14 @@ function pickMoveableCssTransform(e: { transform?: string; afterTransform?: stri
 }
 
 /** Shift 吸附角度：只改第一个 rotate()，保留多段 translate 等 */
-/** Moveable 把手/连线等在 .moveable-control-box 内；点击时会抢走 contentEditable 焦点 */
+/** Moveable 把手/连线等；点击时会抢走 contentEditable 焦点（relatedTarget 有时为 null，需配合 pointer 捕获 ref） */
 function isThemePreviewMoveableChrome(node: EventTarget | null): boolean {
   if (!node || !(node instanceof HTMLElement)) return false
-  return Boolean(node.closest('.moveable-control-box'))
+  return Boolean(
+    node.closest('.moveable-control-box') ||
+      node.closest('.moveable-control') ||
+      node.closest('.moveable-line'),
+  )
 }
 
 function snapRotateInFullTransform(css: string, inputEvent: MouseEvent | TouchEvent | null): string {
@@ -206,6 +258,25 @@ function alignForKey(theme: PopupTheme, key: TextElementKey): PopupTheme['textAl
   if (key === 'content') return theme.contentTextAlign ?? theme.textAlign
   if (key === 'time') return theme.timeTextAlign ?? theme.textAlign
   return theme.countdownTextAlign ?? theme.textAlign
+}
+
+function verticalAlignForKey(theme: PopupTheme, key: TextElementKey): 'top' | 'middle' | 'bottom' {
+  const base = theme.textVerticalAlign ?? 'middle'
+  if (key === 'content') return theme.contentTextVerticalAlign ?? base
+  if (key === 'time') return theme.timeTextVerticalAlign ?? base
+  return theme.countdownTextVerticalAlign ?? base
+}
+
+function justifyFromTextAlign(align: PopupTheme['textAlign']): 'flex-start' | 'center' | 'flex-end' {
+  if (align === 'left' || align === 'start' || align === 'justify') return 'flex-start'
+  if (align === 'right' || align === 'end') return 'flex-end'
+  return 'center'
+}
+
+function alignFromVerticalAlign(align: 'top' | 'middle' | 'bottom'): 'flex-start' | 'center' | 'flex-end' {
+  if (align === 'top') return 'flex-start'
+  if (align === 'bottom') return 'flex-end'
+  return 'center'
 }
 
 function letterSpacingForKey(theme: PopupTheme, key: TextElementKey): number {
@@ -273,6 +344,8 @@ export function ThemePreviewEditor({
   const [editingDecoLayerId, setEditingDecoLayerId] = useState<string | null>(null)
   const editingDecoLayerIdRef = useRef<string | null>(null)
   editingDecoLayerIdRef.current = editingDecoLayerId
+  /** 框选得到的装饰层多选（text/image）；单选仍走 selectedDecorationLayerId */
+  const [marqueeDecorationLayerIds, setMarqueeDecorationLayerIds] = useState<string[]>([])
   /** 避免：点空白 blur 后同一次点击又执行 onSelectElements([]) 清掉选中 */
   const justExitedTextEditRef = useRef(false)
   /** 捕获阶段：指针落在 Moveable 控件上（先于 contentEditable 的 blur） */
@@ -331,6 +404,16 @@ export function ThemePreviewEditor({
     onUpdateTheme(theme.id, { [field]: { ...current, ...patch } })
   }, [getTransform, onUpdateTheme, theme.id])
 
+  /** 装饰文本层 transform（与主文案 contentTransform 字段结构相同，含 contentTextBoxUserSized） */
+  const getDecoTextLayerTransform = useCallback((layerId: string): TextTransform | null => {
+    const layers = ensureThemeLayers(theme).layers ?? []
+    const layer = layers.find((x) => x.id === layerId && x.kind === 'text') as TextThemeLayer | undefined
+    if (!layer || layer.bindsReminderBody) return null
+    return layer.transform ?? { x: 50, y: 50, rotation: 0, scale: 1 }
+  }, [theme])
+  const getDecoTextLayerTransformRef = useRef(getDecoTextLayerTransform)
+  getDecoTextLayerTransformRef.current = getDecoTextLayerTransform
+
   const getTargetRef = useCallback((key: TextElementKey | null) => {
     if (key === 'content') return contentRef
     if (key === 'time') return timeRef
@@ -362,6 +445,7 @@ export function ThemePreviewEditor({
   const handleElementClick = useCallback((key: TextElementKey, e: React.MouseEvent) => {
     e.stopPropagation()
     setEditingDecoLayerId(null)
+    setMarqueeDecorationLayerIds([])
     onSelectStructuralLayer?.(null)
     onSelectDecorationLayer?.(null)
     if (e.shiftKey) {
@@ -405,12 +489,23 @@ export function ThemePreviewEditor({
   }, [])
 
   const multiSelected = selectedElements.length >= 2
+  const selectedElementsSig = useMemo(() => selectedElements.slice().sort().join('\x1e'), [selectedElements])
 
   const getFontWeight = useCallback((key: TextElementKey): number => {
     if (key === 'content') return theme.contentFontWeight ?? 600
     if (key === 'time') return theme.timeFontWeight ?? 400
     return theme.countdownFontWeight ?? 700
   }, [theme.contentFontWeight, theme.timeFontWeight, theme.countdownFontWeight])
+  const getFontStyle = useCallback((key: TextElementKey): 'normal' | 'italic' => {
+    if (key === 'content') return theme.contentFontItalic === true ? 'italic' : 'normal'
+    if (key === 'time') return theme.timeFontItalic === true ? 'italic' : 'normal'
+    return theme.countdownFontItalic === true ? 'italic' : 'normal'
+  }, [theme.contentFontItalic, theme.timeFontItalic, theme.countdownFontItalic])
+  const getTextDecoration = useCallback((key: TextElementKey): 'none' | 'underline' => {
+    if (key === 'content') return theme.contentUnderline === true ? 'underline' : 'none'
+    if (key === 'time') return theme.timeUnderline === true ? 'underline' : 'none'
+    return theme.countdownUnderline === true ? 'underline' : 'none'
+  }, [theme.contentUnderline, theme.timeUnderline, theme.countdownUnderline])
 
   const mergeStyleTransforms = useCallback((patch: Partial<Record<TextElementKey, string>>) => {
     setStyleTransformByKey(prev => ({ ...prev, ...patch }))
@@ -524,23 +619,67 @@ export function ThemePreviewEditor({
       const ty = cH * (tt.y / 100) - el.offsetHeight / 2
       next[L.id] = buildTransform(tx, ty, tt.rotation ?? 0, tt.scale ?? 1)
     }
+    /**
+     * 必须与 `recomputeStyleTransformsFromTheme` 一致：theme 更新后始终用当前 DOM 尺寸回写 translate。
+     * 旧逻辑「仅填补空 id」会导致：缩放手松后先把错误 translate 写入 state，字号变化使 offsetWidth 已变，
+     * 但后续 recompute 无法覆盖 → 文本相对操作框偏移一跳。
+     * 拖拽/缩放过程中 `transformSyncLockedRef` 会短路本函数，不会与 Moveable 实时 transform 打架。
+     */
     setDecoStyleTransformById((prev) => {
-      const keys = new Set([...Object.keys(prev), ...Object.keys(next)])
+      const merged = { ...prev, ...next }
+      const keys = new Set([...Object.keys(prev), ...Object.keys(merged)])
       let same = true
       for (const id of keys) {
-        if ((prev[id] ?? '') !== (next[id] ?? '')) {
+        if ((prev[id] ?? '') !== (merged[id] ?? '')) {
           same = false
           break
         }
       }
       if (same) return prev
-      return { ...prev, ...next }
+      return merged
     })
   }, [theme])
+
+  /** 样式属性签名：根字段字号/字重等变化时触发双帧重算，覆盖首帧测量未稳定。装饰层 transform 见 `recomputeDecoStyleTransformsFromTheme` 合并策略。 */
+  const decoForceStyleSig = useMemo(() => [
+    contentFontPx, timeFontPx, countdownFontPx, previewScale,
+    theme.contentFontWeight, theme.timeFontWeight, theme.countdownFontWeight,
+    theme.contentFontItalic, theme.timeFontItalic, theme.countdownFontItalic,
+    theme.contentUnderline, theme.timeUnderline, theme.countdownUnderline,
+    theme.textAlign, theme.contentTextAlign, theme.timeTextAlign, theme.countdownTextAlign,
+    theme.textVerticalAlign, theme.contentTextVerticalAlign, theme.timeTextVerticalAlign, theme.countdownTextVerticalAlign,
+    theme.contentLetterSpacing, theme.timeLetterSpacing, theme.countdownLetterSpacing,
+    theme.contentLineHeight, theme.timeLineHeight, theme.countdownLineHeight,
+    theme.contentFontSize, theme.timeFontSize, theme.countdownFontSize,
+    theme.contentTransform, theme.timeTransform, theme.countdownTransform, theme.target,
+    theme.popupFontFamilyPreset, theme.popupFontFamilySystem,
+    theme.contentFontFamilyPreset, theme.contentFontFamilySystem,
+    theme.timeFontFamilyPreset, theme.timeFontFamilySystem,
+    theme.countdownFontFamilyPreset, theme.countdownFontFamilySystem,
+    theme.contentTextEffects, theme.timeTextEffects, theme.countdownTextEffects,
+  ].join('\x1e'), [
+    contentFontPx, timeFontPx, countdownFontPx, previewScale,
+    theme.contentFontWeight, theme.timeFontWeight, theme.countdownFontWeight,
+    theme.contentFontItalic, theme.timeFontItalic, theme.countdownFontItalic,
+    theme.contentUnderline, theme.timeUnderline, theme.countdownUnderline,
+    theme.textAlign, theme.contentTextAlign, theme.timeTextAlign, theme.countdownTextAlign,
+    theme.textVerticalAlign, theme.contentTextVerticalAlign, theme.timeTextVerticalAlign, theme.countdownTextVerticalAlign,
+    theme.contentLetterSpacing, theme.timeLetterSpacing, theme.countdownLetterSpacing,
+    theme.contentLineHeight, theme.timeLineHeight, theme.countdownLineHeight,
+    theme.contentFontSize, theme.timeFontSize, theme.countdownFontSize,
+    theme.contentTransform, theme.timeTransform, theme.countdownTransform, theme.target,
+    theme.popupFontFamilyPreset, theme.popupFontFamilySystem,
+    theme.contentFontFamilyPreset, theme.contentFontFamilySystem,
+    theme.timeFontFamilyPreset, theme.timeFontFamilySystem,
+    theme.countdownFontFamilyPreset, theme.countdownFontFamilySystem,
+    theme.contentTextEffects, theme.timeTextEffects, theme.countdownTextEffects,
+  ])
+  const decoForceStyleSigRef = useRef(decoForceStyleSig)
 
   // 从 theme 同步 transform（layout 后立刻算 + 延后两帧再算，覆盖首帧尺寸未稳定）
   useLayoutEffect(() => {
     if (transformSyncLocked) return
+    decoForceStyleSigRef.current = decoForceStyleSig
     let cancelled = false
     recomputeStyleTransformsFromTheme()
     recomputeDecoStyleTransformsFromTheme()
@@ -556,23 +695,7 @@ export function ThemePreviewEditor({
       cancelled = true
       cancelAnimationFrame(id0)
     }
-  }, [transformSyncLocked, recomputeStyleTransformsFromTheme, recomputeDecoStyleTransformsFromTheme, contentFontPx, timeFontPx, countdownFontPx,
-    theme.contentFontWeight, theme.timeFontWeight, theme.countdownFontWeight, theme.textAlign,
-    theme.contentTextAlign, theme.timeTextAlign, theme.countdownTextAlign,
-    theme.contentLetterSpacing, theme.timeLetterSpacing, theme.countdownLetterSpacing,
-    theme.contentLineHeight, theme.timeLineHeight, theme.countdownLineHeight,
-    theme.contentFontSize, theme.timeFontSize, theme.countdownFontSize,
-    previewScale,
-    theme.contentTransform, theme.timeTransform, theme.countdownTransform, theme.target,
-    theme.popupFontFamilyPreset,
-    theme.popupFontFamilySystem,
-    theme.contentFontFamilyPreset,
-    theme.contentFontFamilySystem,
-    theme.timeFontFamilyPreset,
-    theme.timeFontFamilySystem,
-    theme.countdownFontFamilyPreset,
-    theme.countdownFontFamilySystem,
-    theme.contentTextEffects, theme.timeTextEffects, theme.countdownTextEffects, theme.layers])
+  }, [transformSyncLocked, recomputeStyleTransformsFromTheme, recomputeDecoStyleTransformsFromTheme, decoForceStyleSig, theme.layers])
 
   /** 首帧/比例切换后同步测量预览盒宽度（供 previewScale） */
   useLayoutEffect(() => {
@@ -637,27 +760,6 @@ export function ThemePreviewEditor({
     })
     return () => { cancelled = true }
   }, [recomputeStyleTransformsFromTheme, recomputeDecoStyleTransformsFromTheme])
-
-  /** 下方参数区改字号/字重/对齐等导致目标尺寸变化时，同步 Moveable 外框（拖拽中由 applyMoveableFrame 内 updateRect） */
-  useLayoutEffect(() => {
-    if (transformSyncLocked) return
-    if (selectedElements.length === 0 && !selectedDecorationLayerId) return
-    moveableRef.current?.updateRect()
-  }, [styleTransformByKey, decoStyleTransformById, contentFontPx, timeFontPx, countdownFontPx, theme.textAlign,
-    theme.contentTextAlign, theme.timeTextAlign, theme.countdownTextAlign,
-    theme.contentLetterSpacing, theme.timeLetterSpacing, theme.countdownLetterSpacing,
-    theme.contentLineHeight, theme.timeLineHeight, theme.countdownLineHeight,
-    theme.contentFontWeight, theme.timeFontWeight, theme.countdownFontWeight,
-    theme.popupFontFamilyPreset,
-    theme.popupFontFamilySystem,
-    theme.contentFontFamilyPreset,
-    theme.contentFontFamilySystem,
-    theme.timeFontFamilyPreset,
-    theme.timeFontFamilySystem,
-    theme.countdownFontFamilyPreset,
-    theme.countdownFontFamilySystem,
-    theme.contentTextEffects, theme.timeTextEffects, theme.countdownTextEffects,
-    selectedElements, selectedDecorationLayerId, transformSyncLocked, previewViewportWidth, popupPreviewAspect, editingTextKey])
 
   /**
    * 与 useLayoutEffect 中正算 `tx = cW*(x/100)-w/2` 严格互逆；松手时勿用 getBoundingClientRect 中心（旋转后 AABB 中心 ≠ 布局中心），
@@ -841,6 +943,42 @@ export function ThemePreviewEditor({
   /** 拖动四边/四角调整文字区域后：把当前像素宽高写入 textBox*Pct，与真实弹窗 CSS 一致 */
   const finalizeResize = useCallback(
     (target: HTMLElement) => {
+      const decoId = target.dataset.decoLayerId
+      if (decoId && containerRef.current) {
+        const c = containerRef.current
+        const cw = c.offsetWidth
+        const ch = c.offsetHeight
+        if (cw >= 2 && ch >= 2) {
+          const wPct = Math.round((target.offsetWidth / cw) * 1000) / 10
+          const hPct = Math.round((target.offsetHeight / ch) * 1000) / 10
+          const css = target.style.transform || decoStyleTransformById[decoId] || ''
+          const { translateX, translateY, rotation, scale } = parseTransformValues(css)
+          const pos = translateToThemePercent(target, translateX, translateY)
+          const list = ensureThemeLayers(theme).layers ?? []
+          const L = list.find((x) => x.id === decoId)
+          if (L && L.kind === 'text' && !(L as TextThemeLayer).bindsReminderBody) {
+            const tl = L as TextThemeLayer
+            const patch = updateDecorationLayer(theme, decoId, {
+              transform: {
+                ...(tl.transform ?? { x: 50, y: 50, rotation: 0, scale: 1 }),
+                x: pos.x,
+                y: pos.y,
+                rotation: +rotation.toFixed(2),
+                scale: +scale.toFixed(4),
+                textBoxWidthPct: Math.max(5, Math.min(96, wPct)),
+                textBoxHeightPct: Math.max(3, Math.min(100, hPct)),
+                contentTextBoxUserSized: true as const,
+              },
+            })
+            if (patch) onUpdateTheme(theme.id, patch)
+            const tf = buildTransform(translateX, translateY, rotation, scale)
+            target.style.transform = tf
+            setDecoStyleTransformById((p) => ({ ...p, [decoId]: tf }))
+            requestAnimationFrame(() => moveableRef.current?.updateRect())
+          }
+        }
+        return
+      }
       const k = (target.dataset.elementKey as TextElementKey) || null
       if (!k || !containerRef.current) return
       const c = containerRef.current
@@ -869,7 +1007,7 @@ export function ThemePreviewEditor({
       mergeStyleTransforms({ [k]: tf })
       requestAnimationFrame(() => moveableRef.current?.updateRect())
     },
-    [styleTransformByKey, translateToThemePercent, updateTransform, mergeStyleTransforms],
+    [decoStyleTransformById, mergeStyleTransforms, onUpdateTheme, styleTransformByKey, theme, translateToThemePercent, updateTransform],
   )
 
   const snapshotsRef = useRef(new Map<string, ElementSnapshot>())
@@ -1081,6 +1219,134 @@ export function ThemePreviewEditor({
     [toPreviewPx, updateTransform, timeFontPx],
   )
 
+  /**
+   * 装饰文本：与主文案 `applyContentTextBoxAutoLayout` 同一套 60%/96% 栏宽规则，
+   * 写回图层 `transform`（含 `contentTextBoxUserSized: false`）。
+   */
+  const applyDecoTextBoxAutoLayout = useCallback(
+    (layerId: string, el: HTMLElement) => {
+      const container = containerRef.current
+      if (!container) return
+      const cur = getDecoTextLayerTransformRef.current(layerId)
+      if (!cur) return
+      const cw = Math.max(1, container.offsetWidth)
+      const ch = Math.max(1, container.offsetHeight)
+      const capInlinePx = cw * CONTENT_TEXT_INLINE_MAX_RATIO
+      const maxBodyPx = cw * CONTENT_TEXT_BOX_CAP_RATIO
+      const pad = toPreviewPx(3) * 2
+      const prev = {
+        width: el.style.width,
+        height: el.style.height,
+        maxWidth: el.style.maxWidth,
+        maxHeight: el.style.maxHeight,
+        overflow: el.style.overflow,
+        minHeight: el.style.minHeight,
+      }
+      el.style.overflow = 'visible'
+      el.style.maxHeight = 'none'
+      el.style.minHeight = '0'
+
+      el.style.width = 'max-content'
+      el.style.maxWidth = `${maxBodyPx}px`
+      el.style.height = 'auto'
+      const wRead = Math.max(1, el.offsetWidth, el.scrollWidth)
+      let wIntrinsic = Math.min(wRead, maxBodyPx)
+
+      const minWpx = Math.min(maxBodyPx, Math.max(40, toPreviewPx(24)))
+      wIntrinsic = Math.max(wIntrinsic, minWpx)
+
+      const wBoxPx = wIntrinsic <= capInlinePx + 0.5 ? wIntrinsic : capInlinePx
+
+      el.style.width = `${wBoxPx}px`
+      el.style.maxWidth = 'none'
+      const hBody = Math.max(1, el.scrollHeight)
+
+      el.style.width = prev.width
+      el.style.height = prev.height
+      el.style.maxWidth = prev.maxWidth
+      el.style.maxHeight = prev.maxHeight
+      el.style.overflow = prev.overflow
+      el.style.minHeight = prev.minHeight
+
+      const wPctMax = CONTENT_TEXT_BOX_CAP_RATIO * 100
+      const wPct = Math.min(wPctMax, Math.max(5, Math.round((wBoxPx / cw) * 1000) / 10 + 0.5))
+      const hPct = Math.min(100, Math.max(3, Math.round(((hBody + pad) / ch) * 1000) / 10 + 0.3))
+      if (
+        cur.textBoxWidthPct != null &&
+        cur.textBoxHeightPct != null &&
+        cur.contentTextBoxUserSized !== true &&
+        Math.abs(cur.textBoxWidthPct - wPct) < 0.45 &&
+        Math.abs(cur.textBoxHeightPct - hPct) < 0.4
+      ) {
+        return
+      }
+      const patch = updateDecorationLayer(theme, layerId, {
+        transform: {
+          ...cur,
+          textBoxWidthPct: wPct,
+          textBoxHeightPct: hPct,
+          contentTextBoxUserSized: false,
+        },
+      })
+      if (patch) onUpdateTheme(theme.id, patch)
+      requestAnimationFrame(() => moveableRef.current?.updateRect())
+    },
+    [theme, toPreviewPx, onUpdateTheme],
+  )
+
+  /** 装饰文本：与主文案 `snapContentTextBoxHeightOnly` 对齐（userSized 时只调高度 pct）。 */
+  const snapDecoTextBoxHeightOnly = useCallback(
+    (layerId: string, el: HTMLElement) => {
+      const container = containerRef.current
+      if (!container) return
+      const cur = getDecoTextLayerTransformRef.current(layerId)
+      if (!cur) return
+      const cw = Math.max(1, container.offsetWidth)
+      const ch = Math.max(1, container.offsetHeight)
+      const pad = toPreviewPx(3) * 2
+      if (cur.textBoxWidthPct == null || !Number.isFinite(cur.textBoxWidthPct)) {
+        applyDecoTextBoxAutoLayout(layerId, el)
+        return
+      }
+      const prev = {
+        width: el.style.width,
+        height: el.style.height,
+        maxWidth: el.style.maxWidth,
+        maxHeight: el.style.maxHeight,
+        overflow: el.style.overflow,
+        minHeight: el.style.minHeight,
+      }
+      const wPctClamped = Math.max(5, Math.min(CONTENT_TEXT_BOX_CAP_RATIO * 100, cur.textBoxWidthPct))
+      const wPx = (wPctClamped / 100) * cw
+      el.style.overflow = 'visible'
+      el.style.maxHeight = 'none'
+      el.style.minHeight = '0'
+      el.style.width = `${wPx}px`
+      el.style.maxWidth = 'none'
+      el.style.height = 'auto'
+      const hBody = Math.max(1, el.scrollHeight)
+
+      el.style.width = prev.width
+      el.style.height = prev.height
+      el.style.maxWidth = prev.maxWidth
+      el.style.maxHeight = prev.maxHeight
+      el.style.overflow = prev.overflow
+      el.style.minHeight = prev.minHeight
+
+      const hPct = Math.min(100, Math.max(3, Math.round(((hBody + pad) / ch) * 1000) / 10 + 0.3))
+      if (cur.textBoxHeightPct != null && Math.abs(cur.textBoxHeightPct - hPct) < 0.35) return
+      const patch = updateDecorationLayer(theme, layerId, {
+        transform: {
+          ...cur,
+          textBoxHeightPct: hPct,
+        },
+      })
+      if (patch) onUpdateTheme(theme.id, patch)
+      requestAnimationFrame(() => moveableRef.current?.updateRect())
+    },
+    [theme, toPreviewPx, onUpdateTheme, applyDecoTextBoxAutoLayout],
+  )
+
   const syncContentPreviewTextBoxRef = useRef(syncContentPreviewTextBox)
   syncContentPreviewTextBoxRef.current = syncContentPreviewTextBox
 
@@ -1119,8 +1385,66 @@ export function ThemePreviewEditor({
   const finalizeScaleBakesFontSize = useCallback(
     (el: HTMLElement | SVGElement) => {
       if (!(el instanceof HTMLElement)) return
-      if (el.dataset.decoLayerId) {
-        finalizeDecorationTransform(el)
+      const decoId = el.dataset.decoLayerId
+      if (decoId) {
+        const css = el.style.transform || decoStyleTransformById[decoId] || ''
+        const { rotation, scale: newScale } = parseTransformValues(css)
+        const list = ensureThemeLayers(theme).layers ?? []
+        const L = list.find((x) => x.id === decoId)
+        if (!L || L.kind !== 'text') {
+          finalizeDecorationTransform(el)
+          return
+        }
+        const tl = L as TextThemeLayer
+        if (tl.bindsReminderBody) {
+          finalizeDecorationTransform(el)
+          return
+        }
+        const oldScale = Math.max(0.05, Math.min(25, tl.transform?.scale ?? 1))
+        if (Math.abs(newScale - oldScale) < 1e-5) {
+          finalizeDecorationTransform(el)
+          return
+        }
+        const ratio = newScale / oldScale
+        const cont = containerRef.current
+        if (!cont) return
+        const cWo = Math.max(1, cont.offsetWidth)
+        const cHo = Math.max(1, cont.offsetHeight)
+        const cr = cont.getBoundingClientRect()
+        const er = el.getBoundingClientRect()
+        const anchorCx = (er.left + er.right) / 2 - cr.left
+        const anchorCy = (er.top + er.bottom) / 2 - cr.top
+        const xPct = Math.max(0, Math.min(100, (anchorCx / cWo) * 100))
+        const yPct = Math.max(0, Math.min(100, (anchorCy / cHo) * 100))
+        const curTf = tl.transform ?? { x: 50, y: 50, rotation: 0, scale: 1 }
+        const boxPatch: Partial<Pick<TextTransform, 'textBoxWidthPct' | 'textBoxHeightPct'>> = {}
+        if (curTf.textBoxWidthPct != null && Number.isFinite(curTf.textBoxWidthPct)) {
+          boxPatch.textBoxWidthPct = Math.min(96, Math.max(1, Math.round(curTf.textBoxWidthPct * ratio * 10) / 10 + 0.5))
+        }
+        if (curTf.textBoxHeightPct != null && Number.isFinite(curTf.textBoxHeightPct)) {
+          boxPatch.textBoxHeightPct = Math.min(100, Math.max(1, Math.round(curTf.textBoxHeightPct * ratio * 10) / 10 + 0.3))
+        }
+        const patchTransform: TextTransform = {
+          ...curTf,
+          ...boxPatch,
+          x: xPct,
+          y: yPct,
+          rotation: +rotation.toFixed(2),
+          scale: 1,
+        }
+        const patch = updateDecorationLayer(theme, decoId, {
+          fontSize: Math.max(1, Math.min(8000, Math.round((tl.fontSize ?? 28) * ratio))),
+          transform: patchTransform,
+        })
+        if (patch) onUpdateTheme(theme.id, patch)
+        const wLay = el.offsetWidth
+        const hLay = el.offsetHeight
+        const tx0 = cWo * (xPct / 100) - wLay / 2
+        const ty0 = cHo * (yPct / 100) - hLay / 2
+        const tf = buildTransform(tx0, ty0, rotation, 1)
+        el.style.transform = tf
+        setDecoStyleTransformById((p) => ({ ...p, [decoId]: tf }))
+        requestAnimationFrame(() => moveableRef.current?.updateRect())
         return
       }
       const k = (el.dataset.elementKey as TextElementKey) || null
@@ -1217,6 +1541,8 @@ export function ThemePreviewEditor({
       styleTransformByKey,
       finalizeElement,
       finalizeDecorationTransform,
+      decoStyleTransformById,
+      translateToThemePercent,
       getTargetRef,
       snapShortLayerTightContent,
     ],
@@ -1250,11 +1576,13 @@ export function ThemePreviewEditor({
       if (onBg) {
         onSelectStructuralLayer?.(POPUP_LAYER_BACKGROUND_ID)
         onSelectElements([])
+        setMarqueeDecorationLayerIds([])
         onSelectDecorationLayer?.(null)
         return
       }
       onSelectStructuralLayer?.(null)
       onSelectElements([])
+      setMarqueeDecorationLayerIds([])
       onSelectDecorationLayer?.(null)
     }
   }, [readOnly, onSelectElements, getTargetRef, onSelectDecorationLayer, onSelectStructuralLayer])
@@ -1302,14 +1630,31 @@ export function ThemePreviewEditor({
           const cx = (t.x / 100) * cW, cy = (t.y / 100) * cH
           if (cx >= sL && cx <= sR && cy >= sT && cy <= sB) hits.push(key)
         }
+        const decoHits: string[] = []
+        const layers = ensureThemeLayers(theme).layers ?? []
+        for (const L of layers) {
+          if (!L.visible || L.kind !== 'text') continue
+          const tl = L as TextThemeLayer
+          if (tl.bindsReminderBody) continue
+          const t = tl.transform
+          const cx = ((t?.x ?? 50) / 100) * cW
+          const cy = ((t?.y ?? 50) / 100) * cH
+          if (cx >= sL && cx <= sR && cy >= sT && cy <= sB) decoHits.push(L.id)
+        }
         onSelectElements(hits)
-        onSelectDecorationLayer?.(null)
+        if (decoHits.length === 1 && hits.length === 0) {
+          setMarqueeDecorationLayerIds([])
+          onSelectDecorationLayer?.(decoHits[0])
+        } else {
+          setMarqueeDecorationLayerIds(decoHits)
+          onSelectDecorationLayer?.(null)
+        }
       }
       setMarqueeRect(null)
     }
     document.addEventListener('mousemove', onMove)
     document.addEventListener('mouseup', onUp)
-  }, [readOnly, textLayerPairs, getTransform, onSelectElements, getTargetRef, onSelectDecorationLayer])
+  }, [readOnly, textLayerPairs, getTransform, onSelectElements, getTargetRef, onSelectDecorationLayer, theme])
 
   /** 多选对齐：按各层变换后的轴对齐包围盒（AABB）对齐，与 Figma / 设计工具一致；不用中心点百分比直接比较 */
   const handleAlign = useCallback((mode: 'left' | 'centerH' | 'right' | 'top' | 'centerV' | 'bottom') => {
@@ -1406,24 +1751,28 @@ export function ThemePreviewEditor({
 
   /** 编辑文字时仍保留 Moveable；refs 在 commit 后才可用，useMemo 读 .current 会导致首帧无目标、且不随 ref 挂载重算 */
   const [moveableTargets, setMoveableTargets] = useState<HTMLElement[]>([])
-  useLayoutEffect(() => {
+  useEffect(() => {
     if (readOnly) {
+      // 只读缩略图不需要维护 Moveable 目标，避免在 layout effect 中形成重复 setState。
+      return
+    }
+    if (!selectedDecorationLayerId && selectedElements.length === 0 && marqueeDecorationLayerIds.length === 0) {
       setMoveableTargets((p) => (p.length === 0 ? p : []))
       return
     }
     if (selectedDecorationLayerId) {
-      if (editingDecoLayerId && selectedDecorationLayerId === editingDecoLayerId) {
-        setMoveableTargets((p) => (p.length === 0 ? p : []))
-        return
-      }
       const el = decoRefs.current[selectedDecorationLayerId]
       const next = el ? [el] : []
       setMoveableTargets((p) => (p.length === next.length && p[0] === next[0] ? p : next))
       return
     }
-    const els = selectedElements
+    const textEls = selectedElements
       .map((k) => getTargetRef(k)?.current)
       .filter((e): e is HTMLDivElement => e != null)
+    const decoEls = marqueeDecorationLayerIds
+      .map((id) => decoRefs.current[id])
+      .filter((e): e is HTMLDivElement => e != null)
+    const els = [...textEls, ...decoEls]
     setMoveableTargets((p) => {
       if (p.length === els.length && p.every((x, i) => x === els[i])) return p
       return els
@@ -1432,6 +1781,7 @@ export function ThemePreviewEditor({
     readOnly,
     selectedElements,
     selectedDecorationLayerId,
+    marqueeDecorationLayerIds,
     editingDecoLayerId,
     editingTextKey,
     theme.layers,
@@ -1439,6 +1789,34 @@ export function ThemePreviewEditor({
     decoStyleTransformById,
     getTargetRef,
   ])
+
+  /** 下方参数区改字号/字重/对齐等导致目标尺寸变化时，同步 Moveable 外框（拖拽中由 applyMoveableFrame 内 updateRect） */
+  useEffect(() => {
+    if (transformSyncLocked) return
+    if (selectedElements.length === 0 && !selectedDecorationLayerId) return
+    if (moveableTargets.length === 0) return
+    const id = requestAnimationFrame(() => {
+      moveableRef.current?.updateRect()
+    })
+    return () => cancelAnimationFrame(id)
+  }, [styleTransformByKey, decoStyleTransformById, contentFontPx, timeFontPx, countdownFontPx, theme.textAlign,
+    theme.contentTextAlign, theme.timeTextAlign, theme.countdownTextAlign,
+    theme.textVerticalAlign, theme.contentTextVerticalAlign, theme.timeTextVerticalAlign, theme.countdownTextVerticalAlign,
+    theme.contentLetterSpacing, theme.timeLetterSpacing, theme.countdownLetterSpacing,
+    theme.contentLineHeight, theme.timeLineHeight, theme.countdownLineHeight,
+    theme.contentFontWeight, theme.timeFontWeight, theme.countdownFontWeight,
+    theme.contentFontItalic, theme.timeFontItalic, theme.countdownFontItalic,
+    theme.contentUnderline, theme.timeUnderline, theme.countdownUnderline,
+    theme.popupFontFamilyPreset,
+    theme.popupFontFamilySystem,
+    theme.contentFontFamilyPreset,
+    theme.contentFontFamilySystem,
+    theme.timeFontFamilyPreset,
+    theme.timeFontFamilySystem,
+    theme.countdownFontFamilyPreset,
+    theme.countdownFontFamilySystem,
+    theme.contentTextEffects, theme.timeTextEffects, theme.countdownTextEffects,
+    selectedElementsSig, selectedDecorationLayerId, transformSyncLocked, previewViewportWidth, popupPreviewAspect, editingTextKey, moveableTargets.length])
 
   const moveableTarget = useMemo(
     () => moveableTargets.length === 1 ? moveableTargets[0] : moveableTargets,
@@ -1448,7 +1826,14 @@ export function ThemePreviewEditor({
   const resizableEnabled = moveableTargets.length === 1
   const moveableKey = useMemo(() => {
     if (selectedDecorationLayerId) {
-      return `deco:${selectedDecorationLayerId}|${editingTextKey ?? ''}|${editingDecoLayerId ?? ''}|tf`
+      const decoTextBounds =
+        resizableEnabled &&
+        editingDecoLayerId != null &&
+        selectedDecorationLayerId === editingDecoLayerId
+      return `deco:${selectedDecorationLayerId}|${editingTextKey ?? ''}|${editingDecoLayerId ?? ''}|${decoTextBounds ? 'box' : 'tf'}`
+    }
+    if (marqueeDecorationLayerIds.length > 0) {
+      return `marquee-deco:${marqueeDecorationLayerIds.slice().sort().join(',')}|text:${selectedElements.slice().sort().join(',')}|${editingTextKey ?? ''}`
     }
     const rb =
       resizableEnabled &&
@@ -1456,19 +1841,23 @@ export function ThemePreviewEditor({
       selectedElements.length === 1 &&
       selectedElements[0] === editingTextKey
     return `${selectedElements.slice().sort().join(',')}|${editingTextKey ?? ''}|${rb ? 'box' : 'tf'}`
-  }, [selectedDecorationLayerId, selectedElements, editingTextKey, resizableEnabled, editingDecoLayerId])
+  }, [selectedDecorationLayerId, marqueeDecorationLayerIds, selectedElements, editingTextKey, resizableEnabled, editingDecoLayerId])
   /** 仅在「文字编辑态」显示四边/四角拉框，写入 textBoxWidthPct/HeightPct；预览态只用等比缩放（scalable）变换整块 */
   const resizableForTextBounds =
     resizableEnabled &&
-    editingTextKey != null &&
-    selectedElements.length === 1 &&
-    selectedElements[0] === editingTextKey
-
-  /** 与黑底预览容器对齐：拖拽/缩放/拉框边缘不可超出画幅（Moveable Snappable bounds） */
-  const previewMoveableBounds = useMemo(
-    () => ({ position: 'css' as const, left: 0, top: 0, right: 0, bottom: 0 }),
-    [],
-  )
+    (
+      (
+        editingTextKey != null &&
+        selectedElements.length === 1 &&
+        selectedElements[0] === editingTextKey
+      ) ||
+      (
+        editingDecoLayerId != null &&
+        selectedDecorationLayerId != null &&
+        selectedDecorationLayerId === editingDecoLayerId &&
+        moveableTargets.length === 1
+      )
+    )
 
   const keyOfEl = (el: HTMLElement | SVGElement) =>
     el instanceof HTMLElement ? ((el.dataset.elementKey as TextElementKey) || null) : null
@@ -1566,8 +1955,13 @@ export function ThemePreviewEditor({
     if (selectedDecorationLayerId !== editingDecoLayerId) setEditingDecoLayerId(null)
   }, [selectedDecorationLayerId, editingDecoLayerId])
 
+  /**
+   * 点击 Moveable 把手/连线时，会先让 contentEditable blur；必须在捕获阶段标记「正在点操作组件」，
+   * 否则 blur 里会误判为退出编辑。Moveable 控件常挂在预览容器外（portal），不能用 container.contains 过滤。
+   * 绑定文案与装饰文本编辑态都要注册，否则会一点 resize 就失焦并取消编辑。
+   */
   useEffect(() => {
-    if (!editingTextKey) {
+    if (!editingTextKey && !editingDecoLayerId) {
       moveableChromePointerDownRef.current = false
       return
     }
@@ -1579,7 +1973,6 @@ export function ThemePreviewEditor({
     const onPointerDownCapture = (e: PointerEvent) => {
       const t = e.target
       if (!(t instanceof HTMLElement)) return
-      if (!containerRef.current?.contains(t)) return
       if (isThemePreviewMoveableChrome(t)) moveableChromePointerDownRef.current = true
     }
     document.addEventListener('pointerdown', onPointerDownCapture, true)
@@ -1590,7 +1983,7 @@ export function ThemePreviewEditor({
       document.removeEventListener('pointerup', clearChromeFlag, true)
       document.removeEventListener('pointercancel', clearChromeFlag, true)
     }
-  }, [editingTextKey])
+  }, [editingTextKey, editingDecoLayerId])
 
   const handleTextPointerDown = useCallback((key: TextElementKey, e: React.MouseEvent) => {
     if (e.button !== 0) return
@@ -1604,32 +1997,33 @@ export function ThemePreviewEditor({
     if (effectiveEditableKeys.includes(key) && e.detail >= 2) return
     if (e.shiftKey) return
     e.stopPropagation()
+    const targetEl = e.currentTarget as HTMLElement
     const inSel = selectedElements.includes(key)
     const multi = selectedElements.length >= 2
-    const deferDrag = () => {
-      requestAnimationFrame(() => {
-        requestAnimationFrame(() => scheduleDragStart(e.nativeEvent))
-      })
-    }
     if (multi && inSel) {
       flushSync(() => {
+        setMarqueeDecorationLayerIds([])
         onSelectStructuralLayer?.(null)
         onSelectDecorationLayer?.(null)
       })
-      deferDrag()
+      scheduleDragStart(e.nativeEvent)
       return
     }
     if (!inSel || selectedElements.length !== 1 || selectedElements[0] !== key) {
       flushSync(() => {
+        setMarqueeDecorationLayerIds([])
         onSelectStructuralLayer?.(null)
         onSelectDecorationLayer?.(null)
         onSelectElements([key])
+        setMoveableTargets([targetEl])
       })
     } else {
+      setMarqueeDecorationLayerIds([])
       onSelectStructuralLayer?.(null)
       onSelectDecorationLayer?.(null)
+      setMoveableTargets([targetEl])
     }
-    deferDrag()
+    scheduleDragStart(e.nativeEvent)
   }, [
     selectedElements,
     onSelectElements,
@@ -1641,6 +2035,7 @@ export function ThemePreviewEditor({
     getTargetRef,
     editingDecoLayerIdRef,
     onSelectStructuralLayer,
+    setMarqueeDecorationLayerIds,
   ])
 
   const renderTextLayerForKey = (layerId: string, key: TextElementKey, zi: number): React.ReactNode => {
@@ -1660,7 +2055,10 @@ export function ThemePreviewEditor({
     const bh = tform.textBoxHeightPct
     const shortLineLayer = key === 'time'
     const shortLayerLockW = shortLineLayer && tform.shortLayerTextBoxLockWidth === true
-    const shortLayerFlexJustify = ta === 'left' ? 'flex-start' : ta === 'right' ? 'flex-end' : 'center'
+    const tv = verticalAlignForKey(theme, key)
+    const shortLayerFlexJustify = justifyFromTextAlign(ta)
+    const shortLayerFlexAlign = alignFromVerticalAlign(tv)
+    const contentFlexJustify = alignFromVerticalAlign(tv)
     return (
       <div
         key={layerId}
@@ -1668,13 +2066,15 @@ export function ThemePreviewEditor({
         data-element-key={key}
         contentEditable={isEditing}
         suppressContentEditableWarning
-        className={`absolute ${readOnly ? 'cursor-default' : isEditing ? 'cursor-text select-text ring-2 ring-indigo-400/90' : 'cursor-move'} rounded-sm`}
+        className={`absolute ${readOnly ? 'cursor-default' : isEditing ? 'cursor-text select-text' : 'cursor-move'} rounded-sm`}
         style={{
           left: 0, top: 0,
           transform: tf,
           transformOrigin: 'center',
           willChange: selectedElements.includes(key) ? 'transform' : undefined,
           color, fontSize: `${toPreviewPx(fontSize)}px`, fontWeight: getFontWeight(key),
+          fontStyle: getFontStyle(key),
+          textDecoration: getTextDecoration(key),
           lineHeight: lh, textAlign: ta,
           letterSpacing: `${toPreviewPx(ls)}px`,
           zIndex: zi,
@@ -1682,12 +2082,16 @@ export function ThemePreviewEditor({
           ...(shortLineLayer
             ? {
                 display: 'flex',
-                alignItems: 'center',
+                alignItems: shortLayerFlexAlign,
                 justifyContent: shortLayerFlexJustify,
                 /** 单行时间：行高贴字高，减少 flex 行盒上下「空行」导致操作框纵向变宽 */
                 lineHeight: 1,
               }
-            : {}),
+            : {
+                display: 'flex',
+                flexDirection: 'column',
+                justifyContent: contentFlexJustify,
+              }),
           fontFamily: resolvePopupFontFamilyCss(theme, key),
           outline: 'none',
           ...layerTextEffectsReactStyle(theme, key),
@@ -1734,8 +2138,11 @@ export function ThemePreviewEditor({
           if (e.detail === 2) {
             e.preventDefault()
             e.stopPropagation()
-            flushSync(() => onSelectElements([key]))
-            setEditingTextKey(key)
+            flushSync(() => {
+              onSelectElements([key])
+              setEditingTextKey(key)
+            })
+            setMoveableTargets([e.currentTarget])
           }
         }}
         onMouseDown={(e) => handleTextPointerDown(key, e)}
@@ -1819,9 +2226,6 @@ export function ThemePreviewEditor({
     <div className={outerWrapClass}>
       {showToolbar && (
         <>
-          <p className="mb-1.5 px-1 text-[10px] leading-relaxed text-slate-500">
-            <strong className="text-slate-600">预览态</strong>：仅<strong className="text-slate-600">四角</strong>等比缩放（拖某角则锚定<strong className="text-slate-600">对角</strong>；按住 <kbd className="rounded border border-slate-300 bg-slate-50 px-0.5 font-mono text-[9px]">Ctrl</kbd> 为<strong className="text-slate-600">中心点</strong>），松手后<strong className="text-slate-600">字号写入主题</strong>；绑定<strong className="text-slate-600">文本</strong>层与装饰<strong className="text-slate-600">文本</strong>层可双击改字，时间层仅拖拽缩放（双击不进入改字）。双击文本层后出现四边拉框。选中层后可用<strong className="text-slate-600">方向键</strong>按预览逻辑像素平移 1px（焦点在面板内且非输入框时）。文本层未手调框时：栏宽约 ≤60% 画布则贴字边，超出则锁 60% 换行；手拉后可更宽（至约 96%）；失焦后在<strong className="text-slate-600">当前宽度</strong>下自动增高包全文。
-          </p>
           <div className="mb-1.5 flex items-center gap-0.5 px-1">
             {alignButtons.map(({ mode, icon, title }) => (
               <button key={mode} type="button" title={title} disabled={!multiSelected} onClick={() => handleAlign(mode)}
@@ -1883,8 +2287,8 @@ export function ThemePreviewEditor({
                   data-layer="overlay"
                   style={{
                     zIndex: zi,
-                    background: theme.overlayColor || '#000000',
-                    opacity: theme.overlayEnabled ? Math.max(0, Math.min(1, theme.overlayOpacity ?? 0.45)) : 0,
+                    background: getOverlayBackground(theme),
+                    opacity: theme.overlayEnabled ? 1 : 0,
                   }}
                 />
               )
@@ -1901,6 +2305,11 @@ export function ThemePreviewEditor({
                 contentTextEffects: td.textEffects,
               }
               const isDecoEditing = editingDecoLayerId === L.id
+              const decoAlign = (td.textAlign ?? theme.textAlign) as PopupTheme['textAlign']
+              const decoVerticalAlign = td.textVerticalAlign ?? theme.textVerticalAlign ?? 'middle'
+              const decoTf = td.transform ?? { x: 50, y: 50, rotation: 0, scale: 1 }
+              const decoBw = decoTf.textBoxWidthPct
+              const decoBh = decoTf.textBoxHeightPct
               return (
                 <div
                   key={L.id}
@@ -1910,7 +2319,7 @@ export function ThemePreviewEditor({
                   data-deco-layer-id={L.id}
                   contentEditable={isDecoEditing && !readOnly}
                   suppressContentEditableWarning
-                  className={`absolute rounded-sm ${readOnly ? 'cursor-default' : isDecoEditing ? 'cursor-text select-text ring-2 ring-indigo-400/90' : 'cursor-move'}`}
+                  className={`absolute rounded-sm ${readOnly ? 'cursor-default' : isDecoEditing ? 'cursor-text select-text' : 'cursor-move'}`}
                   style={{
                     left: 0,
                     top: 0,
@@ -1921,12 +2330,22 @@ export function ThemePreviewEditor({
                     fontSize: `${toPreviewPx(fs)}px`,
                     fontWeight: td.fontWeight ?? 500,
                     lineHeight: td.lineHeight ?? 1.35,
-                    textAlign: (td.textAlign ?? theme.textAlign) as 'left' | 'center' | 'right',
+                    textAlign: decoAlign,
                     letterSpacing: `${toPreviewPx(td.letterSpacing ?? 0)}px`,
                     padding: `${toPreviewPx(3)}px`,
                     fontFamily: resolveDecoFontFamilyCss(td.fontFamilyPreset, td.fontFamilySystem),
-                    maxWidth: td.transform?.textBoxWidthPct != null ? `${Math.min(96, Math.max(5, td.transform.textBoxWidthPct))}%` : '96%',
-                    maxHeight: td.transform?.textBoxHeightPct != null ? `${Math.min(100, Math.max(3, td.transform.textBoxHeightPct))}%` : undefined,
+                    display: 'flex',
+                    flexDirection: 'column',
+                    justifyContent: alignFromVerticalAlign(decoVerticalAlign),
+                    /** 与 renderTextLayerForKey(content) 完全一致：有 textBox 才定宽；无 textBox 仅限制 maxWidth。 */
+                    ...(decoBw != null && Number.isFinite(decoBw)
+                      ? { width: `${Math.min(96, Math.max(5, decoBw))}%`, maxWidth: '100%', boxSizing: 'border-box' as const }
+                      : { maxWidth: '96%' }),
+                    ...(decoBh != null && Number.isFinite(decoBh)
+                      ? isDecoEditing
+                        ? { minHeight: `${decoBh}%`, height: 'auto', maxHeight: '100%', overflow: 'visible' as const }
+                        : { height: `${Math.min(100, Math.max(3, decoBh))}%`, maxHeight: '100%', overflow: 'visible' as const }
+                      : {}),
                     whiteSpace: 'pre-wrap',
                     wordBreak: 'keep-all',
                     overflowWrap: 'break-word',
@@ -1940,11 +2359,13 @@ export function ThemePreviewEditor({
                       e.preventDefault()
                       e.stopPropagation()
                       flushSync(() => {
+                        setMarqueeDecorationLayerIds([])
                         onSelectStructuralLayer?.(null)
                         onSelectElements([])
                         onSelectDecorationLayer?.(L.id)
+                        setEditingDecoLayerId(L.id)
                       })
-                      setEditingDecoLayerId(L.id)
+                      setMoveableTargets([e.currentTarget as HTMLDivElement])
                     }
                   }}
                   onMouseDown={(e) => {
@@ -1954,13 +2375,13 @@ export function ThemePreviewEditor({
                     if (editingDecoLayerId === L.id) return
                     e.stopPropagation()
                     flushSync(() => {
+                      setMarqueeDecorationLayerIds([])
                       onSelectStructuralLayer?.(null)
                       onSelectElements([])
                       onSelectDecorationLayer?.(L.id)
                     })
-                    requestAnimationFrame(() => {
-                      requestAnimationFrame(() => scheduleDragStart(e.nativeEvent))
-                    })
+                    setMoveableTargets([e.currentTarget as HTMLDivElement])
+                    scheduleDragStart(e.nativeEvent)
                   }}
                   onBlur={(ev) => {
                     if (!isDecoEditing) return
@@ -1975,11 +2396,53 @@ export function ThemePreviewEditor({
                     }
                     const elBlur = decoRefs.current[L.id]
                     const text = (elBlur?.textContent ?? '').replace(/\u00a0/g, ' ').replace(/\n+$/g, '').slice(0, 2000)
-                    const patch = updateDecorationLayer(theme, L.id, { text })
+                    let patch: Partial<PopupTheme> | null = null
+                    if (elBlur && containerRef.current) {
+                      const css = elBlur.style.transform || decoStyleTransformById[L.id] || ''
+                      const { translateX, translateY, rotation, scale } = parseTransformValues(css)
+                      const pos = translateToThemePercent(elBlur, translateX, translateY)
+                      const list = ensureThemeLayers(theme).layers ?? []
+                      const curLayer = list.find((x) => x.id === L.id)
+                      const curTransform =
+                        curLayer && (curLayer.kind === 'text' || curLayer.kind === 'image')
+                          ? (curLayer as TextThemeLayer | ImageThemeLayer).transform
+                          : undefined
+                      const patchTransform: TextTransform = {
+                        ...(curTransform ?? { x: 50, y: 50, rotation: 0, scale: 1 }),
+                        x: pos.x,
+                        y: pos.y,
+                        rotation: +rotation.toFixed(2),
+                        scale: +scale.toFixed(4),
+                      }
+                      patch = updateDecorationLayer(theme, L.id, { text, transform: patchTransform })
+                    } else {
+                      patch = updateDecorationLayer(theme, L.id, { text })
+                    }
                     if (patch) onUpdateTheme(theme.id, patch)
                     setEditingDecoLayerId(null)
-                    requestAnimationFrame(() => moveableRef.current?.updateRect())
+                    requestAnimationFrame(() => {
+                      requestAnimationFrame(() => {
+                        const node = decoRefs.current[L.id]
+                        if (node) snapDecoTextBoxHeightOnly(L.id, node)
+                        else moveableRef.current?.updateRect()
+                      })
+                    })
                   }}
+                  onInput={
+                    isDecoEditing
+                      ? () => {
+                          requestAnimationFrame(() => {
+                            const node = decoRefs.current[L.id]
+                            if (!node) return
+                            const tr = getDecoTextLayerTransformRef.current(L.id)
+                            if (!tr) return
+                            if (tr.contentTextBoxUserSized === true) snapDecoTextBoxHeightOnly(L.id, node)
+                            else applyDecoTextBoxAutoLayout(L.id, node)
+                            moveableRef.current?.updateRect()
+                          })
+                        }
+                      : undefined
+                  }
                   onKeyDown={(e) => {
                     if (!isDecoEditing) return
                     if (e.key === 'Escape') {
@@ -2034,13 +2497,13 @@ export function ThemePreviewEditor({
                     if (e.shiftKey) return
                     e.stopPropagation()
                     flushSync(() => {
+                      setMarqueeDecorationLayerIds([])
                       onSelectStructuralLayer?.(null)
                       onSelectElements([])
                       onSelectDecorationLayer?.(L.id)
                     })
-                    requestAnimationFrame(() => {
-                      requestAnimationFrame(() => scheduleDragStart(e.nativeEvent))
-                    })
+                    setMoveableTargets([e.currentTarget as HTMLDivElement])
+                    scheduleDragStart(e.nativeEvent)
                   }}
                 />
               )
@@ -2064,7 +2527,6 @@ export function ThemePreviewEditor({
             target={moveableTarget}
             container={containerRef.current}
             snapContainer={containerRef}
-            bounds={previewMoveableBounds}
             individualGroupable={false}
             useResizeObserver
             defaultGroupOrigin="50% 50%"
@@ -2090,9 +2552,9 @@ export function ThemePreviewEditor({
             onDrag={({ target, transform }) => {
               applyMoveableFrame([{ target, transform }])
             }}
-            onDragEnd={({ target, isDrag }) => {
+            onDragEnd={({ target }) => {
               flushMoveableVisual('sync')
-              if (isDrag) finalizeElement(target)
+              finalizeElement(target)
               setTransformSyncLocked(false)
             }}
 
@@ -2101,9 +2563,9 @@ export function ThemePreviewEditor({
               const css = snapRotateInFullTransform(pickMoveableCssTransform({ transform, afterTransform }), inputEvent)
               applyMoveableFrame([{ target, transform: css }])
             }}
-            onRotateEnd={({ target, isDrag }) => {
+            onRotateEnd={({ target }) => {
               flushMoveableVisual('sync')
-              if (isDrag) finalizeElement(target)
+              finalizeElement(target)
               setTransformSyncLocked(false)
             }}
 
@@ -2192,11 +2654,11 @@ export function ThemePreviewEditor({
                 applyMoveableFrame([{ target, transform: raw }])
               }
             }}
-            onScaleEnd={({ target, isDrag }) => {
+            onScaleEnd={({ target }) => {
               scalePinBoxRef.current = null
               scaleDirectionForPinRef.current = null
               flushMoveableVisual('sync')
-              if (isDrag) finalizeScaleBakesFontSize(target)
+              finalizeScaleBakesFontSize(target)
               setTransformSyncLocked(false)
             }}
 
@@ -2204,9 +2666,9 @@ export function ThemePreviewEditor({
             onDragGroup={({ events }) => {
               applyMoveableFrame(events.map(ev => ({ target: ev.target, transform: ev.transform })))
             }}
-            onDragGroupEnd={({ events, isDrag }) => {
+            onDragGroupEnd={({ events }) => {
               flushMoveableVisual('sync')
-              if (isDrag) events.forEach(ev => finalizeElement(ev.target))
+              events.forEach(ev => finalizeElement(ev.target))
               setTransformSyncLocked(false)
             }}
 
@@ -2233,9 +2695,9 @@ export function ThemePreviewEditor({
                 applyMoveableFrame(frames)
               }
             }}
-            onRotateGroupEnd={({ events, isDrag }) => {
+            onRotateGroupEnd={({ events }) => {
               flushMoveableVisual('sync')
-              if (isDrag) events.forEach(ev => finalizeElement(ev.target))
+              events.forEach(ev => finalizeElement(ev.target))
               setTransformSyncLocked(false)
             }}
 
@@ -2268,9 +2730,9 @@ export function ThemePreviewEditor({
                 applyMoveableFrame(frames)
               }
             }}
-            onScaleGroupEnd={({ events, isDrag }) => {
+            onScaleGroupEnd={({ events }) => {
               flushMoveableVisual('sync')
-              if (isDrag) events.forEach(ev => finalizeScaleBakesFontSize(ev.target))
+              events.forEach(ev => finalizeScaleBakesFontSize(ev.target))
               setTransformSyncLocked(false)
             }}
 
@@ -2285,7 +2747,7 @@ export function ThemePreviewEditor({
             }}
             onResizeEnd={(e) => {
               flushMoveableVisual('sync')
-              if (e.isDrag && e.target instanceof HTMLElement) finalizeResize(e.target)
+              if (e.target instanceof HTMLElement) finalizeResize(e.target)
               setTransformSyncLocked(false)
             }}
           />

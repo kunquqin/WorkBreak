@@ -34,12 +34,13 @@ let sharedSystemFontFamilies: string[] | null = null
 
 function layerTypographyKeys(sel: TextElementKey): {
   align: 'contentTextAlign' | 'timeTextAlign' | 'countdownTextAlign'
+  verticalAlign: 'contentTextVerticalAlign' | 'timeTextVerticalAlign' | 'countdownTextVerticalAlign'
   letterSpacing: 'contentLetterSpacing' | 'timeLetterSpacing' | 'countdownLetterSpacing'
   lineHeight: 'contentLineHeight' | 'timeLineHeight' | 'countdownLineHeight'
 } {
-  if (sel === 'content') return { align: 'contentTextAlign', letterSpacing: 'contentLetterSpacing', lineHeight: 'contentLineHeight' }
-  if (sel === 'time') return { align: 'timeTextAlign', letterSpacing: 'timeLetterSpacing', lineHeight: 'timeLineHeight' }
-  return { align: 'countdownTextAlign', letterSpacing: 'countdownLetterSpacing', lineHeight: 'countdownLineHeight' }
+  if (sel === 'content') return { align: 'contentTextAlign', verticalAlign: 'contentTextVerticalAlign', letterSpacing: 'contentLetterSpacing', lineHeight: 'contentLineHeight' }
+  if (sel === 'time') return { align: 'timeTextAlign', verticalAlign: 'timeTextVerticalAlign', letterSpacing: 'timeLetterSpacing', lineHeight: 'timeLineHeight' }
+  return { align: 'countdownTextAlign', verticalAlign: 'countdownTextVerticalAlign', letterSpacing: 'countdownLetterSpacing', lineHeight: 'countdownLineHeight' }
 }
 
 /** 主题内主提醒文案草稿（不含预览用占位），与预览双击写入同一字段 */
@@ -56,6 +57,104 @@ function layerEffectsKey(sel: TextElementKey): 'contentTextEffects' | 'timeTextE
   if (sel === 'content') return 'contentTextEffects'
   if (sel === 'time') return 'timeTextEffects'
   return 'countdownTextEffects'
+}
+
+type HorizontalAlign = 'left' | 'center' | 'right' | 'start' | 'end' | 'justify'
+type VerticalAlign = 'top' | 'middle' | 'bottom'
+
+type OverlayPresetDirection = Exclude<NonNullable<PopupTheme['overlayGradientDirection']>, 'custom'>
+
+const OVERLAY_DIRECTION_ANGLE_MAP: Record<OverlayPresetDirection, number> = {
+  leftToRight: 90,
+  rightToLeft: 270,
+  topToBottom: 180,
+  bottomToTop: 0,
+  topLeftToBottomRight: 135,
+  topRightToBottomLeft: 225,
+  bottomLeftToTopRight: 45,
+  bottomRightToTopLeft: 315,
+}
+
+function normalizeAngleDeg(v: number | undefined, fallback = 90): number {
+  const n = Number(v)
+  if (!Number.isFinite(n)) return fallback
+  const mod = n % 360
+  return mod < 0 ? mod + 360 : mod
+}
+
+function presetDirectionFromAngle(angle: number): OverlayPresetDirection | null {
+  const normalized = normalizeAngleDeg(angle, 90)
+  for (const [dir, deg] of Object.entries(OVERLAY_DIRECTION_ANGLE_MAP) as Array<[OverlayPresetDirection, number]>) {
+    if (Math.abs(normalized - deg) < 0.0001) return dir
+  }
+  return null
+}
+
+function alignIcon(kind: HorizontalAlign) {
+  const base = 'h-3 w-3 text-current'
+  if (kind === 'left') {
+    return (
+      <svg viewBox="0 0 16 16" className={base} aria-hidden>
+        <path d="M2 3h10v1H2zm0 3h8v1H2zm0 3h10v1H2zm0 3h7v1H2z" fill="currentColor" />
+      </svg>
+    )
+  }
+  if (kind === 'center') {
+    return (
+      <svg viewBox="0 0 16 16" className={base} aria-hidden>
+        <path d="M3 3h10v1H3zm4 3h2v1H7zm-2 3h6v1H5zm3 3h1v1H8z" fill="currentColor" />
+      </svg>
+    )
+  }
+  if (kind === 'start') {
+    return (
+      <svg viewBox="0 0 16 16" className={base} aria-hidden>
+        <path d="M2 2h1v12H2zM5 4h9v1H5zm0 3h6v1H5zm0 3h9v1H5zm0 3h7v1H5z" fill="currentColor" />
+      </svg>
+    )
+  }
+  if (kind === 'end') {
+    return (
+      <svg viewBox="0 0 16 16" className={base} aria-hidden>
+        <path d="M13 2h1v12h-1zM2 4h9v1H2zm5 3h4v1H7zM2 10h9v1H2zm4 3h5v1H6z" fill="currentColor" />
+      </svg>
+    )
+  }
+  if (kind === 'justify') {
+    return (
+      <svg viewBox="0 0 16 16" className={base} aria-hidden>
+        <path d="M2 3h12v1H2zm0 3h12v1H2zm0 3h12v1H2zm0 3h12v1H2z" fill="currentColor" />
+      </svg>
+    )
+  }
+  return (
+    <svg viewBox="0 0 16 16" className={base} aria-hidden>
+      <path d="M4 3h10v1H4zm6 3h4v1h-4zM4 9h10v1H4zm7 3h3v1h-3z" fill="currentColor" />
+    </svg>
+  )
+}
+
+function verticalAlignIcon(kind: VerticalAlign) {
+  const base = 'h-3 w-3 text-current'
+  if (kind === 'top') {
+    return (
+      <svg viewBox="0 0 16 16" className={base} aria-hidden>
+        <path d="M2 2h12v1H2zM5 4h6v8H5z" fill="currentColor" />
+      </svg>
+    )
+  }
+  if (kind === 'middle') {
+    return (
+      <svg viewBox="0 0 16 16" className={base} aria-hidden>
+        <path d="M2 8h12v1H2zM5 5h6v6H5z" fill="currentColor" />
+      </svg>
+    )
+  }
+  return (
+    <svg viewBox="0 0 16 16" className={base} aria-hidden>
+      <path d="M2 13h12v1H2zM5 4h6v8H5z" fill="currentColor" />
+    </svg>
+  )
 }
 
 export type ThemeSettingsPanelFilter = 'all' | 'text' | 'overlay' | 'background'
@@ -193,7 +292,8 @@ function PopupThemeEditorPanelCore({
   const themeId = theme.id
   const layoutContainerRef = useRef<HTMLDivElement>(null)
   const undoScopeRef: RefObject<HTMLElement | null> = editorSurfaceRef ?? layoutContainerRef
-  const [layersRailHidden, setLayersRailHidden] = useState(false)
+  const [layersCollapsed, setLayersCollapsed] = useState(false)
+  const [propertiesCollapsed, setPropertiesCollapsed] = useState(false)
   const [layersPanelHeight, setLayersPanelHeight] = useState(220)
   const splitDragRef = useRef<{ startY: number; startH: number } | null>(null)
 
@@ -219,7 +319,7 @@ function PopupThemeEditorPanelCore({
     },
     [layersPanelHeight],
   )
-  const { undo, redo, canUndo, canRedo } = historyBundle
+  const { undo, redo } = historyBundle
 
   const [fontUiMode, setFontUiMode] = useState<Record<PopupTextFontLayer, 'preset' | 'system'>>(() => ({
     content: popupFontLayerUsesSystemTab(theme, 'content') ? 'system' : 'preset',
@@ -243,6 +343,7 @@ function PopupThemeEditorPanelCore({
     theme.countdownFontFamilyPreset,
     theme.popupFontFamilyPreset,
   ])
+  const [decoTextFontModeMap, setDecoTextFontModeMap] = useState<Record<string, 'preset' | 'system'>>({})
 
   const [systemFonts, setSystemFonts] = useState<string[] | null>(() => sharedSystemFontFamilies)
   const [fontsLoading, setFontsLoading] = useState(false)
@@ -281,6 +382,12 @@ function PopupThemeEditorPanelCore({
 
   const needsSystemFontList = fontUiMode.content === 'system' || fontUiMode.time === 'system'
   useEffect(() => {
+    // 后台静默预热字体列表，避免用户切到本机字体时还要手动触发。
+    if (!window.electronAPI?.getSystemFontFamilies) return
+    if (systemFonts !== null || fontsLoading) return
+    void loadSystemFonts(false)
+  }, [systemFonts, fontsLoading, loadSystemFonts])
+  useEffect(() => {
     if (!needsSystemFontList) return
     if (systemFonts !== null || fontsLoading) return
     if (!window.electronAPI?.getSystemFontFamilies) return
@@ -289,7 +396,7 @@ function PopupThemeEditorPanelCore({
 
   const fontLayers: { layer: PopupTextFontLayer; title: string }[] = [
     { layer: 'content', title: '文本' },
-    { layer: 'time', title: '时间' },
+    { layer: 'time', title: '时间字体' },
   ]
 
   const tryDeleteSelectedDecoration = useCallback(() => {
@@ -331,14 +438,40 @@ function PopupThemeEditorPanelCore({
       }
 
       if (!(e.ctrlKey || e.metaKey)) return
-      if (e.key.toLowerCase() !== 'z') return
+      const key = e.key.toLowerCase()
+      if (key !== 'z' && key !== 'y') return
       e.preventDefault()
-      if (e.shiftKey) redo()
-      else undo()
+      if (key === 'y') {
+        redo()
+        return
+      }
+      undo()
     }
     document.addEventListener('keydown', fn, true)
     return () => document.removeEventListener('keydown', fn, true)
   }, [undo, redo, undoScopeRef, tryDeleteSelectedDecoration])
+
+  useEffect(() => {
+    const canHandleMenuEdit = () => {
+      const root = undoScopeRef.current
+      if (!root) return false
+      const ae = document.activeElement
+      if (ae instanceof HTMLElement && root.contains(ae)) return true
+      return selectedElements.length > 0 || selectedDecorationLayerId != null || selectedStructuralLayerId != null
+    }
+    const offUndo = window.electronAPI?.onMenuUndo?.(() => {
+      if (!canHandleMenuEdit()) return
+      undo()
+    })
+    const offRedo = window.electronAPI?.onMenuRedo?.(() => {
+      if (!canHandleMenuEdit()) return
+      redo()
+    })
+    return () => {
+      offUndo?.()
+      offRedo?.()
+    }
+  }, [undo, redo, undoScopeRef, selectedElements.length, selectedDecorationLayerId, selectedStructuralLayerId])
 
   const decoLayer =
     selectedDecorationLayerId != null
@@ -386,6 +519,10 @@ function PopupThemeEditorPanelCore({
     selectedElements.length === 0 &&
     selectedStructuralLayerId == null &&
     decoLayer == null
+  const isDecoTextSelected =
+    decoLayer != null &&
+    decoLayer.kind === 'text' &&
+    !(decoLayer as TextThemeLayer).bindsReminderBody
 
   return (
     <div
@@ -395,11 +532,11 @@ function PopupThemeEditorPanelCore({
     >
       <div
         className={
-          layersRailHidden
-            ? 'shrink-0 border-b border-slate-200 bg-white px-2 py-1'
-            : 'flex min-h-0 shrink-0 flex-col overflow-hidden rounded-lg border border-slate-200 bg-slate-50/95 px-2 py-2'
+          layersCollapsed
+            ? 'shrink-0 overflow-hidden bg-white px-2 py-1.5'
+            : 'flex min-h-0 shrink-0 flex-col overflow-hidden bg-white px-2 py-2'
         }
-        style={layersRailHidden ? undefined : { height: layersPanelHeight, minHeight: 96 }}
+        style={layersCollapsed ? undefined : { height: layersPanelHeight, minHeight: 96 }}
       >
         <PopupThemeLayersBar
           theme={theme}
@@ -409,14 +546,14 @@ function PopupThemeEditorPanelCore({
           selectedDecorationLayerId={selectedDecorationLayerId}
           onSelectDecorationLayer={onSelectDecorationLayer}
           onPickDecoImage={onPickDecoImage}
-          railHidden={layersRailHidden}
-          onRailHiddenChange={setLayersRailHidden}
-          className={layersRailHidden ? '' : 'min-h-0 flex-1'}
+          collapsed={layersCollapsed}
+          onCollapsedChange={setLayersCollapsed}
+          className={layersCollapsed ? '' : 'min-h-0 flex-1'}
           selectedStructuralLayerId={selectedStructuralLayerId}
           onSelectStructuralLayer={onSelectStructuralLayer}
         />
       </div>
-      {!layersRailHidden && (
+      {!layersCollapsed && !propertiesCollapsed && (
         <div
           role="separator"
           aria-orientation="horizontal"
@@ -427,7 +564,13 @@ function PopupThemeEditorPanelCore({
           <div className="mx-auto h-0.5 w-14 rounded-full bg-slate-400 group-hover:bg-slate-500" />
         </div>
       )}
-      <div className="flex min-h-0 flex-1 flex-col overflow-hidden">
+      <div
+        className={
+          propertiesCollapsed
+            ? 'shrink-0 flex flex-col overflow-hidden'
+            : 'flex min-h-0 flex-1 flex-col overflow-hidden'
+        }
+      >
         {previewPlacement !== 'hidden' && (
           <div className="shrink-0 border-b border-slate-100 px-1 py-2">
             <ThemePreviewEditor
@@ -454,29 +597,17 @@ function PopupThemeEditorPanelCore({
             />
           </div>
         )}
-        <div className="min-h-0 flex-1 space-y-3 overflow-y-auto overscroll-contain px-3 py-2">
-      <div className="flex flex-wrap items-center justify-end gap-2 rounded-md border border-slate-200 bg-white px-3 py-2">
-        <div className="inline-flex rounded-md border border-slate-300 bg-white p-0.5">
+        <div className="shrink-0 border-b border-slate-100 px-3 py-1.5">
           <button
             type="button"
-            title="撤销 Ctrl+Z"
-            disabled={!canUndo}
-            onClick={() => undo()}
-            className={`rounded px-2 py-1 text-xs transition-colors ${canUndo ? 'text-slate-700 hover:bg-slate-100' : 'text-slate-300 cursor-not-allowed'}`}
+            className="text-xs font-medium text-slate-700 hover:text-slate-900"
+            onClick={() => setPropertiesCollapsed((v) => !v)}
           >
-            撤销
-          </button>
-          <button
-            type="button"
-            title="重做 Ctrl+Shift+Z"
-            disabled={!canRedo}
-            onClick={() => redo()}
-            className={`rounded px-2 py-1 text-xs transition-colors ${canRedo ? 'text-slate-700 hover:bg-slate-100' : 'text-slate-300 cursor-not-allowed'}`}
-          >
-            重做
+            属性 {propertiesCollapsed ? '▸' : '▾'}
           </button>
         </div>
-      </div>
+        {!propertiesCollapsed && (
+          <div className="min-h-0 flex-1 space-y-3 overflow-y-auto overscroll-contain px-3 py-2">
       {(effectivePanelFilter === 'all' || effectivePanelFilter === 'text') &&
         decoLayer &&
         decoLayer.kind === 'text' &&
@@ -487,111 +618,303 @@ function PopupThemeEditorPanelCore({
             const p = updateTextLayer(theme, td.id, patch)
             if (p) mergedWrappedOnUpdateTheme(themeId, p)
           }
+          const decoMode = decoTextFontModeMap[td.id] ?? (td.fontFamilySystem?.trim() ? 'system' : 'preset')
+          const decoEffects: PopupLayerTextEffects = td.textEffects ?? {}
+          const patchDecoFx = (p: Partial<PopupLayerTextEffects>) => {
+            pushDeco({ textEffects: { ...decoEffects, ...p } })
+          }
+          const dt = td.transform ?? { x: 50, y: 60, rotation: 0, scale: 1 }
           return (
-            <div className="rounded-md border border-teal-200 bg-teal-50/40 p-3 space-y-2">
-              <h4 className="text-xs font-semibold text-teal-900">文本 · 属性</h4>
+            <div className="space-y-2">
+            <h4 className="text-xs font-semibold text-slate-700">文字</h4>
             <label className="block space-y-1 text-xs text-slate-600">
-              <span>层内文字</span>
               <textarea
-                rows={4}
+                rows={3}
                 value={td.text ?? ''}
                 onChange={(e) => pushDeco({ text: e.target.value.slice(0, 2000) })}
-                className="w-full resize-y rounded border border-slate-300 px-2 py-1.5 text-sm"
+                className="w-full resize-y rounded border border-slate-300 bg-white px-2 py-1.5 text-sm"
               />
             </label>
-            <div className="grid grid-cols-1 gap-2 sm:grid-cols-2">
-              <label className="space-y-1 text-xs text-slate-600">
+            <div className="grid grid-cols-[60px_minmax(0,1fr)] items-center gap-2">
+              <p className="text-xs text-slate-600">文本</p>
+              <SystemFontFamilyPicker
+                mode={decoMode}
+                onModeChange={(next) => {
+                  setDecoTextFontModeMap((m) => ({ ...m, [td.id]: next }))
+                  if (next === 'preset') pushDeco({ fontFamilySystem: undefined })
+                }}
+                presetOptions={POPUP_FONT_FAMILY_OPTIONS}
+                presetValue={td.fontFamilyPreset ?? DEFAULT_POPUP_FONT_PRESET_ID}
+                onPresetChange={(presetId) => {
+                  const presetVal = presetId === DEFAULT_POPUP_FONT_PRESET_ID ? undefined : presetId
+                  pushDeco({ fontFamilyPreset: presetVal, fontFamilySystem: undefined })
+                }}
+                value={td.fontFamilySystem ?? ''}
+                fonts={systemFonts}
+                fontsLoading={fontsLoading}
+                onChange={(v) => pushDeco({ fontFamilySystem: v || undefined, fontFamilyPreset: undefined })}
+              />
+            </div>
+            <div className="grid grid-cols-[60px_minmax(0,1fr)_72px] items-center gap-2 text-xs text-slate-600">
+              <span>字号</span>
+              <input
+                type="range"
+                min={1}
+                max={300}
+                step={1}
+                value={Math.max(1, Math.min(300, td.fontSize ?? 28))}
+                onChange={(e) => {
+                  const n = Number(e.target.value)
+                  if (!Number.isFinite(n)) return
+                  pushDeco({ fontSize: Math.max(1, Math.min(8000, Math.floor(n))) })
+                }}
+                className="w-full accent-indigo-600"
+              />
+              <input
+                type="number"
+                min={1}
+                max={8000}
+                value={td.fontSize ?? 28}
+                onChange={(e) => {
+                  const n = Number(e.target.value)
+                  if (!Number.isFinite(n)) return
+                  pushDeco({ fontSize: Math.max(1, Math.min(8000, Math.floor(n))) })
+                }}
+                className="w-full rounded border border-slate-300 px-2 py-1 text-sm"
+              />
+            </div>
+            <div className="grid grid-cols-1 gap-2 sm:grid-cols-2 lg:grid-cols-3">
+              <label className="text-xs text-slate-600 space-y-1">
                 <span>颜色</span>
                 <input
                   type="color"
                   value={/^#[0-9a-fA-F]{3,6}$/.test((td.color ?? '#fff').trim()) ? td.color! : '#ffffff'}
                   onChange={(e) => pushDeco({ color: e.target.value })}
-                  className="h-9 w-full rounded border border-slate-300 bg-white"
-                />
-              </label>
-              <label className="space-y-1 text-xs text-slate-600">
-                <span>字号</span>
-                <input
-                  type="number"
-                  min={1}
-                  max={8000}
-                  value={td.fontSize ?? 28}
-                  onChange={(e) => {
-                    const n = Math.floor(Number(e.target.value))
-                    if (!Number.isFinite(n)) return
-                    pushDeco({ fontSize: Math.max(1, Math.min(8000, n)) })
-                  }}
-                  className="w-full rounded border border-slate-300 px-2 py-1 text-sm"
+                  className="h-8 w-full rounded border border-slate-300 bg-white"
                 />
               </label>
             </div>
-            <label className="block space-y-1 text-xs text-slate-600">
-              <span>对齐</span>
-              <select
-                value={td.textAlign ?? ''}
-                onChange={(e) => {
-                  const v = e.target.value
-                  pushDeco({
-                    textAlign: v === '' ? undefined : (v as 'left' | 'center' | 'right'),
-                  })
-                }}
-                className="w-full rounded border border-slate-300 px-2 py-1 text-sm"
-              >
-                <option value="">随全局</option>
-                <option value="left">左对齐</option>
-                <option value="center">居中</option>
-                <option value="right">右对齐</option>
-              </select>
-            </label>
-            <div className="grid grid-cols-1 gap-2 sm:grid-cols-2">
-              <label className="space-y-1 text-xs text-slate-600">
-                <span>字间距（px）</span>
-                <input
-                  type="number"
-                  min={-2}
-                  max={20}
-                  step={0.5}
-                  value={td.letterSpacing ?? 0}
-                  onChange={(e) => {
-                    const n = Number(e.target.value)
-                    if (!Number.isFinite(n)) return
-                    pushDeco({ letterSpacing: Math.max(-2, Math.min(20, n)) })
-                  }}
+            <div className="space-y-2">
+              <h5 className="text-xs font-semibold text-slate-700">样式</h5>
+              <div className="grid grid-cols-[60px_minmax(0,1fr)_auto] items-center gap-2 text-xs text-slate-600">
+                <span>字重</span>
+                <select
+                  value={td.fontWeight ?? 500}
+                  onChange={(e) => pushDeco({ fontWeight: Number(e.target.value) })}
                   className="w-full rounded border border-slate-300 px-2 py-1 text-sm"
-                />
-              </label>
-              <label className="space-y-1 text-xs text-slate-600">
-                <span>行高</span>
-                <input
-                  type="number"
-                  min={0.8}
-                  max={3}
-                  step={0.05}
-                  value={td.lineHeight ?? 1.35}
-                  onChange={(e) => {
-                    const n = Number(e.target.value)
-                    if (!Number.isFinite(n)) return
-                    pushDeco({ lineHeight: Math.max(0.8, Math.min(3, n)) })
-                  }}
-                  className="w-full rounded border border-slate-300 px-2 py-1 text-sm"
-                />
-              </label>
+                >
+                  {[100, 200, 300, 400, 500, 600, 700, 800, 900].map((w) => (
+                    <option key={w} value={w}>
+                      {w}
+                    </option>
+                  ))}
+                </select>
+                <div className="inline-flex rounded border border-slate-300 bg-white p-0.5">
+                  <button
+                    type="button"
+                    onClick={() => pushDeco({ fontWeight: (td.fontWeight ?? 500) >= 700 ? 400 : 700 })}
+                    className={`rounded px-2 py-0.5 text-[12px] font-semibold ${((td.fontWeight ?? 500) >= 700) ? 'bg-slate-800 text-white' : 'text-slate-600 hover:bg-slate-100'}`}
+                  >
+                    B
+                  </button>
+                </div>
+              </div>
             </div>
-            <label className="block space-y-1 text-xs text-slate-600">
-              <span>字重</span>
-              <select
-                value={td.fontWeight ?? 500}
-                onChange={(e) => pushDeco({ fontWeight: Number(e.target.value) })}
-                className="w-full rounded border border-slate-300 px-2 py-1 text-sm"
+            <div className="space-y-2">
+              <h5 className="text-xs font-semibold text-slate-700">排版</h5>
+              <div className="flex flex-wrap items-center gap-2">
+                <span className="text-[11px] text-slate-500 shrink-0">对齐</span>
+                <div className="inline-flex rounded border border-slate-300 bg-white p-0.5">
+                  {(['left', 'center', 'right', 'start', 'end', 'justify'] as const).map((v) => (
+                    <button
+                      key={v}
+                      type="button"
+                      onClick={() => pushDeco({ textAlign: v })}
+                      className={`rounded px-2 py-0.5 text-[11px] ${
+                        v === (td.textAlign ?? theme.textAlign) ? 'bg-slate-800 text-white' : 'text-slate-600 hover:bg-slate-100'
+                      }`}
+                      title={
+                        v === 'left'
+                          ? '左对齐'
+                          : v === 'center'
+                            ? '居中对齐'
+                            : v === 'right'
+                              ? '右对齐'
+                              : v === 'start'
+                                ? '起点对齐'
+                                : v === 'end'
+                                  ? '终点对齐'
+                                  : '两端对齐'
+                      }
+                    >
+                      {alignIcon(v)}
+                    </button>
+                  ))}
+                </div>
+              </div>
+              <div className="flex flex-wrap items-center gap-2">
+                <span className="text-[11px] text-slate-500 shrink-0">垂直</span>
+                <div className="inline-flex rounded border border-slate-300 bg-white p-0.5">
+                  {(['top', 'middle', 'bottom'] as const).map((v) => (
+                    <button
+                      key={v}
+                      type="button"
+                      onClick={() => pushDeco({ textVerticalAlign: v })}
+                      className={`rounded px-2 py-0.5 text-[11px] ${
+                        v === (td.textVerticalAlign ?? theme.textVerticalAlign ?? 'middle')
+                          ? 'bg-slate-800 text-white'
+                          : 'text-slate-600 hover:bg-slate-100'
+                      }`}
+                      title={v === 'top' ? '顶部对齐' : v === 'middle' ? '垂直居中' : '底部对齐'}
+                    >
+                      {verticalAlignIcon(v)}
+                    </button>
+                  ))}
+                </div>
+              </div>
+              <div className="grid grid-cols-1 gap-2 sm:grid-cols-2">
+                <label className="text-xs text-slate-600 space-y-1">
+                  <span>字间距（px，-2～20）</span>
+                  <input
+                    type="number"
+                    min={-2}
+                    max={20}
+                    step={0.5}
+                    value={td.letterSpacing ?? 0}
+                    onChange={(e) => {
+                      const n = Number(e.target.value)
+                      if (!Number.isFinite(n)) return
+                      pushDeco({ letterSpacing: Math.max(-2, Math.min(20, n)) })
+                    }}
+                    className="w-full rounded border border-slate-300 px-2 py-1 text-sm"
+                  />
+                </label>
+                <label className="text-xs text-slate-600 space-y-1">
+                  <span>行高（建议 1.1～2）</span>
+                  <input
+                    type="number"
+                    min={0.8}
+                    max={3}
+                    step={0.05}
+                    value={td.lineHeight ?? 1.35}
+                    onChange={(e) => {
+                      const n = Number(e.target.value)
+                      if (!Number.isFinite(n)) return
+                      pushDeco({ lineHeight: Math.max(0.8, Math.min(3, n)) })
+                    }}
+                    className="w-full rounded border border-slate-300 px-2 py-1 text-sm"
+                  />
+                </label>
+              </div>
+            </div>
+            <div className="space-y-2">
+              <h5 className="text-xs font-semibold text-slate-700">效果</h5>
+              <div className="space-y-1.5 rounded border border-white/80 bg-white/60 p-1.5">
+                <label className="inline-flex items-center gap-2 text-xs text-slate-700">
+                  <input
+                    type="checkbox"
+                    checked={decoEffects.strokeEnabled === true}
+                    onChange={(ev) =>
+                      patchDecoFx(
+                        ev.target.checked
+                          ? {
+                              strokeEnabled: true,
+                              strokeWidthPx: decoEffects.strokeWidthPx ?? 2,
+                              strokeColor: decoEffects.strokeColor ?? '#000000',
+                              strokeOpacity: decoEffects.strokeOpacity ?? 1,
+                            }
+                          : { strokeEnabled: false },
+                      )
+                    }
+                  />
+                  描边
+                </label>
+              </div>
+              <div className="space-y-1.5 rounded border border-white/80 bg-white/60 p-1.5">
+                <label className="inline-flex items-center gap-2 text-xs text-slate-700">
+                  <input
+                    type="checkbox"
+                    checked={decoEffects.shadowEnabled === true}
+                    onChange={(ev) =>
+                      patchDecoFx(
+                        ev.target.checked
+                          ? {
+                              shadowEnabled: true,
+                              shadowColor: decoEffects.shadowColor ?? '#000000',
+                              shadowOpacity: decoEffects.shadowOpacity ?? 0.45,
+                              shadowBlurPx: decoEffects.shadowBlurPx ?? 4,
+                              shadowSizePx: decoEffects.shadowSizePx ?? 0,
+                              shadowDistancePx: decoEffects.shadowDistancePx ?? 6,
+                              shadowAngleDeg: decoEffects.shadowAngleDeg ?? 45,
+                            }
+                          : { shadowEnabled: false },
+                      )
+                    }
+                  />
+                  阴影
+                </label>
+              </div>
+            </div>
+            <div className="border-t border-slate-100 pt-2 mt-1 space-y-2">
+              <h5 className="text-xs font-semibold text-slate-700">变换</h5>
+              <div className="grid grid-cols-2 gap-2 sm:grid-cols-4">
+                <label className="text-[11px] text-slate-600 space-y-0.5">
+                  <span>X 位置 (%)</span>
+                  <input
+                    type="number"
+                    min={0}
+                    max={100}
+                    step={0.5}
+                    value={+dt.x.toFixed(1)}
+                    onChange={(e) => pushDeco({ transform: { ...dt, x: Math.max(0, Math.min(100, Number(e.target.value) || 0)) } })}
+                    className="w-full rounded border border-slate-300 px-2 py-1 text-xs"
+                  />
+                </label>
+                <label className="text-[11px] text-slate-600 space-y-0.5">
+                  <span>Y 位置 (%)</span>
+                  <input
+                    type="number"
+                    min={0}
+                    max={100}
+                    step={0.5}
+                    value={+dt.y.toFixed(1)}
+                    onChange={(e) => pushDeco({ transform: { ...dt, y: Math.max(0, Math.min(100, Number(e.target.value) || 0)) } })}
+                    className="w-full rounded border border-slate-300 px-2 py-1 text-xs"
+                  />
+                </label>
+                <label className="text-[11px] text-slate-600 space-y-0.5">
+                  <span>旋转 (°)</span>
+                  <input
+                    type="number"
+                    min={-360}
+                    max={360}
+                    step={1}
+                    value={+dt.rotation.toFixed(1)}
+                    onChange={(e) => pushDeco({ transform: { ...dt, rotation: Math.max(-360, Math.min(360, Number(e.target.value) || 0)) } })}
+                    className="w-full rounded border border-slate-300 px-2 py-1 text-xs"
+                  />
+                </label>
+                <label className="text-[11px] text-slate-600 space-y-0.5">
+                  <span>缩放</span>
+                  <input
+                    type="number"
+                    min={0.1}
+                    max={5}
+                    step={0.05}
+                    value={+dt.scale.toFixed(2)}
+                    onChange={(e) => pushDeco({ transform: { ...dt, scale: Math.max(0.1, Math.min(5, Number(e.target.value) || 1)) } })}
+                    className="w-full rounded border border-slate-300 px-2 py-1 text-xs"
+                  />
+                </label>
+              </div>
+              <button
+                type="button"
+                onClick={() => pushDeco({ transform: { x: 50, y: 60, rotation: 0, scale: 1 } })}
+                className="text-[11px] text-indigo-600 hover:text-indigo-800"
               >
-                {[400, 500, 600, 700, 800].map((w) => (
-                  <option key={w} value={w}>
-                    {w}
-                  </option>
-                ))}
-              </select>
-            </label>
-              <p className="text-[10px] text-slate-500">位置、旋转与缩放请在左侧预览中拖拽。</p>
+                重置为默认位置
+              </button>
+            </div>
             </div>
           )
         })()}
@@ -631,7 +954,7 @@ function PopupThemeEditorPanelCore({
         )
       })()}
       {(effectivePanelFilter === 'all' || effectivePanelFilter === 'text') && !hidePrimaryTextForms && (
-        <div className="rounded-md border border-slate-200 bg-white p-3 space-y-2">
+        <div className="space-y-2">
           <h4 className="text-xs font-semibold text-slate-700">文字</h4>
           {showIdleTextHint && (
             <p className="text-[11px] text-slate-600 leading-relaxed">
@@ -640,7 +963,6 @@ function PopupThemeEditorPanelCore({
           )}
           {showContentColumn && (
             <label className="block space-y-1 text-xs text-slate-600">
-              <span>文本内容</span>
               <textarea
                 rows={3}
                 value={
@@ -656,31 +978,9 @@ function PopupThemeEditorPanelCore({
                 placeholder="可与左侧预览双击编辑互通"
                 className="w-full resize-y rounded border border-slate-300 bg-white px-2 py-1.5 text-sm"
               />
-              <p className="text-[10px] leading-snug text-slate-500">
-                {onLiveTextCommit
-                  ? '写入主题并同步绑定文本层；与子项表单联动时亦更新本条文案。'
-                  : '写入主题并同步绑定文本层；与左侧预览双击编辑互通。'}
-              </p>
             </label>
           )}
-          <div className="space-y-3 rounded-md border border-slate-100 bg-slate-50/80 p-3">
-            <div className="flex flex-wrap items-center justify-between gap-2">
-              <p className="text-xs font-medium text-slate-700">
-                {showContentColumn && showTimeColumn
-                  ? '弹窗字体（文本 / 时间 各自独立）'
-                  : showTimeColumn
-                    ? '时间 · 字体'
-                    : '文本 · 字体'}
-              </p>
-              <button
-                type="button"
-                disabled={fontsLoading || !window.electronAPI?.getSystemFontFamilies}
-                onClick={() => void loadSystemFonts(true)}
-                className="shrink-0 rounded border border-slate-300 bg-white px-2 py-1 text-xs text-slate-700 hover:bg-slate-50 disabled:opacity-50"
-              >
-                {fontsLoading ? '读取字体中…' : '重新扫描本机字体'}
-              </button>
-            </div>
+          <div className="space-y-2">
             {!window.electronAPI?.getSystemFontFamilies && (
               <p className="text-[11px] text-amber-700">当前环境非 Electron，无法枚举本机字体。</p>
             )}
@@ -690,114 +990,145 @@ function PopupThemeEditorPanelCore({
                   (layer === 'content' && showContentColumn) || (layer === 'time' && showTimeColumn),
               )
               .map(({ layer, title }) => (
-              <div key={layer} className="space-y-2 rounded-md border border-white/90 bg-white/70 p-2">
-                <p className="text-[11px] font-semibold text-slate-700">{title}</p>
-                <div className="inline-flex rounded-md border border-slate-300 bg-white p-0.5">
-                  <button
-                    type="button"
-                    onClick={() => {
-                      setFontUiMode((m) => ({ ...m, [layer]: 'preset' }))
-                      const p: Partial<PopupTheme> =
-                        layer === 'content'
-                          ? { contentFontFamilySystem: undefined }
-                          : layer === 'time'
-                            ? { timeFontFamilySystem: undefined }
-                            : { countdownFontFamilySystem: undefined }
-                      mergedWrappedOnUpdateTheme(themeId, p)
-                    }}
-                    className={`rounded px-2.5 py-1 text-xs font-medium transition-colors ${
-                      fontUiMode[layer] === 'preset' ? 'bg-slate-800 text-white' : 'text-slate-600 hover:bg-slate-100'
-                    }`}
-                  >
-                    预设组合
-                  </button>
-                  <button
-                    type="button"
-                    onClick={() => {
-                      setFontUiMode((m) => ({ ...m, [layer]: 'system' }))
+              <div key={layer} className="grid grid-cols-[60px_minmax(0,1fr)] items-center gap-2">
+                <p className="text-xs text-slate-600">{title}</p>
+                <SystemFontFamilyPicker
+                  mode={fontUiMode[layer]}
+                  onModeChange={(next) => {
+                    setFontUiMode((m) => ({ ...m, [layer]: next }))
+                    if (next === 'system') {
                       void loadSystemFonts(false)
-                    }}
-                    className={`rounded px-2.5 py-1 text-xs font-medium transition-colors ${
-                      fontUiMode[layer] === 'system' ? 'bg-slate-800 text-white' : 'text-slate-600 hover:bg-slate-100'
-                    }`}
-                  >
-                    本机已安装
-                  </button>
-                </div>
-                {fontUiMode[layer] === 'preset' ? (
-                  <label className="block text-[11px] text-slate-600 space-y-1">
-                    <span>内置字体栈</span>
-                    <select
-                      value={popupFontPresetSelectValue(theme, layer)}
-                      onChange={(e) => {
-                        const v = e.target.value
-                        const presetVal = v === DEFAULT_POPUP_FONT_PRESET_ID ? undefined : v
-                        if (layer === 'content') {
-                          mergedWrappedOnUpdateTheme(themeId, {
-                            contentFontFamilyPreset: presetVal,
-                            contentFontFamilySystem: undefined,
-                          })
-                        } else if (layer === 'time') {
-                          mergedWrappedOnUpdateTheme(themeId, {
-                            timeFontFamilyPreset: presetVal,
-                            timeFontFamilySystem: undefined,
-                          })
-                        } else {
-                          mergedWrappedOnUpdateTheme(themeId, {
-                            countdownFontFamilyPreset: presetVal,
-                            countdownFontFamilySystem: undefined,
-                          })
-                        }
-                      }}
-                      className="w-full max-w-xl rounded border border-slate-300 bg-white px-2 py-1.5 text-sm"
-                    >
-                      {POPUP_FONT_FAMILY_OPTIONS.map((o) => (
-                        <option key={o.id} value={o.id}>
-                          {o.label}
-                        </option>
-                      ))}
-                    </select>
-                  </label>
-                ) : (
-                  <div className="space-y-1 max-w-xl">
-                    <p className="text-[10px] text-slate-500">点击输入区或右侧箭头展开列表，列表内以该字体显示名称；各层字体互不影响。</p>
-                    <SystemFontFamilyPicker
-                      value={popupFontSystemInputValue(theme, layer)}
-                      fonts={systemFonts}
-                      fontsLoading={fontsLoading}
-                      onChange={(v) => {
-                        const sys = v || undefined
-                        if (layer === 'content') {
-                          mergedWrappedOnUpdateTheme(themeId, {
-                            contentFontFamilySystem: sys,
-                            contentFontFamilyPreset: undefined,
-                          })
-                        } else if (layer === 'time') {
-                          mergedWrappedOnUpdateTheme(themeId, {
-                            timeFontFamilySystem: sys,
-                            timeFontFamilyPreset: undefined,
-                          })
-                        } else {
-                          mergedWrappedOnUpdateTheme(themeId, {
-                            countdownFontFamilySystem: sys,
-                            countdownFontFamilyPreset: undefined,
-                          })
-                        }
-                      }}
-                    />
-                  </div>
-                )}
+                      return
+                    }
+                    const p: Partial<PopupTheme> =
+                      layer === 'content'
+                        ? { contentFontFamilySystem: undefined }
+                        : layer === 'time'
+                          ? { timeFontFamilySystem: undefined }
+                          : { countdownFontFamilySystem: undefined }
+                    mergedWrappedOnUpdateTheme(themeId, p)
+                  }}
+                  presetOptions={POPUP_FONT_FAMILY_OPTIONS}
+                  presetValue={popupFontPresetSelectValue(theme, layer)}
+                  onPresetChange={(presetId) => {
+                    const presetVal = presetId === DEFAULT_POPUP_FONT_PRESET_ID ? undefined : presetId
+                    if (layer === 'content') {
+                      mergedWrappedOnUpdateTheme(themeId, {
+                        contentFontFamilyPreset: presetVal,
+                        contentFontFamilySystem: undefined,
+                      })
+                    } else if (layer === 'time') {
+                      mergedWrappedOnUpdateTheme(themeId, {
+                        timeFontFamilyPreset: presetVal,
+                        timeFontFamilySystem: undefined,
+                      })
+                    } else {
+                      mergedWrappedOnUpdateTheme(themeId, {
+                        countdownFontFamilyPreset: presetVal,
+                        countdownFontFamilySystem: undefined,
+                      })
+                    }
+                  }}
+                  value={popupFontSystemInputValue(theme, layer)}
+                  fonts={systemFonts}
+                  fontsLoading={fontsLoading}
+                  onChange={(v) => {
+                    const sys = v || undefined
+                    if (layer === 'content') {
+                      mergedWrappedOnUpdateTheme(themeId, {
+                        contentFontFamilySystem: sys,
+                        contentFontFamilyPreset: undefined,
+                      })
+                    } else if (layer === 'time') {
+                      mergedWrappedOnUpdateTheme(themeId, {
+                        timeFontFamilySystem: sys,
+                        timeFontFamilyPreset: undefined,
+                      })
+                    } else {
+                      mergedWrappedOnUpdateTheme(themeId, {
+                        countdownFontFamilySystem: sys,
+                        countdownFontFamilyPreset: undefined,
+                      })
+                    }
+                  }}
+                />
               </div>
             ))}
             {window.electronAPI?.getSystemFontFamilies && systemFonts !== null && systemFonts.length === 0 && !fontsLoading && (
-              <p className="text-[11px] text-amber-700">未读到字体列表，可点「重新扫描」或直接在输入框填写字体全名。</p>
+              <p className="text-[11px] text-amber-700">未读到字体列表，可直接在输入框填写字体全名。</p>
             )}
           </div>
+          {(showContentColumn || showTimeColumn) && (
+            <div className="space-y-2">
+              {showContentColumn && (
+                <div className="grid grid-cols-[60px_minmax(0,1fr)_72px] items-center gap-2 text-xs text-slate-600">
+                  <span>字号</span>
+                  <input
+                    type="range"
+                    min={1}
+                    max={300}
+                    step={1}
+                    value={Math.max(1, Math.min(300, theme.contentFontSize))}
+                    onChange={(e) => {
+                      const n = Number(e.target.value)
+                      if (!Number.isFinite(n)) return
+                      mergedWrappedOnUpdateTheme(themeId, { contentFontSize: Math.max(1, Math.min(8000, Math.floor(n))) })
+                    }}
+                    className="w-full accent-indigo-600"
+                  />
+                  <input
+                    type="number"
+                    min={1}
+                    max={8000}
+                    value={theme.contentFontSize}
+                    onChange={(e) => {
+                      const n = Number(e.target.value)
+                      mergedWrappedOnUpdateTheme(themeId, {
+                        contentFontSize: Number.isFinite(n) ? Math.max(1, Math.min(8000, Math.floor(n))) : 12,
+                      })
+                    }}
+                    className="w-full rounded border border-slate-300 px-2 py-1 text-sm"
+                  />
+                </div>
+              )}
+              {showTimeColumn && (
+                <div className="grid grid-cols-[60px_minmax(0,1fr)_72px] items-center gap-2 text-xs text-slate-600">
+                  <span>时间字号</span>
+                  <input
+                    type="range"
+                    min={1}
+                    max={300}
+                    step={1}
+                    value={Math.max(1, Math.min(300, theme.timeFontSize))}
+                    onChange={(e) => {
+                      const n = Number(e.target.value)
+                      if (!Number.isFinite(n)) return
+                      mergedWrappedOnUpdateTheme(themeId, { timeFontSize: Math.max(1, Math.min(8000, Math.floor(n))) })
+                    }}
+                    className="w-full accent-indigo-600"
+                  />
+                  <input
+                    type="number"
+                    min={1}
+                    max={8000}
+                    value={theme.timeFontSize}
+                    onChange={(e) => {
+                      const n = Number(e.target.value)
+                      mergedWrappedOnUpdateTheme(themeId, {
+                        timeFontSize: Number.isFinite(n) ? Math.max(1, Math.min(8000, Math.floor(n))) : 10,
+                      })
+                    }}
+                    className="w-full rounded border border-slate-300 px-2 py-1 text-sm"
+                  />
+                </div>
+              )}
+            </div>
+          )}
           {(showContentColumn || showTimeColumn) && (
             <div className="grid grid-cols-1 gap-2 sm:grid-cols-2 lg:grid-cols-3">
               {showContentColumn && (
                 <label className="text-xs text-slate-600 space-y-1">
-                  <span>文本颜色</span>
+                  <span>颜色</span>
                   <input
                     type="color"
                     value={theme.contentColor}
@@ -820,110 +1151,100 @@ function PopupThemeEditorPanelCore({
             </div>
           )}
           {(showContentColumn || showTimeColumn) && (
-            <div className="grid grid-cols-1 gap-2 sm:grid-cols-2 lg:grid-cols-3">
+            <div className="space-y-2">
+              <h5 className="text-xs font-semibold text-slate-700">样式</h5>
               {showContentColumn && (
-                <label className="text-xs text-slate-600 space-y-1">
-                  <span>文本字号</span>
-                  <input
-                    type="number"
-                    min={1}
-                    max={8000}
-                    value={theme.contentFontSize}
-                    onChange={(e) => {
-                      const n = Number(e.target.value)
-                      mergedWrappedOnUpdateTheme(themeId, {
-                        contentFontSize: Number.isFinite(n) ? Math.max(1, Math.min(8000, Math.floor(n))) : 12,
-                      })
-                    }}
-                    className="w-full rounded border border-slate-300 px-2 py-1 text-sm"
-                  />
-                </label>
-              )}
-              {showTimeColumn && (
-                <label className="text-xs text-slate-600 space-y-1">
-                  <span>时间字号</span>
-                  <input
-                    type="number"
-                    min={1}
-                    max={8000}
-                    value={theme.timeFontSize}
-                    onChange={(e) => {
-                      const n = Number(e.target.value)
-                      mergedWrappedOnUpdateTheme(themeId, {
-                        timeFontSize: Number.isFinite(n) ? Math.max(1, Math.min(8000, Math.floor(n))) : 10,
-                      })
-                    }}
-                    className="w-full rounded border border-slate-300 px-2 py-1 text-sm"
-                  />
-                </label>
-              )}
-            </div>
-          )}
-          {(showContentColumn || showTimeColumn || showIdleTextHint) && (
-            <div className="grid grid-cols-1 gap-2 sm:grid-cols-2">
-              <label className="text-xs text-slate-600 space-y-1">
-                <span>文字对齐（全局默认）</span>
-                <select
-                  value={theme.textAlign}
-                  onChange={(e) =>
-                    mergedWrappedOnUpdateTheme(themeId, { textAlign: e.target.value as PopupTheme['textAlign'] })
-                  }
-                  className="w-full rounded border border-slate-300 px-2 py-1 text-sm"
-                >
-                  <option value="left">左对齐</option>
-                  <option value="center">居中</option>
-                  <option value="right">右对齐</option>
-                </select>
-              </label>
-            </div>
-          )}
-          {(showContentColumn || showTimeColumn) && (
-            <div className="grid grid-cols-1 gap-2 sm:grid-cols-2 lg:grid-cols-3">
-              {showContentColumn && (
-                <label className="text-xs text-slate-600 space-y-1">
-                  <span>文本字重</span>
+                <div className="grid grid-cols-[60px_minmax(0,1fr)_auto] items-center gap-2 text-xs text-slate-600">
+                  <span>字重</span>
                   <select
                     value={theme.contentFontWeight ?? 600}
                     onChange={(e) => mergedWrappedOnUpdateTheme(themeId, { contentFontWeight: Number(e.target.value) })}
                     className="w-full rounded border border-slate-300 px-2 py-1 text-sm"
                   >
-                    <option value={100}>100 Thin</option>
-                    <option value={200}>200 Extra Light</option>
-                    <option value={300}>300 Light</option>
-                    <option value={400}>400 Normal</option>
-                    <option value={500}>500 Medium</option>
-                    <option value={600}>600 Semi Bold</option>
-                    <option value={700}>700 Bold</option>
-                    <option value={800}>800 Extra Bold</option>
-                    <option value={900}>900 Black</option>
+                    <option value={100}>100</option>
+                    <option value={200}>200</option>
+                    <option value={300}>300</option>
+                    <option value={400}>400</option>
+                    <option value={500}>500</option>
+                    <option value={600}>600</option>
+                    <option value={700}>700</option>
+                    <option value={800}>800</option>
+                    <option value={900}>900</option>
                   </select>
-                </label>
+                  <div className="inline-flex rounded border border-slate-300 bg-white p-0.5">
+                    <button
+                      type="button"
+                      onClick={() => mergedWrappedOnUpdateTheme(themeId, { contentFontWeight: (theme.contentFontWeight ?? 600) >= 700 ? 400 : 700 })}
+                      className={`rounded px-2 py-0.5 text-[12px] font-semibold ${((theme.contentFontWeight ?? 600) >= 700) ? 'bg-slate-800 text-white' : 'text-slate-600 hover:bg-slate-100'}`}
+                    >
+                      B
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => mergedWrappedOnUpdateTheme(themeId, { contentUnderline: theme.contentUnderline === true ? undefined : true })}
+                      className={`rounded px-2 py-0.5 text-[12px] underline ${theme.contentUnderline === true ? 'bg-slate-800 text-white' : 'text-slate-600 hover:bg-slate-100'}`}
+                    >
+                      U
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => mergedWrappedOnUpdateTheme(themeId, { contentFontItalic: theme.contentFontItalic === true ? undefined : true })}
+                      className={`rounded px-2 py-0.5 text-[12px] italic ${theme.contentFontItalic === true ? 'bg-slate-800 text-white' : 'text-slate-600 hover:bg-slate-100'}`}
+                    >
+                      I
+                    </button>
+                  </div>
+                </div>
               )}
               {showTimeColumn && (
-                <label className="text-xs text-slate-600 space-y-1">
+                <div className="grid grid-cols-[60px_minmax(0,1fr)_auto] items-center gap-2 text-xs text-slate-600">
                   <span>时间字重</span>
                   <select
                     value={theme.timeFontWeight ?? 400}
                     onChange={(e) => mergedWrappedOnUpdateTheme(themeId, { timeFontWeight: Number(e.target.value) })}
                     className="w-full rounded border border-slate-300 px-2 py-1 text-sm"
                   >
-                    <option value={100}>100 Thin</option>
-                    <option value={200}>200 Extra Light</option>
-                    <option value={300}>300 Light</option>
-                    <option value={400}>400 Normal</option>
-                    <option value={500}>500 Medium</option>
-                    <option value={600}>600 Semi Bold</option>
-                    <option value={700}>700 Bold</option>
-                    <option value={800}>800 Extra Bold</option>
-                    <option value={900}>900 Black</option>
+                    <option value={100}>100</option>
+                    <option value={200}>200</option>
+                    <option value={300}>300</option>
+                    <option value={400}>400</option>
+                    <option value={500}>500</option>
+                    <option value={600}>600</option>
+                    <option value={700}>700</option>
+                    <option value={800}>800</option>
+                    <option value={900}>900</option>
                   </select>
-                </label>
+                  <div className="inline-flex rounded border border-slate-300 bg-white p-0.5">
+                    <button
+                      type="button"
+                      onClick={() => mergedWrappedOnUpdateTheme(themeId, { timeFontWeight: (theme.timeFontWeight ?? 400) >= 700 ? 400 : 700 })}
+                      className={`rounded px-2 py-0.5 text-[12px] font-semibold ${((theme.timeFontWeight ?? 400) >= 700) ? 'bg-slate-800 text-white' : 'text-slate-600 hover:bg-slate-100'}`}
+                    >
+                      B
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => mergedWrappedOnUpdateTheme(themeId, { timeUnderline: theme.timeUnderline === true ? undefined : true })}
+                      className={`rounded px-2 py-0.5 text-[12px] underline ${theme.timeUnderline === true ? 'bg-slate-800 text-white' : 'text-slate-600 hover:bg-slate-100'}`}
+                    >
+                      U
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => mergedWrappedOnUpdateTheme(themeId, { timeFontItalic: theme.timeFontItalic === true ? undefined : true })}
+                      className={`rounded px-2 py-0.5 text-[12px] italic ${theme.timeFontItalic === true ? 'bg-slate-800 text-white' : 'text-slate-600 hover:bg-slate-100'}`}
+                    >
+                      I
+                    </button>
+                  </div>
+                </div>
               )}
             </div>
           )}
 
-          <div className="rounded-md border border-indigo-100 bg-indigo-50/50 p-3 space-y-2">
-            <h5 className="text-xs font-semibold text-slate-700">当前选中层 · 排版</h5>
+          {!isDecoTextSelected && (
+            <div className="space-y-2">
+              <h5 className="text-xs font-semibold text-slate-700">排版</h5>
             {selectedElements.length === 0 ? (
               decoLayer &&
               ((decoLayer.kind === 'text' && !(decoLayer as TextThemeLayer).bindsReminderBody) ||
@@ -939,38 +1260,70 @@ function PopupThemeEditorPanelCore({
             ) : (
               (() => {
                 const sel = selectedElements[0]
-                const { align, letterSpacing, lineHeight } = layerTypographyKeys(sel)
-                const layerName = sel === 'content' ? '文本' : sel === 'time' ? '时间' : '倒计时'
-                const inheritAlign = ''
-                const curAlign = (theme[align] as string | undefined) ?? inheritAlign
+                const { align, verticalAlign, letterSpacing, lineHeight } = layerTypographyKeys(sel)
+                const curAlign = ((theme[align] as string | undefined) ?? theme.textAlign) as HorizontalAlign
+                const curVerticalAlign = ((theme[verticalAlign] as string | undefined) ?? theme.textVerticalAlign ?? 'middle') as VerticalAlign
                 const lsVal = theme[letterSpacing]
                 const lhDefault = sel === 'countdown' ? 1 : 1.35
                 const lhVal = theme[lineHeight] ?? lhDefault
                 return (
                   <div className="space-y-2">
-                    <p className="text-[11px] text-indigo-600">
-                      层：{layerName}
-                      {selectedElements.length >= 2 ? `（多选时以下仅针对「${layerName}」）` : ''}
-                    </p>
                     <div className="flex flex-wrap items-center gap-2">
                       <span className="text-[11px] text-slate-500 shrink-0">对齐</span>
                       <div className="inline-flex rounded border border-slate-300 bg-white p-0.5">
-                        {(['', 'left', 'center', 'right'] as const).map((v) => (
+                        {(['left', 'center', 'right', 'start', 'end', 'justify'] as const).map((v) => (
                           <button
-                            key={v || 'inherit'}
+                            key={v}
                             type="button"
                             onClick={() =>
                               mergedWrappedOnUpdateTheme(themeId, {
-                                [align]: (v === '' ? undefined : v) as PopupTheme[typeof align],
+                                [align]: v as PopupTheme[typeof align],
                               })
                             }
                             className={`rounded px-2 py-0.5 text-[11px] ${
-                              (v === '' && !theme[align]) || v === curAlign
+                              v === curAlign
                                 ? 'bg-slate-800 text-white'
                                 : 'text-slate-600 hover:bg-slate-100'
                             }`}
+                            title={
+                              v === 'left'
+                                ? '左对齐'
+                                : v === 'center'
+                                  ? '居中对齐'
+                                  : v === 'right'
+                                    ? '右对齐'
+                                    : v === 'start'
+                                      ? '起点对齐'
+                                      : v === 'end'
+                                        ? '终点对齐'
+                                        : '两端对齐'
+                            }
                           >
-                            {v === '' ? '随全局' : v === 'left' ? '左' : v === 'center' ? '中' : '右'}
+                            {alignIcon(v)}
+                          </button>
+                        ))}
+                      </div>
+                    </div>
+                    <div className="flex flex-wrap items-center gap-2">
+                      <span className="text-[11px] text-slate-500 shrink-0">垂直</span>
+                      <div className="inline-flex rounded border border-slate-300 bg-white p-0.5">
+                        {(['top', 'middle', 'bottom'] as const).map((v) => (
+                          <button
+                            key={v}
+                            type="button"
+                            onClick={() =>
+                              mergedWrappedOnUpdateTheme(themeId, {
+                                [verticalAlign]: v as PopupTheme[typeof verticalAlign],
+                              })
+                            }
+                            className={`rounded px-2 py-0.5 text-[11px] ${
+                              v === curVerticalAlign
+                                ? 'bg-slate-800 text-white'
+                                : 'text-slate-600 hover:bg-slate-100'
+                            }`}
+                            title={v === 'top' ? '顶部对齐' : v === 'middle' ? '垂直居中' : '底部对齐'}
+                          >
+                            {verticalAlignIcon(v)}
                           </button>
                         ))}
                       </div>
@@ -1009,30 +1362,25 @@ function PopupThemeEditorPanelCore({
                         />
                       </label>
                     </div>
-                    <p className="text-[10px] text-slate-400">字间距 0、行高按默认即可与经典弹窗观感一致。</p>
                   </div>
                 )
               })()
             )}
-          </div>
+            </div>
+          )}
 
           {selectedElements.length > 0 && (effectivePanelFilter === 'all' || effectivePanelFilter === 'text') && (
-            <div className="rounded-md border border-amber-100 bg-amber-50/40 p-3 space-y-2">
-              <h5 className="text-xs font-semibold text-slate-700">当前选中层 · 描边与阴影</h5>
+            <div className="space-y-2">
+              <h5 className="text-xs font-semibold text-slate-700">效果</h5>
               {(() => {
                 const sel = selectedElements[0]
-                const layerName = sel === 'content' ? '文本' : sel === 'time' ? '时间' : '倒计时'
                 const ek = layerEffectsKey(sel)
                 const e: PopupLayerTextEffects = theme[ek] ?? {}
                 const patchFx = (p: Partial<PopupLayerTextEffects>) =>
                   mergedWrappedOnUpdateTheme(themeId, { [ek]: { ...e, ...p } } as Partial<PopupTheme>)
                 return (
-                  <div className="space-y-3">
-                    <p className="text-[11px] text-amber-800/90">
-                      层：{layerName}
-                      {selectedElements.length >= 2 ? `（多选时以下仅针对「${layerName}」）` : ''}；弹窗内为逻辑像素，与预览比例一致。
-                    </p>
-                    <div className="space-y-2 rounded border border-white/80 bg-white/60 p-2">
+                  <div className="space-y-2">
+                    <div className="space-y-1.5 rounded border border-white/80 bg-white/60 p-1.5">
                       <label className="inline-flex items-center gap-2 text-xs text-slate-700">
                         <input
                           type="checkbox"
@@ -1050,7 +1398,7 @@ function PopupThemeEditorPanelCore({
                             )
                           }
                         />
-                        文字描边
+                        描边
                       </label>
                       {e.strokeEnabled === true && (
                         <div className="grid grid-cols-1 gap-2 sm:grid-cols-3">
@@ -1098,7 +1446,7 @@ function PopupThemeEditorPanelCore({
                         </div>
                       )}
                     </div>
-                    <div className="space-y-2 rounded border border-white/80 bg-white/60 p-2">
+                    <div className="space-y-1.5 rounded border border-white/80 bg-white/60 p-1.5">
                       <label className="inline-flex items-center gap-2 text-xs text-slate-700">
                         <input
                           type="checkbox"
@@ -1119,7 +1467,7 @@ function PopupThemeEditorPanelCore({
                             )
                           }
                         />
-                        文字阴影
+                        阴影
                       </label>
                       {e.shadowEnabled === true && (
                         <div className="grid grid-cols-1 gap-2 sm:grid-cols-2 lg:grid-cols-3">
@@ -1221,27 +1569,10 @@ function PopupThemeEditorPanelCore({
             </div>
           )}
 
-          <div className="border-t border-slate-100 pt-2 mt-1 space-y-2">
+          {!isDecoTextSelected && (
+            <div className="border-t border-slate-100 pt-2 mt-1 space-y-2">
             <div className="flex items-center justify-between">
-              <h5 className="text-xs font-semibold text-slate-700">位置与变换</h5>
-              <div className="inline-flex rounded-md border border-slate-300 bg-white p-0.5">
-                {(['content', 'time'] as const).map((elKey) => {
-                  const active = selectedElements.includes(elKey)
-                  return (
-                    <button
-                      key={elKey}
-                      type="button"
-                      onClick={() => {
-                        if (active) onSelectElements(selectedElements.filter((k) => k !== elKey))
-                        else onSelectElements([...selectedElements, elKey])
-                      }}
-                      className={`rounded px-2 py-0.5 text-[11px] transition-colors ${active ? 'bg-indigo-600 text-white' : 'text-slate-600 hover:bg-slate-100'}`}
-                    >
-                      {elKey === 'content' ? '文本' : '时间'}
-                    </button>
-                  )
-                })}
-              </div>
+              <h5 className="text-xs font-semibold text-slate-700">变换</h5>
             </div>
             {(() => {
               const sel = selectedElements[0]
@@ -1264,10 +1595,6 @@ function PopupThemeEditorPanelCore({
               const update = (patch: Partial<TextTransform>) => mergedWrappedOnUpdateTheme(themeId, { [tField]: { ...t, ...patch } })
               return (
                 <div className="space-y-2">
-                  <p className="text-[11px] text-indigo-500">
-                    {sel === 'content' ? '文本' : sel === 'time' ? '时间' : '倒计时'}
-                    {selectedElements.length >= 2 ? ` (+ ${selectedElements.length - 1} 个)` : ''}
-                  </p>
                   <div className="grid grid-cols-2 gap-2 sm:grid-cols-4">
                     <label className="text-[11px] text-slate-600 space-y-0.5">
                       <span>X 位置 (%)</span>
@@ -1318,74 +1645,6 @@ function PopupThemeEditorPanelCore({
                       />
                     </label>
                   </div>
-                  <div className="grid grid-cols-2 gap-2 sm:grid-cols-4">
-                    <label className="text-[11px] text-slate-600 space-y-0.5 sm:col-span-2">
-                      <span>
-                        {sel === 'content'
-                          ? '文字区域宽度（占弹窗宽 %，空=自动；自动模式≤60% 贴字、超出锁 60%）'
-                          : '文字区域宽度（占弹窗宽 %，空=完全随字宽；有值=最大不超过该%；预览里四边拉宽后会锁定为定宽条）'}
-                      </span>
-                      <input
-                        type="number"
-                        min={5}
-                        max={96}
-                        step={0.5}
-                        value={t.textBoxWidthPct ?? ''}
-                        placeholder="自动"
-                        onChange={(e) => {
-                          const v = e.target.value.trim()
-                          if (v === '') {
-                            const { textBoxWidthPct: _w, contentTextBoxUserSized: _cu, shortLayerTextBoxLockWidth: _sl, ...rest } = t
-                            mergedWrappedOnUpdateTheme(themeId, { [tField]: rest as TextTransform })
-                            return
-                          }
-                          const n = Number(v)
-                          if (!Number.isFinite(n)) return
-                          const w = Math.max(5, Math.min(96, n))
-                          update(
-                            sel === 'content'
-                              ? { textBoxWidthPct: w, contentTextBoxUserSized: true }
-                              : { textBoxWidthPct: w, shortLayerTextBoxLockWidth: false },
-                          )
-                        }}
-                        className="w-full rounded border border-slate-300 px-2 py-1 text-xs"
-                      />
-                    </label>
-                    <label className="text-[11px] text-slate-600 space-y-0.5 sm:col-span-2">
-                      <span>文字区域高度（占弹窗高 %，空=自动）</span>
-                      <input
-                        type="number"
-                        min={3}
-                        max={100}
-                        step={0.5}
-                        value={t.textBoxHeightPct ?? ''}
-                        placeholder="自动"
-                        onChange={(e) => {
-                          const v = e.target.value.trim()
-                          if (v === '') {
-                            const { textBoxHeightPct: _h, contentTextBoxUserSized: _cu, ...rest } = t
-                            mergedWrappedOnUpdateTheme(themeId, { [tField]: rest as TextTransform })
-                            return
-                          }
-                          const n = Number(v)
-                          if (!Number.isFinite(n)) return
-                          const h = Math.max(3, Math.min(100, n))
-                          update(sel === 'content' ? { textBoxHeightPct: h, contentTextBoxUserSized: true } : { textBoxHeightPct: h })
-                        }}
-                        className="w-full rounded border border-slate-300 px-2 py-1 text-xs"
-                      />
-                    </label>
-                  </div>
-                  <button
-                    type="button"
-                    onClick={() => {
-                      const { textBoxWidthPct: _w, textBoxHeightPct: _h, contentTextBoxUserSized: _cu, shortLayerTextBoxLockWidth: _sl, ...rest } = t
-                      mergedWrappedOnUpdateTheme(themeId, { [tField]: rest as TextTransform })
-                    }}
-                    className="text-[11px] text-slate-500 hover:text-slate-700"
-                  >
-                    清除固定文字区域（恢复随内容伸缩）
-                  </button>
                   <button
                     type="button"
                     onClick={() => {
@@ -1404,51 +1663,285 @@ function PopupThemeEditorPanelCore({
                 </div>
               )
             })()}
-          </div>
+            </div>
+          )}
         </div>
       )}
 
       {(effectivePanelFilter === 'all' || effectivePanelFilter === 'overlay') && (
-        <div className="rounded-md border border-slate-200 bg-white p-3 space-y-2">
+        <div className="space-y-2">
           <h4 className="text-xs font-semibold text-slate-700">遮罩</h4>
-          <div className="grid grid-cols-1 gap-2 sm:grid-cols-2 lg:grid-cols-3">
-            <label className="inline-flex items-center gap-2 rounded border border-slate-200 bg-white px-2 py-1.5 text-xs text-slate-700">
-              <input
-                type="checkbox"
-                checked={theme.overlayEnabled}
-                onChange={(e) => mergedWrappedOnUpdateTheme(themeId, { overlayEnabled: e.target.checked })}
-              />
-              启用遮罩
-            </label>
-            <label className="text-xs text-slate-600 space-y-1">
-              <span>遮罩颜色</span>
-              <input
-                type="color"
-                value={theme.overlayColor}
-                onChange={(e) => mergedWrappedOnUpdateTheme(themeId, { overlayColor: e.target.value })}
-                disabled={!theme.overlayEnabled}
-                className="h-8 w-full rounded border border-slate-300 bg-white disabled:opacity-50"
-              />
-            </label>
-            <label className="text-xs text-slate-600 space-y-1">
-              <span>遮罩透明度（0-1）</span>
-              <input
-                type="number"
-                min={0}
-                max={1}
-                step={0.05}
-                value={theme.overlayOpacity}
-                onChange={(e) => mergedWrappedOnUpdateTheme(themeId, { overlayOpacity: Math.max(0, Math.min(1, Number(e.target.value) || 0)) })}
-                disabled={!theme.overlayEnabled}
-                className="w-full rounded border border-slate-300 px-2 py-1 text-sm disabled:opacity-50"
-              />
-            </label>
+          {(() => {
+            const overlayMode = theme.overlayMode === 'gradient' ? 'gradient' : 'solid'
+            const overlayOpacity = Math.max(0, Math.min(1, theme.overlayOpacity ?? 0.45))
+            const gradientStartOpacity = Math.max(0, Math.min(1, theme.overlayGradientStartOpacity ?? 0.7))
+            const gradientEndOpacity = Math.max(0, Math.min(1, theme.overlayGradientEndOpacity ?? 0))
+            const directionRaw = theme.overlayGradientDirection ?? 'leftToRight'
+            const gradientAngle =
+              directionRaw === 'custom'
+                ? normalizeAngleDeg(theme.overlayGradientAngleDeg, 90)
+                : OVERLAY_DIRECTION_ANGLE_MAP[directionRaw as OverlayPresetDirection]
+            const presetDirection = presetDirectionFromAngle(gradientAngle)
+            const gradientDirectionSelect = directionRaw === 'custom'
+              ? (presetDirection ?? 'custom')
+              : (directionRaw as OverlayPresetDirection)
+            const disabled = !theme.overlayEnabled
+            const updateGradientAngle = (nextAngleRaw: number) => {
+              const nextAngle = normalizeAngleDeg(nextAngleRaw, gradientAngle)
+              const matchedPreset = presetDirectionFromAngle(nextAngle)
+              mergedWrappedOnUpdateTheme(themeId, {
+                overlayGradientAngleDeg: nextAngle,
+                overlayGradientDirection: (matchedPreset ?? 'custom') as PopupTheme['overlayGradientDirection'],
+              })
+            }
+            const updateGradientAngleByPointer = (clientX: number, clientY: number, target: HTMLDivElement) => {
+              const rect = target.getBoundingClientRect()
+              const cx = rect.left + rect.width / 2
+              const cy = rect.top + rect.height / 2
+              const dx = clientX - cx
+              const dy = clientY - cy
+              const angle = (Math.atan2(dy, dx) * 180) / Math.PI + 90
+              updateGradientAngle(angle)
+            }
+            const handleRad = (gradientAngle - 90) * Math.PI / 180
+            const handleX = 24 + Math.cos(handleRad) * 18
+            const handleY = 24 + Math.sin(handleRad) * 18
+            return (
+              <>
+          <label className="inline-flex items-center gap-2 text-xs text-slate-700">
+            <input
+              type="checkbox"
+              checked={theme.overlayEnabled}
+              onChange={(e) => mergedWrappedOnUpdateTheme(themeId, { overlayEnabled: e.target.checked })}
+            />
+            启用遮罩
+          </label>
+          <label className="block space-y-1 text-xs text-slate-600">
+            <span>模式</span>
+            <select
+              value={overlayMode}
+              onChange={(e) => mergedWrappedOnUpdateTheme(themeId, { overlayMode: e.target.value === 'gradient' ? 'gradient' : 'solid' })}
+              disabled={disabled}
+              className="w-full rounded border border-slate-300 px-2 py-1 text-sm disabled:opacity-50"
+            >
+              <option value="solid">纯色</option>
+              <option value="gradient">渐变</option>
+            </select>
+          </label>
+          <label className="block space-y-1 text-xs text-slate-600">
+            <span>颜色</span>
+            <input
+              type="color"
+              value={theme.overlayColor}
+              onChange={(e) => mergedWrappedOnUpdateTheme(themeId, { overlayColor: e.target.value })}
+              disabled={disabled}
+              className="h-8 w-full rounded border border-slate-300 bg-white disabled:opacity-50"
+            />
+          </label>
+          {overlayMode === 'solid' ? (
+          <div className="grid grid-cols-[60px_minmax(0,1fr)_72px] items-center gap-2 text-xs text-slate-600">
+            <span>透明度</span>
+            <input
+              type="range"
+              min={0}
+              max={1}
+              step={0.01}
+              value={overlayOpacity}
+              onChange={(e) => {
+                const n = Number(e.target.value)
+                if (!Number.isFinite(n)) return
+                mergedWrappedOnUpdateTheme(themeId, { overlayOpacity: Math.max(0, Math.min(1, n)) })
+              }}
+              disabled={disabled}
+              className="w-full accent-indigo-600 disabled:opacity-50"
+            />
+            <input
+              type="number"
+              min={0}
+              max={1}
+              step={0.01}
+              value={overlayOpacity}
+              onChange={(e) => {
+                const n = Number(e.target.value)
+                if (!Number.isFinite(n)) return
+                mergedWrappedOnUpdateTheme(themeId, { overlayOpacity: Math.max(0, Math.min(1, n)) })
+              }}
+              disabled={disabled}
+              className="w-full rounded border border-slate-300 px-2 py-1 text-sm disabled:opacity-50"
+            />
           </div>
+          ) : (
+            <>
+              <label className="block space-y-1 text-xs text-slate-600">
+                <span>方向</span>
+                <select
+                  value={gradientDirectionSelect}
+                  onChange={(e) => {
+                    const next = e.target.value as PopupTheme['overlayGradientDirection']
+                    if (next === 'custom') {
+                      mergedWrappedOnUpdateTheme(themeId, { overlayGradientDirection: 'custom' })
+                      return
+                    }
+                    const nextAngle = OVERLAY_DIRECTION_ANGLE_MAP[next as OverlayPresetDirection] ?? gradientAngle
+                    mergedWrappedOnUpdateTheme(themeId, {
+                      overlayGradientDirection: next,
+                      overlayGradientAngleDeg: nextAngle,
+                    })
+                  }}
+                  disabled={disabled}
+                  className="w-full rounded border border-slate-300 px-2 py-1 text-sm disabled:opacity-50"
+                >
+                  <option value="leftToRight">左 → 右</option>
+                  <option value="rightToLeft">右 → 左</option>
+                  <option value="topToBottom">上 → 下</option>
+                  <option value="bottomToTop">下 → 上</option>
+                  <option value="topLeftToBottomRight">左上 → 右下</option>
+                  <option value="topRightToBottomLeft">右上 → 左下</option>
+                  <option value="bottomLeftToTopRight">左下 → 右上</option>
+                  <option value="bottomRightToTopLeft">右下 → 左上</option>
+                  <option value="custom">自定义角度</option>
+                </select>
+              </label>
+              <div className="grid grid-cols-[60px_minmax(0,1fr)_72px] items-center gap-2 text-xs text-slate-600">
+                <span>角度</span>
+                <div className="flex items-center gap-3">
+                  <div
+                    role="slider"
+                    aria-label="遮罩渐变角度表盘"
+                    aria-valuemin={0}
+                    aria-valuemax={359}
+                    aria-valuenow={Math.round(gradientAngle)}
+                    tabIndex={disabled ? -1 : 0}
+                    onPointerDown={(e) => {
+                      if (disabled) return
+                      const el = e.currentTarget as HTMLDivElement
+                      el.setPointerCapture(e.pointerId)
+                      updateGradientAngleByPointer(e.clientX, e.clientY, el)
+                    }}
+                    onPointerMove={(e) => {
+                      if (disabled || (e.buttons & 1) !== 1) return
+                      updateGradientAngleByPointer(
+                        e.clientX,
+                        e.clientY,
+                        e.currentTarget as HTMLDivElement,
+                      )
+                    }}
+                    onKeyDown={(e) => {
+                      if (disabled) return
+                      if (e.key === 'ArrowLeft' || e.key === 'ArrowDown') {
+                        e.preventDefault()
+                        updateGradientAngle(gradientAngle - 1)
+                      } else if (e.key === 'ArrowRight' || e.key === 'ArrowUp') {
+                        e.preventDefault()
+                        updateGradientAngle(gradientAngle + 1)
+                      }
+                    }}
+                    className={`relative w-14 aspect-square shrink-0 rounded-full ${disabled ? 'opacity-50' : 'cursor-pointer'}`}
+                  >
+                    <svg viewBox="0 0 48 48" className="h-full w-full" aria-hidden>
+                      <circle cx="24" cy="24" r="18" fill="#fff" stroke="#cbd5e1" strokeWidth="1.5" />
+                      <circle cx="24" cy="24" r="1.2" fill="#94a3b8" />
+                      <circle cx={handleX} cy={handleY} r="3.2" fill="#ef4444" />
+                    </svg>
+                  </div>
+                  <input
+                    type="range"
+                    min={0}
+                    max={359}
+                    step={1}
+                    value={Math.round(gradientAngle)}
+                    onChange={(e) => updateGradientAngle(Number(e.target.value))}
+                    disabled={disabled}
+                    className="w-full accent-indigo-600 disabled:opacity-50"
+                  />
+                </div>
+                <input
+                  type="number"
+                  min={0}
+                  max={359}
+                  step={1}
+                  value={Math.round(gradientAngle)}
+                  onChange={(e) => {
+                    const n = Number(e.target.value)
+                    if (!Number.isFinite(n)) return
+                    updateGradientAngle(n)
+                  }}
+                  disabled={disabled}
+                  className="w-full rounded border border-slate-300 px-2 py-1 text-sm disabled:opacity-50"
+                />
+              </div>
+              <div className="grid grid-cols-[60px_minmax(0,1fr)_72px] items-center gap-2 text-xs text-slate-600">
+                <span>起点透明</span>
+                <input
+                  type="range"
+                  min={0}
+                  max={1}
+                  step={0.01}
+                  value={gradientStartOpacity}
+                  onChange={(e) => {
+                    const n = Number(e.target.value)
+                    if (!Number.isFinite(n)) return
+                    mergedWrappedOnUpdateTheme(themeId, { overlayGradientStartOpacity: Math.max(0, Math.min(1, n)) })
+                  }}
+                  disabled={disabled}
+                  className="w-full accent-indigo-600 disabled:opacity-50"
+                />
+                <input
+                  type="number"
+                  min={0}
+                  max={1}
+                  step={0.01}
+                  value={gradientStartOpacity}
+                  onChange={(e) => {
+                    const n = Number(e.target.value)
+                    if (!Number.isFinite(n)) return
+                    mergedWrappedOnUpdateTheme(themeId, { overlayGradientStartOpacity: Math.max(0, Math.min(1, n)) })
+                  }}
+                  disabled={disabled}
+                  className="w-full rounded border border-slate-300 px-2 py-1 text-sm disabled:opacity-50"
+                />
+              </div>
+              <div className="grid grid-cols-[60px_minmax(0,1fr)_72px] items-center gap-2 text-xs text-slate-600">
+                <span>终点透明</span>
+                <input
+                  type="range"
+                  min={0}
+                  max={1}
+                  step={0.01}
+                  value={gradientEndOpacity}
+                  onChange={(e) => {
+                    const n = Number(e.target.value)
+                    if (!Number.isFinite(n)) return
+                    mergedWrappedOnUpdateTheme(themeId, { overlayGradientEndOpacity: Math.max(0, Math.min(1, n)) })
+                  }}
+                  disabled={disabled}
+                  className="w-full accent-indigo-600 disabled:opacity-50"
+                />
+                <input
+                  type="number"
+                  min={0}
+                  max={1}
+                  step={0.01}
+                  value={gradientEndOpacity}
+                  onChange={(e) => {
+                    const n = Number(e.target.value)
+                    if (!Number.isFinite(n)) return
+                    mergedWrappedOnUpdateTheme(themeId, { overlayGradientEndOpacity: Math.max(0, Math.min(1, n)) })
+                  }}
+                  disabled={disabled}
+                  className="w-full rounded border border-slate-300 px-2 py-1 text-sm disabled:opacity-50"
+                />
+              </div>
+            </>
+          )}
+              </>
+            )
+          })()}
         </div>
       )}
 
       {(effectivePanelFilter === 'all' || effectivePanelFilter === 'background') && (
-        <div className="rounded-md border border-slate-200 bg-white p-3 space-y-2">
+        <div className="space-y-2">
           <h4 className="text-xs font-semibold text-slate-700">背景</h4>
           <div className="grid grid-cols-1 gap-2 sm:grid-cols-2 lg:grid-cols-3">
             <label className="text-xs text-slate-600 space-y-1">
@@ -1555,7 +2048,8 @@ function PopupThemeEditorPanelCore({
           )}
         </div>
       )}
-        </div>
+          </div>
+        )}
       </div>
     </div>
   )

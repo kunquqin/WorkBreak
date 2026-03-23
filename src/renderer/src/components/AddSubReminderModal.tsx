@@ -215,12 +215,10 @@ export function AddSubReminderModal({
   const [intervalSeconds, setIntervalSeconds] = useState(0)
 
   const [title, setTitle] = useState(getDefaultTitle(mode))
-  const [content, setContent] = useState('')
   const [splitCount, setSplitCount] = useState(1)
   const [restH, setRestH] = useState(0)
   const [restM, setRestM] = useState(0)
   const [restS, setRestS] = useState(0)
-  const [restContent, setRestContent] = useState(BUILTIN_REST_POPUP_FALLBACK_BODY)
   const [splitErr, setSplitErr] = useState<string | null>(null)
   const [fixedRangeErr, setFixedRangeErr] = useState<string | null>(null)
   const [mainPopupThemeId, setMainPopupThemeId] = useState('')
@@ -241,9 +239,6 @@ export function AddSubReminderModal({
   )
   const restManuallySet = useRef(false)
   const restZeroTimer = useRef<ReturnType<typeof setTimeout> | null>(null)
-  /** 记录「当前绑定主题 id + 主题 previewContentText」，用于在主题工坊保存后把示例文案同步进子项 state（勿把 popupThemes 放进下方 hydrate 依赖，否则会每次写回 sourceItem.content 冲掉主题更新） */
-  const mainThemeSampleSigRef = useRef<string | null>(null)
-  const restThemeSampleSigRef = useRef<string | null>(null)
   const baselinePayloadJsonRef = useRef('')
   const getPayloadSnapshotRef = useRef<() => string | null>(() => null)
   const [highlightPopupType, setHighlightPopupType] = useState<'rest' | 'main' | null>(null)
@@ -251,25 +246,36 @@ export function AddSubReminderModal({
 
   const [miniMainSelected, setMiniMainSelected] = useState<TextElementKey[]>([])
   const [miniRestSelected, setMiniRestSelected] = useState<TextElementKey[]>([])
+  const [miniMainSelectedDecoLayerId, setMiniMainSelectedDecoLayerId] = useState<string | null>(null)
+  const [miniRestSelectedDecoLayerId, setMiniRestSelectedDecoLayerId] = useState<string | null>(null)
 
   useEffect(() => {
     if (!open) {
       baselinePayloadJsonRef.current = ''
       setMiniMainSelected([])
       setMiniRestSelected([])
-      mainThemeSampleSigRef.current = null
-      restThemeSampleSigRef.current = null
+      setMiniMainSelectedDecoLayerId(null)
+      setMiniRestSelectedDecoLayerId(null)
     }
   }, [open])
 
-  /** hydrate 故意不依赖 popupThemes：否则主题工坊 replacePopupTheme 后整表会重灌，把 content 又写回 sourceItem，子项预览跟不上主题的 previewContentText */
+  useEffect(() => {
+    setMiniMainSelectedDecoLayerId(null)
+    setMiniMainSelected([])
+  }, [mainPopupThemeId])
+
+  useEffect(() => {
+    setMiniRestSelectedDecoLayerId(null)
+    setMiniRestSelected([])
+  }, [restPopupThemeId])
+
+  /** hydrate 故意不依赖 popupThemes：主题变更以当前选中主题实时渲染，不需要把文案回灌到子项字段。 */
   useEffect(() => {
     if (!open) return
     if (variant === 'edit' && sourceItem) {
       if (sourceItem.mode === 'stopwatch') return
       setUseNowAsStart(sourceItem.mode === 'fixed' && sourceItem.useNowAsStart === true)
       setTitle((sourceItem.title ?? '').trim() || getDefaultTitle(sourceItem.mode))
-      setContent(sourceItem.content)
       setSplitCount(sourceItem.splitCount ?? 1)
       const rsec = sourceItem.restDurationSeconds ?? 0
       restManuallySet.current = rsec > 0
@@ -279,18 +285,11 @@ export function AddSubReminderModal({
       setRestH(rh)
       setRestM(rm)
       setRestS(rs)
-      setRestContent(sourceItem.restContent ?? BUILTIN_REST_POPUP_FALLBACK_BODY)
       if (sourceItem.mode === 'fixed' || sourceItem.mode === 'interval') {
         const mid = sourceItem.mainPopupThemeId ?? defaultMainThemeId
         const rid = sourceItem.restPopupThemeId ?? defaultRestThemeId
         setMainPopupThemeId(mid)
         setRestPopupThemeId(rid)
-        {
-          const thMain = popupThemes.find((t) => t.target === 'main' && t.id === mid)
-          const thRest = popupThemes.find((t) => t.target === 'rest' && t.id === rid)
-          mainThemeSampleSigRef.current = `${mid}\x1e${thMain?.previewContentText ?? ''}`
-          restThemeSampleSigRef.current = `${rid}\x1e${thRest?.previewContentText ?? ''}`
-        }
       }
       if (sourceItem.mode === 'fixed') {
         const { h: eh, m: em } = parseTimeHHmm(sourceItem.time)
@@ -344,10 +343,6 @@ export function AddSubReminderModal({
       const restTh =
         popupThemes.find((t) => t.target === 'rest' && t.id === defaultRestThemeId) ??
         popupThemes.find((t) => t.target === 'rest')
-      setContent(popupMainTextFromTheme(mainTh))
-      setRestContent(popupRestTextFromTheme(restTh))
-      mainThemeSampleSigRef.current = `${defaultMainThemeId}\x1e${mainTh?.previewContentText ?? ''}`
-      restThemeSampleSigRef.current = `${defaultRestThemeId}\x1e${restTh?.previewContentText ?? ''}`
     }
     setWeekdaysEnabled(Array(7).fill(false))
     setSplitCount(1)
@@ -363,17 +358,60 @@ export function AddSubReminderModal({
     setRestPopupThemeId(defaultRestThemeId)
     setSplitErr(null)
     setFixedRangeErr(null)
-  }, [open, mode, variant, sourceItem?.id, formInstanceKey, layout, defaultMainThemeId, defaultRestThemeId])
+  }, [
+    open,
+    mode,
+    variant,
+    sourceItem?.id,
+    sourceItem?.mode,
+    sourceItem && (sourceItem.mode === 'fixed' || sourceItem.mode === 'interval') ? sourceItem.mainPopupThemeId : undefined,
+    sourceItem && (sourceItem.mode === 'fixed' || sourceItem.mode === 'interval') ? sourceItem.restPopupThemeId : undefined,
+    sourceItem?.startTime,
+    sourceItem?.time,
+    sourceItem && sourceItem.mode === 'interval' ? sourceItem.intervalHours : undefined,
+    sourceItem && sourceItem.mode === 'interval' ? sourceItem.intervalMinutes : undefined,
+    sourceItem && sourceItem.mode === 'interval' ? sourceItem.intervalSeconds : undefined,
+    sourceItem && sourceItem.mode === 'interval' ? sourceItem.repeatCount : undefined,
+    sourceItem?.splitCount,
+    sourceItem?.restDurationSeconds,
+    sourceItem?.title,
+    sourceItem && sourceItem.mode === 'fixed' ? sourceItem.weekdaysEnabled?.join(',') : undefined,
+    formInstanceKey,
+    layout,
+    defaultMainThemeId,
+    defaultRestThemeId,
+  ])
 
   useEffect(() => {
     if (!open) return
-    if (!mainThemeOptions.some((t) => t.id === mainPopupThemeId)) {
+    const isEditReminder =
+      variant === 'edit' && sourceItem && (sourceItem.mode === 'fixed' || sourceItem.mode === 'interval')
+    const sourceMainId = isEditReminder ? sourceItem.mainPopupThemeId : undefined
+    const sourceRestId = isEditReminder ? sourceItem.restPopupThemeId : undefined
+
+    // 编辑态优先回填子项已绑定主题；仅当源主题不存在时才回退默认。
+    if (sourceMainId && mainThemeOptions.some((t) => t.id === sourceMainId)) {
+      if (mainPopupThemeId !== sourceMainId) setMainPopupThemeId(sourceMainId)
+    } else if (!mainThemeOptions.some((t) => t.id === mainPopupThemeId)) {
       setMainPopupThemeId(defaultMainThemeId)
     }
-    if (!restThemeOptions.some((t) => t.id === restPopupThemeId)) {
+
+    if (sourceRestId && restThemeOptions.some((t) => t.id === sourceRestId)) {
+      if (restPopupThemeId !== sourceRestId) setRestPopupThemeId(sourceRestId)
+    } else if (!restThemeOptions.some((t) => t.id === restPopupThemeId)) {
       setRestPopupThemeId(defaultRestThemeId)
     }
-  }, [open, mainPopupThemeId, restPopupThemeId, mainThemeOptions, restThemeOptions, defaultMainThemeId, defaultRestThemeId])
+  }, [
+    open,
+    variant,
+    sourceItem,
+    mainPopupThemeId,
+    restPopupThemeId,
+    mainThemeOptions,
+    restThemeOptions,
+    defaultMainThemeId,
+    defaultRestThemeId,
+  ])
 
   const [nowMs, setNowMs] = useState(Date.now)
   useEffect(() => {
@@ -434,29 +472,6 @@ export function AddSubReminderModal({
     if (popupThemeRemotePatch.restPopupThemeId) setRestPopupThemeId(popupThemeRemotePatch.restPopupThemeId)
     onConsumePopupThemeRemotePatch?.()
   }, [popupThemeRemotePatch, embeddedThemeStudioContext, onConsumePopupThemeRemotePatch])
-
-  /** 主题库中当前绑定主题的 previewContentText 变化（如工坊保存）→ 同步到子项主文案 state，与真弹窗 body 一致 */
-  useEffect(() => {
-    if (!open || !themeEditorContext) return
-    const raw = selectedMainTheme?.previewContentText ?? ''
-    const sig = `${mainPopupThemeId}\x1e${raw}`
-    if (mainThemeSampleSigRef.current == null) return
-    if (mainThemeSampleSigRef.current === sig) return
-    mainThemeSampleSigRef.current = sig
-    const trim = raw.trim()
-    if (trim) setContent(trim)
-  }, [open, themeEditorContext, mainPopupThemeId, selectedMainTheme?.previewContentText])
-
-  useEffect(() => {
-    if (!open || !themeEditorContext) return
-    const raw = selectedRestTheme?.previewContentText ?? ''
-    const sig = `${restPopupThemeId}\x1e${raw}`
-    if (restThemeSampleSigRef.current == null) return
-    if (restThemeSampleSigRef.current === sig) return
-    restThemeSampleSigRef.current = sig
-    const trim = raw.trim()
-    if (trim) setRestContent(trim)
-  }, [open, themeEditorContext, restPopupThemeId, selectedRestTheme?.previewContentText])
 
   const splitN = Math.max(1, Math.min(10, splitCount))
   const intervalTotalMs = (intervalHours * 3600 + intervalMinutes * 60 + intervalSeconds) * 1000
@@ -532,10 +547,10 @@ export function AddSubReminderModal({
         ...(mainPopupThemeId ? { mainPopupThemeId } : {}),
         ...(restPopupThemeId ? { restPopupThemeId } : {}),
         weekdaysEnabled: weekdaysEnabled.slice(),
-        content: content.trim() || BUILTIN_MAIN_POPUP_FALLBACK_BODY,
+        content: BUILTIN_MAIN_POPUP_FALLBACK_BODY,
         splitCount: splitN,
         restDurationSeconds: splitN > 1 && totalRestSec ? totalRestSec : undefined,
-        restContent: splitN > 1 ? restContent.trim() || undefined : undefined,
+        restContent: splitN > 1 ? BUILTIN_REST_POPUP_FALLBACK_BODY : undefined,
         useNowAsStart,
       }
     }
@@ -547,11 +562,11 @@ export function AddSubReminderModal({
       intervalHours,
       intervalMinutes,
       intervalSeconds,
-      content: content.trim() || BUILTIN_MAIN_POPUP_FALLBACK_BODY,
+      content: BUILTIN_MAIN_POPUP_FALLBACK_BODY,
       repeatCount,
       splitCount: splitN,
       restDurationSeconds: splitN > 1 && totalRestSec ? totalRestSec : undefined,
-      restContent: splitN > 1 ? restContent.trim() || undefined : undefined,
+      restContent: splitN > 1 ? BUILTIN_REST_POPUP_FALLBACK_BODY : undefined,
     }
   }
 
@@ -1003,10 +1018,7 @@ export function AddSubReminderModal({
                       <select
                         value={restPopupThemeId}
                         onChange={(e) => {
-                          const id = e.target.value
-                          setRestPopupThemeId(id)
-                          const th = restThemeOptions.find((t) => t.id === id)
-                          if (th) setRestContent(popupRestTextFromTheme(th))
+                          setRestPopupThemeId(e.target.value)
                         }}
                         className="min-w-0 flex-1 rounded border border-slate-300 px-2 py-1.5 text-sm"
                       >
@@ -1031,7 +1043,7 @@ export function AddSubReminderModal({
                         return (
                           <div className="space-y-2">
                             <p className="text-[10px] leading-snug text-slate-400">
-                              切换主题会载入该主题的示例文案到本条提醒（仅本条）；双击预览中的文本可改字，样式与拖拽写入当前主题库。详细排版请点「编辑主题」进入主题工坊。
+                              双击预览中的文本可直接修改当前主题文案，样式与拖拽同样写入主题库。详细排版请点「编辑主题」进入主题工坊。
                             </p>
                             <ThemePreviewEditor
                               theme={thLive}
@@ -1041,12 +1053,16 @@ export function AddSubReminderModal({
                               popupPreviewAspect={themeEditorContext.popupPreviewAspect}
                               selectedElements={miniRestSelected}
                               onSelectElements={setMiniRestSelected}
+                              selectedDecorationLayerId={miniRestSelectedDecoLayerId}
+                              onSelectDecorationLayer={setMiniRestSelectedDecoLayerId}
                               previewLabels={{
-                                content: restContent,
+                                content: popupRestTextFromTheme(thLive),
                                 time: restPreviewTimeStr,
                               }}
                               onLiveTextCommit={(key, text) => {
-                                if (key === 'content') setRestContent(text)
+                                if (key === 'content') {
+                                  themeEditorContext.updatePopupTheme(thLive.id, { previewContentText: text })
+                                }
                               }}
                             />
                           </div>
@@ -1074,10 +1090,7 @@ export function AddSubReminderModal({
                     <select
                       value={mainPopupThemeId}
                       onChange={(e) => {
-                        const id = e.target.value
-                        setMainPopupThemeId(id)
-                        const th = mainThemeOptions.find((t) => t.id === id)
-                        if (th) setContent(popupMainTextFromTheme(th))
+                        setMainPopupThemeId(e.target.value)
                       }}
                       className="min-w-0 flex-1 rounded border border-slate-300 px-2 py-1.5 text-sm"
                     >
@@ -1102,7 +1115,7 @@ export function AddSubReminderModal({
                       return (
                         <div className="space-y-2">
                           <p className="text-[10px] leading-snug text-slate-400">
-                            默认即为黑底白字主题，可直接改样式；切换主题会载入该主题示例文案到本条（仅本条）。双击预览中的文本改字，拖拽与样式写入当前主题库。详细排版请点「编辑主题」进入主题工坊。
+                            默认即为黑底白字主题，可直接改样式；双击预览中的文本改字，拖拽与样式均写入当前主题库。详细排版请点「编辑主题」进入主题工坊。
                           </p>
                           <ThemePreviewEditor
                             theme={thLive}
@@ -1112,12 +1125,16 @@ export function AddSubReminderModal({
                             popupPreviewAspect={themeEditorContext.popupPreviewAspect}
                             selectedElements={miniMainSelected}
                             onSelectElements={setMiniMainSelected}
+                            selectedDecorationLayerId={miniMainSelectedDecoLayerId}
+                            onSelectDecorationLayer={setMiniMainSelectedDecoLayerId}
                             previewLabels={{
-                              content,
+                              content: popupMainTextFromTheme(thLive),
                               time: mainPreviewTimeStr,
                             }}
                             onLiveTextCommit={(key, text) => {
-                              if (key === 'content') setContent(text)
+                              if (key === 'content') {
+                                themeEditorContext.updatePopupTheme(thLive.id, { previewContentText: text })
+                              }
                             }}
                           />
                         </div>

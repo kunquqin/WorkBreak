@@ -36,7 +36,19 @@ export const BUILTIN_MAIN_POPUP_FALLBACK_BODY = '时间到！'
  */
 export const BUILTIN_REST_POPUP_FALLBACK_BODY = '休息一下'
 export type PopupBackgroundType = 'solid' | 'image'
-export type PopupTextAlign = 'left' | 'center' | 'right'
+export type PopupOverlayMode = 'solid' | 'gradient'
+export type PopupOverlayGradientDirection =
+  | 'leftToRight'
+  | 'rightToLeft'
+  | 'topToBottom'
+  | 'bottomToTop'
+  | 'topLeftToBottomRight'
+  | 'topRightToBottomLeft'
+  | 'bottomLeftToTopRight'
+  | 'bottomRightToTopLeft'
+  | 'custom'
+export type PopupTextAlign = 'left' | 'center' | 'right' | 'start' | 'end' | 'justify'
+export type PopupTextVerticalAlign = 'top' | 'middle' | 'bottom'
 export type PopupImageSourceType = 'single' | 'folder'
 export type PopupFolderPlayMode = 'sequence' | 'random'
 
@@ -117,6 +129,11 @@ export interface PopupTheme {
   overlayEnabled: boolean
   overlayColor: string
   overlayOpacity: number
+  overlayMode?: PopupOverlayMode
+  overlayGradientDirection?: PopupOverlayGradientDirection
+  overlayGradientAngleDeg?: number
+  overlayGradientStartOpacity?: number
+  overlayGradientEndOpacity?: number
   contentColor: string
   timeColor: string
   countdownColor: string
@@ -138,10 +155,20 @@ export interface PopupTheme {
   countdownFontFamilyPreset?: string
   countdownFontFamilySystem?: string
   textAlign: PopupTextAlign
+  /** 全局文字垂直对齐；缺省回落到 middle */
+  textVerticalAlign?: PopupTextVerticalAlign
   /** 字重 (100-900) */
   contentFontWeight?: number
   timeFontWeight?: number
   countdownFontWeight?: number
+  /** 斜体 */
+  contentFontItalic?: boolean
+  timeFontItalic?: boolean
+  countdownFontItalic?: boolean
+  /** 下划线 */
+  contentUnderline?: boolean
+  timeUnderline?: boolean
+  countdownUnderline?: boolean
   /** 提醒内容文字空间变换（可选，undefined 时使用传统 flex 布局） */
   contentTransform?: TextTransform
   /** 时间文字空间变换 */
@@ -152,6 +179,10 @@ export interface PopupTheme {
   contentTextAlign?: PopupTextAlign
   timeTextAlign?: PopupTextAlign
   countdownTextAlign?: PopupTextAlign
+  /** 各文字层独立垂直对齐；缺省回落到 textVerticalAlign */
+  contentTextVerticalAlign?: PopupTextVerticalAlign
+  timeTextVerticalAlign?: PopupTextVerticalAlign
+  countdownTextVerticalAlign?: PopupTextVerticalAlign
   /** 字间距（px），约 -2～20 */
   contentLetterSpacing?: number
   timeLetterSpacing?: number
@@ -355,6 +386,11 @@ function defaultMainTheme(): PopupTheme {
     overlayEnabled: false,
     overlayColor: '#000000',
     overlayOpacity: 0.45,
+    overlayMode: 'solid',
+    overlayGradientDirection: 'leftToRight',
+    overlayGradientAngleDeg: 90,
+    overlayGradientStartOpacity: 0.7,
+    overlayGradientEndOpacity: 0,
     contentColor: '#ffffff',
     timeColor: '#e2e8f0',
     countdownColor: '#ffffff',
@@ -380,6 +416,11 @@ function defaultRestTheme(): PopupTheme {
     overlayEnabled: false,
     overlayColor: '#000000',
     overlayOpacity: 0.45,
+    overlayMode: 'solid',
+    overlayGradientDirection: 'leftToRight',
+    overlayGradientAngleDeg: 90,
+    overlayGradientStartOpacity: 0.7,
+    overlayGradientEndOpacity: 0,
     contentColor: '#ffffff',
     timeColor: '#e2e8f0',
     countdownColor: '#ffffff',
