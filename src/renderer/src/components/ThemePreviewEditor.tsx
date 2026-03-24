@@ -17,9 +17,21 @@ import {
   updateDecorationLayer,
 } from '../../../shared/popupThemeLayers'
 import { formatPopupThemeDateString } from '../../../shared/popupThemeDateFormat'
+import type { PopupTextOrientationMode, PopupTextWritingMode } from '../../../shared/settings'
+import {
+  WB_TEXT_INNER,
+  isVerticalWritingMode,
+  textAlignForVerticalInner,
+  verticalTextInnerDomStyle,
+} from '../../../shared/popupVerticalText'
 import type { PopupThemeEditUpdateMeta } from '../hooks/usePopupThemeEditHistory'
 
 export type TextElementKey = 'content' | 'time' | 'date' | 'countdown'
+
+/** 参数区优先编辑文字：预览双击时交给面板聚焦对应输入框 */
+export type PanelTextFocusRequest =
+  | { kind: 'binding'; key: TextElementKey }
+  | { kind: 'decoration'; layerId: string }
 
 function themeTransformField(key: TextElementKey): 'contentTransform' | 'timeTransform' | 'dateTransform' | 'countdownTransform' {
   switch (key) {
@@ -72,6 +84,13 @@ interface ThemePreviewEditorProps {
   onSelectStructuralLayer?: (id: string | null) => void
   /** 图层栏选中的背景/遮罩 id；与 Delete/Backspace 删除结构层一致 */
   selectedStructuralLayerId?: string | null
+  /**
+   * true：预览内文字只读，不在画布上用 contentEditable；双击文字改为回调 `onRequestPanelTextFocus`，由右侧参数区编辑。
+   * 用于主题参数面板，避免横/竖排与 Moveable 框联动导致的裁切与滚动条问题。
+   */
+  panelFirstTextEditing?: boolean
+  /** 与 `panelFirstTextEditing` 配套：双击绑定层/装饰文本时请求面板聚焦 */
+  onRequestPanelTextFocus?: (req: PanelTextFocusRequest) => void
 }
 
 /** Moveable 打组轨道平移多为 translate(xpx,ypx)，偶发 translate3d */
@@ -150,24 +169,48 @@ function getOverlayBackground(theme: PopupTheme): string {
   return `linear-gradient(${angle}deg, ${hexToRgba(color, start)} 0%, ${hexToRgba(color, end)} 100%)`
 }
 
-/** 元素 AABB 四角相对黑底预览容器左上角的像素坐标（与 Moveable 校正 translate 一致） */
+/** 元素本地四角（相对 transform-origin 中心、缩放后）映射到预览容器内像素；旋转后≠AABB 四角 */
 type ScaleFixedCorner = 'tl' | 'tr' | 'bl' | 'br'
 
-function getBoxCornerInContainer(er: DOMRect, cr: DOMRect, corner: ScaleFixedCorner): { x: number; y: number } {
-  const l = er.left - cr.left
-  const t = er.top - cr.top
-  const r = er.right - cr.left
-  const b = er.bottom - cr.top
+/**
+ * 旋转后对象的真实角点相对容器左上角（勿用 getBoundingClientRect 的 AABB 角，否则缩放锚会像贴在「外接矩形」上）。
+ * 假定 `transform-origin: center`，顺序为 translate → rotate → scale（与 buildTransform 一致）。
+ */
+function getRotatedLocalCornerInContainer(el: HTMLElement, cr: DOMRect, corner: ScaleFixedCorner): { x: number; y: number } {
+  const er = el.getBoundingClientRect()
+  const cx = (er.left + er.right) / 2 - cr.left
+  const cy = (er.top + er.bottom) / 2 - cr.top
+  const { rotation, scale } = parseTransformValues(el.style.transform)
+  const rad = (rotation * Math.PI) / 180
+  const c = Math.cos(rad)
+  const s = Math.sin(rad)
+  const sc = scale || 1
+  const hx = (el.offsetWidth * sc) / 2
+  const hy = (el.offsetHeight * sc) / 2
+  let lx = 0
+  let ly = 0
   switch (corner) {
     case 'tl':
-      return { x: l, y: t }
+      lx = -hx
+      ly = -hy
+      break
     case 'tr':
-      return { x: r, y: t }
-    case 'bl':
-      return { x: l, y: b }
+      lx = hx
+      ly = -hy
+      break
     case 'br':
-      return { x: r, y: b }
+      lx = hx
+      ly = hy
+      break
+    case 'bl':
+      lx = -hx
+      ly = hy
+      break
   }
+  // 与 CSS 2D rotate(θ) 矩阵一致：x' = x cos θ - y sin θ, y' = x sin θ + y cos θ
+  const rx = lx * c - ly * s
+  const ry = lx * s + ly * c
+  return { x: cx + rx, y: cy + ry }
 }
 
 /**
@@ -235,9 +278,48 @@ function snapRotateInFullTransform(css: string, inputEvent: MouseEvent | TouchEv
   return css.slice(0, m.index) + `rotate(${snapped}deg)` + css.slice(m.index + m[0].length)
 }
 
-/** 主文案：单行固有宽 ≤ 画布此比例时栏宽贴内容；超出则栏宽锁为此比例并在框内换行；拉框可宽于此上限，至 CONTENT_TEXT_BOX_CAP_RATIO */
-const CONTENT_TEXT_INLINE_MAX_RATIO = 0.6
+/** 自动贴合：默认宽/高不超过预览区该比例；超出在框内换行/换列并由内层 overflow 滚动；手动拉框仍可至 CONTENT_TEXT_BOX_CAP_RATIO */
+const CONTENT_TEXT_AUTO_FIT_MAX_RATIO = 0.8
+/** 横排：单行固有宽 ≤ 此比例时栏宽贴内容；超出则锁为该比例宽并换行（与竖排列高上限对称） */
+const CONTENT_TEXT_INLINE_MAX_RATIO = CONTENT_TEXT_AUTO_FIT_MAX_RATIO
 const CONTENT_TEXT_BOX_CAP_RATIO = 0.96
+/** 竖排：单列沿预览区高度方向不超过此比例时贴高；超出则锁高并换列 */
+const CONTENT_TEXT_VERTICAL_INLINE_MAX_RATIO = CONTENT_TEXT_AUTO_FIT_MAX_RATIO
+/**
+ * 竖排画布编辑：外层列高取自 textBoxHeightPct。若为横排遗留的较小百分比（如一行高 12%），
+ * 列过矮会迫使块向多列挤在窄宽内，出现假横条、截断，失焦后宽高语义错乱。非手动拉框时低于此阈值则编辑态列高改用画布 80%。
+ */
+const VERTICAL_EDIT_COLUMN_MIN_HEIGHT_PCT = 28
+
+type ContentTextBoxAutoOpts = { force?: boolean }
+
+/** 主文案输入时写回 textBox 的防抖（ms），减轻 scrollHeight 与重渲染导致的 Moveable 高度抖动 */
+const TEXT_EDIT_LAYOUT_DEBOUNCE_MS = 90
+
+function parseDecoWritingSigToMap(sig: string): Map<string, string> {
+  const m = new Map<string, string>()
+  if (!sig) return m
+  for (const seg of sig.split('|')) {
+    const idx = seg.indexOf(':')
+    if (idx <= 0) continue
+    const id = seg.slice(0, idx)
+    const wm = seg.slice(idx + 1)
+    if (id) m.set(id, wm)
+  }
+  return m
+}
+
+/** 签名变化时仅「新建层或 writingMode 变化」的 id；避免对全部装饰层 force 贴盒引发连串 onUpdateTheme + ResizeObserver，新建文本时 Moveable 底边像往下「长」一截 */
+function decoWritingSigTouchedLayerIds(prevSig: string, nextSig: string): string[] {
+  if (prevSig === nextSig) return []
+  const prevM = parseDecoWritingSigToMap(prevSig)
+  const nextM = parseDecoWritingSigToMap(nextSig)
+  const touched: string[] = []
+  for (const [id, wm] of nextM) {
+    if (prevM.get(id) !== wm) touched.push(id)
+  }
+  return touched
+}
 
 /** 与 liveSnap / useMemo 依赖稳定：勿每轮渲染 new 新数组，否则小窗预览会跟着时钟抖动 */
 const DEFAULT_EDITABLE_CONTENT_ONLY: TextElementKey[] = ['content']
@@ -246,10 +328,11 @@ const DEFAULT_EDITABLE_ALL_LAYERS: TextElementKey[] = ['content']
 
 /** 结束 / 休息壁纸共用同一套默认层变换，仅 `target` 决定子项关联用途 */
 export const DEFAULT_LAYER_TRANSFORMS: Record<TextElementKey, TextTransform> = {
-  content: { x: 50, y: 42, rotation: 0, scale: 1 },
+  content: { x: 50, y: 36, rotation: 0, scale: 1 },
   /** 时间单行：不设 textBoxHeightPct，高度随字行高，避免预览 Moveable 上下留白过大 */
-  time: { x: 50, y: 55, rotation: 0, scale: 1 },
-  countdown: { x: 50, y: 70, rotation: 0, scale: 1 },
+  time: { x: 50, y: 62, rotation: 0, scale: 1 },
+  date: { x: 50, y: 65, rotation: 0, scale: 1 },
+  countdown: { x: 50, y: 78, rotation: 0, scale: 1 },
 }
 export const DEFAULT_TRANSFORMS: Record<'main' | 'rest', Record<TextElementKey, TextTransform>> = {
   main: DEFAULT_LAYER_TRANSFORMS,
@@ -282,6 +365,7 @@ interface ElementSnapshot { t: TextTransform; txPx: number; tyPx: number }
 function alignForKey(theme: PopupTheme, key: TextElementKey): PopupTheme['textAlign'] {
   if (key === 'content') return theme.contentTextAlign ?? theme.textAlign
   if (key === 'time') return theme.timeTextAlign ?? theme.textAlign
+  if (key === 'date') return theme.dateTextAlign ?? theme.textAlign
   return theme.countdownTextAlign ?? theme.textAlign
 }
 
@@ -289,6 +373,7 @@ function verticalAlignForKey(theme: PopupTheme, key: TextElementKey): 'top' | 'm
   const base = theme.textVerticalAlign ?? 'middle'
   if (key === 'content') return theme.contentTextVerticalAlign ?? base
   if (key === 'time') return theme.timeTextVerticalAlign ?? base
+  if (key === 'date') return theme.dateTextVerticalAlign ?? base
   return theme.countdownTextVerticalAlign ?? base
 }
 
@@ -313,9 +398,61 @@ function letterSpacingForKey(theme: PopupTheme, key: TextElementKey): number {
 
 function lineHeightForKey(theme: PopupTheme, key: TextElementKey): number {
   if (key === 'content') return theme.contentLineHeight ?? 1.35
-  if (key === 'time') return theme.timeLineHeight ?? 1.35
+  if (key === 'time') return theme.timeLineHeight ?? 1
   if (key === 'date') return theme.dateLineHeight ?? 1
   return theme.countdownLineHeight ?? 1
+}
+
+function getTextLayoutRoot(el: HTMLElement): HTMLElement {
+  return (el.querySelector(`[${WB_TEXT_INNER}]`) as HTMLElement | null) ?? el
+}
+
+/**
+ * 竖排块向（物理宽度）测量时，外层若仍为横排遗留的窄 `width: %`，会夹死内层 `max-content`，
+ * `scrollWidth` 偏小 → 编辑态 Moveable 不随列变宽、失焦后宽度写回错误呈「长条截断」。
+ */
+function pushVerticalMeasureUnconstrainOuter(
+  outer: HTMLElement,
+  inner: HTMLElement,
+  maxOuterWidthPx: number,
+): () => void {
+  if (outer === inner) return () => {}
+  const capPx = Math.max(1, maxOuterWidthPx)
+  const prev = {
+    width: outer.style.width,
+    maxWidth: outer.style.maxWidth,
+    minWidth: outer.style.minWidth,
+    boxSizing: outer.style.boxSizing,
+  }
+  outer.style.boxSizing = 'border-box'
+  outer.style.width = 'max-content'
+  outer.style.maxWidth = `${capPx}px`
+  outer.style.minWidth = '0'
+  return () => {
+    outer.style.width = prev.width
+    outer.style.maxWidth = prev.maxWidth
+    outer.style.minWidth = prev.minWidth
+    outer.style.boxSizing = prev.boxSizing
+  }
+}
+
+function writingModeForKey(theme: PopupTheme, key: TextElementKey): PopupTextWritingMode {
+  if (key === 'content') return theme.contentWritingMode ?? 'horizontal-tb'
+  /** 时间/日期仅横排（产品决策：不开放竖排） */
+  if (key === 'time' || key === 'date') return 'horizontal-tb'
+  return theme.countdownWritingMode ?? 'horizontal-tb'
+}
+
+function textOrientationForKey(theme: PopupTheme, key: TextElementKey): PopupTextOrientationMode | undefined {
+  if (key === 'content') return theme.contentTextOrientation
+  if (key === 'time' || key === 'date') return undefined
+  return theme.countdownTextOrientation
+}
+
+function combineUprightForKey(theme: PopupTheme, key: TextElementKey): boolean {
+  if (key === 'content') return theme.contentCombineUprightDigits === true
+  if (key === 'time' || key === 'date') return false
+  return theme.countdownCombineUprightDigits !== false
 }
 
 /** 文件夹壁纸：与真弹窗一致的双层交叉淡化（仅预览可编辑态轮播；readOnly 由父级不传多 url） */
@@ -469,7 +606,11 @@ export function ThemePreviewEditor({
   onSelectDecorationLayer,
   onSelectStructuralLayer,
   selectedStructuralLayerId = null,
+  panelFirstTextEditing = false,
+  onRequestPanelTextFocus,
 }: ThemePreviewEditorProps) {
+  /** 未传回调时仍允许画布内联编辑，避免误开 panelFirst 导致无法改字 */
+  const useInlineTextEditing = !readOnly && !(panelFirstTextEditing && Boolean(onRequestPanelTextFocus))
   const containerRef = useRef<HTMLDivElement>(null)
   const decoRefs = useRef<Record<string, HTMLDivElement | null>>({})
   const contentRef = useRef<HTMLDivElement>(null)
@@ -504,6 +645,13 @@ export function ThemePreviewEditor({
   const [editingTextKey, setEditingTextKey] = useState<TextElementKey | null>(null)
   const editingTextKeyRef = useRef<TextElementKey | null>(null)
   editingTextKeyRef.current = editingTextKey
+  const themeForVerticalRepairRef = useRef(theme)
+  themeForVerticalRepairRef.current = theme
+  /** onLoad / 异步回调里读最新 theme，避免闭包陈旧 */
+  const themeLatestRef = useRef(theme)
+  themeLatestRef.current = theme
+  /** 装饰图片层：同 path+natural 尺寸已成功「纠宽高比」写回 theme 则跳过后续 onLoad，避免 StrictMode 双调用重复提交 */
+  const imageDecoIntrinsicPatchedKeyRef = useRef<Record<string, string>>({})
 
   const [editingDecoLayerId, setEditingDecoLayerId] = useState<string | null>(null)
   const editingDecoLayerIdRef = useRef<string | null>(null)
@@ -514,6 +662,9 @@ export function ThemePreviewEditor({
   const justExitedTextEditRef = useRef(false)
   /** 捕获阶段：指针落在 Moveable 控件上（先于 contentEditable 的 blur） */
   const moveableChromePointerDownRef = useRef(false)
+  /** 编辑中频繁改 theme 的 textBox 会触发重渲染 + scrollHeight 抖动；输入时防抖再写回 */
+  const contentLayoutInputDebounceRef = useRef<ReturnType<typeof setTimeout> | null>(null)
+  const decoLayoutInputDebounceRef = useRef<ReturnType<typeof setTimeout> | null>(null)
   /**
    * 单选缩放锚点：
    * - 默认：拖哪个角，**对角**相对黑底容器位置不动（直觉上的「从对角拉开」）；
@@ -542,12 +693,29 @@ export function ThemePreviewEditor({
    * 否则在子项窄栏、展开前后宽度变化时，字号/字距仍按 920 参考缩放 → 文字远大于画面（位置/旋转相对也会「不对」）。
    */
   const [previewContainerWidth, setPreviewContainerWidth] = useState(0)
+  /** 与宽度同步测量，供吸附线用；勿在 useMemo 里读 ref，否则首帧常为 null → 贴边无磁力 */
+  const [previewContainerHeight, setPreviewContainerHeight] = useState(0)
   const fallbackPreviewScale = Math.min(1, 920 / Math.max(1, previewViewportWidth))
   const previewScale =
     previewContainerWidth > 1
       ? Math.min(1, previewContainerWidth / Math.max(1, previewViewportWidth))
       : fallbackPreviewScale
   const toPreviewPx = (px: number) => Math.max(1, px * previewScale)
+
+  /**
+   * Moveable 吸附线：须包含预览黑底 **四边**（0 与宽高），否则拖到边缘没有「磁力」。
+   * 坐标来自 `previewContainerWidth/Height`（ResizeObserver + layout），避免 useMemo 读 ref 首帧为空。
+   */
+  const previewSnapGuidelines = useMemo(() => {
+    const w = previewContainerWidth
+    const h = previewContainerHeight
+    if (w < 2 || h < 2) return { vertical: [] as number[], horizontal: [] as number[] }
+    const rv = (x: number) => Math.round(x)
+    return {
+      vertical: [0, rv(w * 0.25), rv(w * 0.5), rv(w * 0.75), rv(w)],
+      horizontal: [0, rv(h * 0.25), rv(h * 0.5), rv(h * 0.75), rv(h)],
+    }
+  }, [previewContainerWidth, previewContainerHeight])
 
   /** 预览用逻辑字号：与松手缩放烘焙一致用整数 px，避免先小数再 floor/归一化导致轻微跳变 */
   const contentFontPx = Math.max(1, Math.min(8000, Math.round(theme.contentFontSize ?? 180)))
@@ -582,6 +750,62 @@ export function ThemePreviewEditor({
     const field = themeTransformField(key)
     onUpdateTheme(theme.id, { [field]: { ...current, ...patch } })
   }, [getTransform, onUpdateTheme, theme.id])
+
+  /**
+   * 竖排以列序贴边（flex-start / flex-end）时，失焦后栏宽变化会改变 offsetWidth；
+   * theme 的 x 为块中心百分比，不修正则视觉上图块会相对列序「滑」向一侧。
+   */
+  const adjustBindingVerticalEdgeAnchor = useCallback(
+    (key: TextElementKey, el: HTMLElement, widthBefore: number) => {
+      if (widthBefore < 2 || key !== 'content') return
+      const wm = writingModeForKey(theme, key)
+      if (!isVerticalWritingMode(wm)) return
+      const cur = getTransformRef.current(key)
+      if (cur.contentTextBoxUserSized === true) return
+      const wAfter = el.offsetWidth
+      if (Math.abs(wAfter - widthBefore) < 0.75) return
+      const container = containerRef.current
+      if (!container) return
+      const cW = container.offsetWidth
+      const oldCx = (cW * cur.x) / 100
+      const newX =
+        wm === 'vertical-lr'
+          ? Math.max(0, Math.min(100, ((oldCx - widthBefore / 2 + wAfter / 2) / cW) * 100))
+          : Math.max(0, Math.min(100, ((oldCx + widthBefore / 2 - wAfter / 2) / cW) * 100))
+      if (Math.abs(newX - cur.x) < 0.08) return
+      updateTransform(key, { x: newX })
+    },
+    [theme, updateTransform],
+  )
+
+  const adjustDecoVerticalEdgeAnchor = useCallback(
+    (layerId: string, el: HTMLElement, widthBefore: number) => {
+      if (widthBefore < 2) return
+      const layers = ensureThemeLayers(theme).layers ?? []
+      const L = layers.find((x) => x.id === layerId && x.kind === 'text') as TextThemeLayer | undefined
+      if (!L || L.bindsReminderBody) return
+      const wm = L.writingMode ?? 'horizontal-tb'
+      if (!isVerticalWritingMode(wm)) return
+      const cur = L.transform ?? { x: 50, y: 50, rotation: 0, scale: 1 }
+      if (cur.contentTextBoxUserSized === true) return
+      const wAfter = el.offsetWidth
+      if (Math.abs(wAfter - widthBefore) < 0.75) return
+      const container = containerRef.current
+      if (!container) return
+      const cW = container.offsetWidth
+      const oldCx = (cW * (cur.x ?? 50)) / 100
+      const newX =
+        wm === 'vertical-lr'
+          ? Math.max(0, Math.min(100, ((oldCx - widthBefore / 2 + wAfter / 2) / cW) * 100))
+          : Math.max(0, Math.min(100, ((oldCx + widthBefore / 2 - wAfter / 2) / cW) * 100))
+      if (Math.abs(newX - (cur.x ?? 50)) < 0.08) return
+      const patch = updateDecorationLayer(theme, layerId, {
+        transform: { ...cur, x: newX },
+      })
+      if (patch) onUpdateTheme(theme.id, patch)
+    },
+    [theme, onUpdateTheme],
+  )
 
   /** 装饰文本层 transform（与主文案 contentTransform 字段结构相同，含 contentTextBoxUserSized） */
   const getDecoTextLayerTransform = useCallback((layerId: string): TextTransform | null => {
@@ -621,7 +845,7 @@ export function ThemePreviewEditor({
       }
     }
     return refs
-  }, [selectedElements, selectedDecorationLayerId, theme])
+  }, [selectedElements, selectedDecorationLayerId, theme, theme.target])
 
   const handleElementClick = useCallback((key: TextElementKey, e: React.MouseEvent) => {
     e.stopPropagation()
@@ -752,19 +976,28 @@ export function ThemePreviewEditor({
   const flushMoveableVisual = useCallback((mode: 'sync' | 'raf') => {
     const run = () => {
       moveableVisualRafRef.current = null
+      /** 拖拽/旋转/缩放中：仅写 DOM（applyMoveableFrame），避免每帧 setState 整树重绘与 updateRect 叠加卡顿；松手 sync 再刷回 state */
+      const locked = transformSyncLockedRef.current
+      const allowReactFlush = !locked || mode === 'sync'
       const pending = pendingMoveablePatchRef.current
       if (Object.keys(pending).length > 0) {
-        const patch = { ...pending }
-        pendingMoveablePatchRef.current = {}
-        mergeStyleTransforms(patch)
+        if (allowReactFlush) {
+          const patch = { ...pending }
+          pendingMoveablePatchRef.current = {}
+          mergeStyleTransforms(patch)
+        }
       }
       const decoP = pendingDecoMoveablePatchRef.current
       if (Object.keys(decoP).length > 0) {
-        const dp = { ...decoP }
-        pendingDecoMoveablePatchRef.current = {}
-        setDecoStyleTransformById((prev) => ({ ...prev, ...dp }))
+        if (allowReactFlush) {
+          const dp = { ...decoP }
+          pendingDecoMoveablePatchRef.current = {}
+          setDecoStyleTransformById((prev) => ({ ...prev, ...dp }))
+        }
       }
-      moveableRef.current?.updateRect()
+      if (allowReactFlush) {
+        moveableRef.current?.updateRect()
+      }
     }
     if (mode === 'sync') {
       if (moveableVisualRafRef.current != null) {
@@ -864,6 +1097,76 @@ export function ThemePreviewEditor({
     })
   }, [theme])
 
+  /**
+   * 新建/换图后：contain 下图层框若与素材宽高比不一致会出现 letterbox，Moveable 贴的是 div 外框而非「可见图」。
+   * 首帧 decode 后按自然比例写入 textBox*Pct（上限约 40% 视口），与弹窗 background-size: contain 语义一致。
+   */
+  const applyDecoImageIntrinsicBox = useCallback(
+    (layerId: string, imagePath: string, nw: number, nh: number) => {
+      if (readOnly) return
+      const pathKey = imagePath.trim()
+      if (!pathKey || nw < 1 || nh < 1) return
+
+      let attempts = 0
+      const run = () => {
+        attempts++
+        if (attempts > 32) return
+        const cont = containerRef.current
+        const t = themeLatestRef.current
+        if (!cont) return
+        const cW = cont.offsetWidth
+        const cH = cont.offsetHeight
+        if (cW < 2 || cH < 2) {
+          requestAnimationFrame(run)
+          return
+        }
+        const list = ensureThemeLayers(t).layers ?? []
+        const L = list.find((x) => x.id === layerId)
+        if (!L || L.kind !== 'image') return
+        const im = L as ImageThemeLayer
+        if ((im.imagePath ?? '').trim() !== pathKey) return
+        if (im.objectFit === 'cover') {
+          return
+        }
+        const cur = im.transform ?? { x: 50, y: 50, rotation: 0, scale: 1 }
+        const tw0 = Math.min(96, Math.max(5, cur.textBoxWidthPct ?? 28))
+        const th0 = Math.min(100, Math.max(3, cur.textBoxHeightPct ?? 22))
+        const imgAr = nw / nh
+        const boxAr = tw0 / th0
+        const aspectRelDiff = Math.abs(boxAr - imgAr) / Math.max(imgAr, boxAr, 1e-6)
+        /** 已与素材宽高比一致则不写 theme（避免把用户故意放大的框压回 40% 上限） */
+        if (aspectRelDiff < 0.012) {
+          return
+        }
+        const patchDedupe = `${pathKey}|${nw}x${nh}`
+        if (imageDecoIntrinsicPatchedKeyRef.current[layerId] === patchDedupe) {
+          return
+        }
+        const MAX_W_FRAC = 0.4
+        const MAX_H_FRAC = 0.4
+        const maxPxW = cW * MAX_W_FRAC
+        const maxPxH = cH * MAX_H_FRAC
+        const s = Math.min(maxPxW / nw, maxPxH / nh, 1)
+        const dispW = nw * s
+        const dispH = nh * s
+        let wPct = Math.round((dispW / cW) * 1000) / 10
+        let hPct = Math.round((dispH / cH) * 1000) / 10
+        wPct = Math.min(96, Math.max(5, wPct))
+        hPct = Math.min(100, Math.max(3, hPct))
+        const patchTransform: TextTransform = {
+          ...cur,
+          textBoxWidthPct: wPct,
+          textBoxHeightPct: hPct,
+        }
+        const patch = updateDecorationLayer(t, layerId, { transform: patchTransform } as Partial<ImageThemeLayer>)
+        if (patch) onUpdateTheme(t.id, patch)
+        imageDecoIntrinsicPatchedKeyRef.current[layerId] = patchDedupe
+      }
+      run()
+    },
+    [readOnly, onUpdateTheme],
+  )
+
   /** 样式属性签名：根字段字号/字重等变化时触发双帧重算，覆盖首帧测量未稳定。装饰层 transform 见 `recomputeDecoStyleTransformsFromTheme` 合并策略。 */
   const decoForceStyleSig = useMemo(() => [
     contentFontPx, timeFontPx, dateFontPx, countdownFontPx, previewScale,
@@ -945,12 +1248,15 @@ export function ThemePreviewEditor({
     }
   }, [transformSyncLocked, recomputeStyleTransformsFromTheme, recomputeDecoStyleTransformsFromTheme, decoForceStyleSig, theme.layers])
 
-  /** 首帧/比例切换后同步测量预览盒宽度（供 previewScale） */
+  /** 首帧/比例切换后同步测量预览盒宽高（供 previewScale + 吸附线） */
   useLayoutEffect(() => {
     const c = containerRef.current
     if (!c) return
-    const w = Math.round(c.getBoundingClientRect().width)
+    const r = c.getBoundingClientRect()
+    const w = Math.round(r.width)
+    const h = Math.round(r.height)
     if (w > 1) setPreviewContainerWidth((prev) => (prev === w ? prev : w))
+    if (h > 1) setPreviewContainerHeight((prev) => (prev === h ? prev : h))
   }, [popupPreviewAspect, theme.target, theme.id, previewViewportWidth, fixedPreviewPixelSize?.width, fixedPreviewPixelSize?.height])
 
   /**
@@ -981,7 +1287,9 @@ export function ThemePreviewEditor({
       for (const e of entries) {
         if (e.target === container) {
           const w = Math.round(e.contentRect.width)
+          const h = Math.round(e.contentRect.height)
           if (w > 1) setPreviewContainerWidth((prev) => (prev === w ? prev : w))
+          if (h > 1) setPreviewContainerHeight((prev) => (prev === h ? prev : h))
         }
       }
       scheduleRecompute()
@@ -1311,7 +1619,7 @@ export function ThemePreviewEditor({
         textBoxHeightPct: Math.max(3, Math.min(100, hPct)),
         ...(k === 'content'
           ? { contentTextBoxUserSized: true as const }
-          : k === 'time' || k === 'date'
+          : k === 'time' || k === 'date' || k === 'countdown'
             ? { shortLayerTextBoxLockWidth: true as const }
             : {}),
       })
@@ -1334,33 +1642,143 @@ export function ThemePreviewEditor({
   }, [selectedElements, getTransform, getTargetRef])
 
   /**
-   * 主文案：自动栏宽（未 userSized）。短文栏宽贴内容；若单行固有宽超过画布 60%，栏宽锁 60% 并在框内换行。
+   * 主文案竖排：列高（沿预览区竖直方向）≤80% 画布高时贴内容；超出则锁高并换列；总宽默认不超过 80% 画布宽。
+   */
+  const applyContentTextBoxAutoLayoutVertical = useCallback(
+    (el: HTMLElement, opts?: ContentTextBoxAutoOpts) => {
+      const force = opts?.force === true
+      const outer = el
+      const node = getTextLayoutRoot(el)
+      const container = containerRef.current
+      if (!container) return
+      const cw = Math.max(1, container.offsetWidth)
+      const ch = Math.max(1, container.offsetHeight)
+      const cur = getTransformRef.current('content')
+      const maxBlockPx =
+        cur.contentTextBoxUserSized === true
+          ? cw * CONTENT_TEXT_BOX_CAP_RATIO
+          : cw * CONTENT_TEXT_AUTO_FIT_MAX_RATIO
+      const capInlinePx = ch * CONTENT_TEXT_VERTICAL_INLINE_MAX_RATIO
+      const pad = toPreviewPx(3) * 2
+      const restoreOuter = pushVerticalMeasureUnconstrainOuter(outer, node, maxBlockPx)
+      const prev = {
+        width: node.style.width,
+        height: node.style.height,
+        maxWidth: node.style.maxWidth,
+        maxHeight: node.style.maxHeight,
+        overflow: node.style.overflow,
+        minHeight: node.style.minHeight,
+      }
+      let wBoxPx = 1
+      let hBoxPx = 1
+      try {
+        node.style.overflow = 'visible'
+        node.style.maxWidth = 'none'
+        node.style.maxHeight = 'none'
+        node.style.minHeight = '0'
+        node.style.width = 'max-content'
+        node.style.height = 'max-content'
+
+        const w0 = Math.max(1, node.offsetWidth, node.scrollWidth)
+        const h0 = Math.max(1, node.offsetHeight, node.scrollHeight)
+
+        const minBlockPx = Math.min(maxBlockPx, Math.max(40, toPreviewPx(24)))
+
+        if (h0 <= capInlinePx + 0.5) {
+          hBoxPx = Math.min(h0, capInlinePx)
+          wBoxPx = Math.max(minBlockPx, Math.min(w0, maxBlockPx))
+        } else {
+          node.style.maxHeight = `${capInlinePx}px`
+          node.style.height = 'auto'
+          node.style.width = 'max-content'
+          const w1 = Math.max(1, node.scrollWidth, node.offsetWidth)
+          hBoxPx = capInlinePx
+          wBoxPx = Math.max(minBlockPx, Math.min(w1, maxBlockPx))
+        }
+
+        node.style.width = prev.width
+        node.style.height = prev.height
+        node.style.maxWidth = prev.maxWidth
+        node.style.maxHeight = prev.maxHeight
+        node.style.overflow = prev.overflow
+        node.style.minHeight = prev.minHeight
+      } finally {
+        restoreOuter()
+      }
+
+      const wPctMax =
+        cur.contentTextBoxUserSized === true
+          ? CONTENT_TEXT_BOX_CAP_RATIO * 100
+          : CONTENT_TEXT_AUTO_FIT_MAX_RATIO * 100
+      const wPct = Math.min(wPctMax, Math.max(5, Math.round((wBoxPx / cw) * 1000) / 10 + 0.5))
+      const hPct = Math.min(
+        CONTENT_TEXT_AUTO_FIT_MAX_RATIO * 100,
+        Math.max(3, Math.round(((hBoxPx + pad) / ch) * 1000) / 10 + 0.3),
+      )
+      const curNow = getTransformRef.current('content')
+      if (
+        !force &&
+        curNow.textBoxWidthPct != null &&
+        curNow.textBoxHeightPct != null &&
+        curNow.contentTextBoxUserSized !== true &&
+        Math.abs(curNow.textBoxWidthPct - wPct) < 0.45 &&
+        Math.abs(curNow.textBoxHeightPct - hPct) < 0.4
+      ) {
+        return
+      }
+      updateTransform('content', {
+        textBoxWidthPct: wPct,
+        textBoxHeightPct: hPct,
+        contentTextBoxUserSized: false,
+      })
+      requestAnimationFrame(() => moveableRef.current?.updateRect())
+    },
+    [toPreviewPx, updateTransform],
+  )
+
+  /**
+   * 主文案：自动栏宽（未 userSized）。短文栏宽贴内容；超出默认 80% 宽则锁宽换行；高默认不超过 80%。
    */
   const applyContentTextBoxAutoLayout = useCallback(
-    (el: HTMLElement) => {
+    (el: HTMLElement, opts?: ContentTextBoxAutoOpts) => {
+      const force = opts?.force === true
+      const wm = theme.contentWritingMode ?? 'horizontal-tb'
+      if (isVerticalWritingMode(wm)) {
+        applyContentTextBoxAutoLayoutVertical(el, opts)
+        return
+      }
+      if (!force && editingTextKeyRef.current === 'content') {
+        const root = contentRef.current
+        const ae = document.activeElement
+        if (root && ae && root.contains(ae)) {
+          requestAnimationFrame(() => moveableRef.current?.updateRect())
+          return
+        }
+      }
+      const node = getTextLayoutRoot(el)
       const container = containerRef.current
       if (!container) return
       const cw = Math.max(1, container.offsetWidth)
       const ch = Math.max(1, container.offsetHeight)
       const capInlinePx = cw * CONTENT_TEXT_INLINE_MAX_RATIO
-      const maxBodyPx = cw * CONTENT_TEXT_BOX_CAP_RATIO
+      const maxBodyPx = cw * CONTENT_TEXT_AUTO_FIT_MAX_RATIO
       const pad = toPreviewPx(3) * 2
       const prev = {
-        width: el.style.width,
-        height: el.style.height,
-        maxWidth: el.style.maxWidth,
-        maxHeight: el.style.maxHeight,
-        overflow: el.style.overflow,
-        minHeight: el.style.minHeight,
+        width: node.style.width,
+        height: node.style.height,
+        maxWidth: node.style.maxWidth,
+        maxHeight: node.style.maxHeight,
+        overflow: node.style.overflow,
+        minHeight: node.style.minHeight,
       }
-      el.style.overflow = 'visible'
-      el.style.maxHeight = 'none'
-      el.style.minHeight = '0'
+      node.style.overflow = 'visible'
+      node.style.maxHeight = 'none'
+      node.style.minHeight = '0'
 
-      el.style.width = 'max-content'
-      el.style.maxWidth = `${maxBodyPx}px`
-      el.style.height = 'auto'
-      const wRead = Math.max(1, el.offsetWidth, el.scrollWidth)
+      node.style.width = 'max-content'
+      node.style.maxWidth = `${maxBodyPx}px`
+      node.style.height = 'auto'
+      const wRead = Math.max(1, node.offsetWidth, node.scrollWidth)
       let wIntrinsic = Math.min(wRead, maxBodyPx)
 
       const minWpx = Math.min(maxBodyPx, Math.max(40, toPreviewPx(24)))
@@ -1368,22 +1786,26 @@ export function ThemePreviewEditor({
 
       const wBoxPx = wIntrinsic <= capInlinePx + 0.5 ? wIntrinsic : capInlinePx
 
-      el.style.width = `${wBoxPx}px`
-      el.style.maxWidth = 'none'
-      const hBody = Math.max(1, el.scrollHeight)
+      node.style.width = `${wBoxPx}px`
+      node.style.maxWidth = 'none'
+      const hBody = Math.max(1, node.scrollHeight)
 
-      el.style.width = prev.width
-      el.style.height = prev.height
-      el.style.maxWidth = prev.maxWidth
-      el.style.maxHeight = prev.maxHeight
-      el.style.overflow = prev.overflow
-      el.style.minHeight = prev.minHeight
+      node.style.width = prev.width
+      node.style.height = prev.height
+      node.style.maxWidth = prev.maxWidth
+      node.style.maxHeight = prev.maxHeight
+      node.style.overflow = prev.overflow
+      node.style.minHeight = prev.minHeight
 
-      const wPctMax = CONTENT_TEXT_BOX_CAP_RATIO * 100
+      const wPctMax = CONTENT_TEXT_AUTO_FIT_MAX_RATIO * 100
       const wPct = Math.min(wPctMax, Math.max(5, Math.round((wBoxPx / cw) * 1000) / 10 + 0.5))
-      const hPct = Math.min(100, Math.max(3, Math.round(((hBody + pad) / ch) * 1000) / 10 + 0.3))
+      const hPct = Math.min(
+        CONTENT_TEXT_AUTO_FIT_MAX_RATIO * 100,
+        Math.max(3, Math.round(((hBody + pad) / ch) * 1000) / 10 + 0.3),
+      )
       const cur = getTransformRef.current('content')
       if (
+        !force &&
         cur.textBoxWidthPct != null &&
         cur.textBoxHeightPct != null &&
         cur.contentTextBoxUserSized !== true &&
@@ -1399,53 +1821,152 @@ export function ThemePreviewEditor({
       })
       requestAnimationFrame(() => moveableRef.current?.updateRect())
     },
-    [toPreviewPx, updateTransform],
+    [applyContentTextBoxAutoLayoutVertical, theme.contentWritingMode, toPreviewPx, updateTransform],
   )
 
-  /** 主文案失焦或 userSized：保持当前栏宽（百分比），只按 scrollHeight 更新高度 pct。 */
+  /** 横排 ↔ 竖排切换：旧 textBox 宽高语义与 DOM 不一致，强制重算并取消 userSized，避免 Moveable 仍按横排框裁切竖排字。 */
+  const prevContentVerticalRef = useRef<boolean | null>(null)
+  useLayoutEffect(() => {
+    if (readOnly) return
+    if (!effectiveEditableKeys.includes('content')) return
+    const wm = theme.contentWritingMode ?? 'horizontal-tb'
+    const nowV = isVerticalWritingMode(wm)
+    const prev = prevContentVerticalRef.current
+    prevContentVerticalRef.current = nowV
+    if (prev === null) return
+    if (prev === nowV) return
+    if (editingTextKeyRef.current === 'content') return
+    const node = contentRef.current
+    if (!node) return
+    const id = requestAnimationFrame(() => {
+      requestAnimationFrame(() => {
+        const n = contentRef.current
+        if (!n) return
+        applyContentTextBoxAutoLayout(n, { force: true })
+        moveableRef.current?.updateRect()
+      })
+    })
+    return () => cancelAnimationFrame(id)
+  }, [readOnly, theme.contentWritingMode, effectiveEditableKeys, applyContentTextBoxAutoLayout])
+
+  const decoTextLayerWritingSig = useMemo(() => {
+    const ly = ensureThemeLayers(theme).layers ?? []
+    return ly
+      .filter((L) => L.kind === 'text' && !(L as TextThemeLayer).bindsReminderBody)
+      .map((L) => `${L.id}:${(L as TextThemeLayer).writingMode ?? 'horizontal-tb'}`)
+      .join('|')
+  }, [theme.layers])
+
+  /**
+   * 主文案失焦或 userSized：
+   * - 横排：保持栏宽，只按 scrollHeight 更新高度 pct。
+   * - 竖排：保持栏高（列高上限），按 scrollWidth 更新宽度 pct（换列后变宽）。
+   */
   const snapContentTextBoxHeightOnly = useCallback(
     (el: HTMLElement) => {
+      if (editingTextKeyRef.current === 'content') {
+        const root = contentRef.current
+        const ae = document.activeElement
+        if (root && ae && root.contains(ae)) {
+          requestAnimationFrame(() => moveableRef.current?.updateRect())
+          return
+        }
+      }
+      const outer = el
+      const node = getTextLayoutRoot(el)
       const container = containerRef.current
       if (!container) return
       const cur = getTransformRef.current('content')
       const cw = Math.max(1, container.offsetWidth)
       const ch = Math.max(1, container.offsetHeight)
       const pad = toPreviewPx(3) * 2
+      const wm = theme.contentWritingMode ?? 'horizontal-tb'
+      if (isVerticalWritingMode(wm)) {
+        if (cur.textBoxHeightPct == null || !Number.isFinite(cur.textBoxHeightPct)) {
+          applyContentTextBoxAutoLayout(el)
+          return
+        }
+        const maxOuterPx =
+          cur.contentTextBoxUserSized === true
+            ? cw * CONTENT_TEXT_BOX_CAP_RATIO
+            : cw * CONTENT_TEXT_AUTO_FIT_MAX_RATIO
+        const restoreOuter = pushVerticalMeasureUnconstrainOuter(outer, node, maxOuterPx)
+        const prev = {
+          width: node.style.width,
+          height: node.style.height,
+          maxWidth: node.style.maxWidth,
+          maxHeight: node.style.maxHeight,
+          overflow: node.style.overflow,
+          minHeight: node.style.minHeight,
+        }
+        let wBody = 1
+        try {
+          const hPctClamped = Math.max(3, Math.min(100, cur.textBoxHeightPct))
+          const hPx = Math.max(1, (hPctClamped / 100) * ch)
+          node.style.overflow = 'visible'
+          node.style.maxWidth = 'none'
+          node.style.minHeight = '0'
+          node.style.width = 'max-content'
+          node.style.height = 'auto'
+          node.style.maxHeight = `${hPx}px`
+          wBody = Math.max(1, node.scrollWidth, node.offsetWidth)
+
+          node.style.width = prev.width
+          node.style.height = prev.height
+          node.style.maxWidth = prev.maxWidth
+          node.style.maxHeight = prev.maxHeight
+          node.style.overflow = prev.overflow
+          node.style.minHeight = prev.minHeight
+        } finally {
+          restoreOuter()
+        }
+
+        const wCapPct =
+          cur.contentTextBoxUserSized === true
+            ? CONTENT_TEXT_BOX_CAP_RATIO * 100
+            : CONTENT_TEXT_AUTO_FIT_MAX_RATIO * 100
+        const wPct = Math.min(wCapPct, Math.max(5, Math.round((wBody / cw) * 1000) / 10 + 0.5))
+        if (cur.textBoxWidthPct != null && Math.abs(cur.textBoxWidthPct - wPct) < 0.45) return
+        updateTransform('content', { textBoxWidthPct: wPct })
+        requestAnimationFrame(() => moveableRef.current?.updateRect())
+        return
+      }
       if (cur.textBoxWidthPct == null || !Number.isFinite(cur.textBoxWidthPct)) {
         applyContentTextBoxAutoLayout(el)
         return
       }
       const prev = {
-        width: el.style.width,
-        height: el.style.height,
-        maxWidth: el.style.maxWidth,
-        maxHeight: el.style.maxHeight,
-        overflow: el.style.overflow,
-        minHeight: el.style.minHeight,
+        width: node.style.width,
+        height: node.style.height,
+        maxWidth: node.style.maxWidth,
+        maxHeight: node.style.maxHeight,
+        overflow: node.style.overflow,
+        minHeight: node.style.minHeight,
       }
       const wPctClamped = Math.max(5, Math.min(CONTENT_TEXT_BOX_CAP_RATIO * 100, cur.textBoxWidthPct))
       const wPx = (wPctClamped / 100) * cw
-      el.style.overflow = 'visible'
-      el.style.maxHeight = 'none'
-      el.style.minHeight = '0'
-      el.style.width = `${wPx}px`
-      el.style.maxWidth = 'none'
-      el.style.height = 'auto'
-      const hBody = Math.max(1, el.scrollHeight)
+      node.style.overflow = 'visible'
+      node.style.maxHeight = 'none'
+      node.style.minHeight = '0'
+      node.style.width = `${wPx}px`
+      node.style.maxWidth = 'none'
+      node.style.height = 'auto'
+      const hBody = Math.max(1, node.scrollHeight)
 
-      el.style.width = prev.width
-      el.style.height = prev.height
-      el.style.maxWidth = prev.maxWidth
-      el.style.maxHeight = prev.maxHeight
-      el.style.overflow = prev.overflow
-      el.style.minHeight = prev.minHeight
+      node.style.width = prev.width
+      node.style.height = prev.height
+      node.style.maxWidth = prev.maxWidth
+      node.style.maxHeight = prev.maxHeight
+      node.style.overflow = prev.overflow
+      node.style.minHeight = prev.minHeight
 
-      const hPct = Math.min(100, Math.max(3, Math.round(((hBody + pad) / ch) * 1000) / 10 + 0.3))
+      const hCapPct = cur.contentTextBoxUserSized === true ? 100 : CONTENT_TEXT_AUTO_FIT_MAX_RATIO * 100
+      const hPct = Math.min(hCapPct, Math.max(3, Math.round(((hBody + pad) / ch) * 1000) / 10 + 0.3))
       if (cur.textBoxHeightPct != null && Math.abs(cur.textBoxHeightPct - hPct) < 0.35) return
       updateTransform('content', { textBoxHeightPct: hPct })
       requestAnimationFrame(() => moveableRef.current?.updateRect())
     },
-    [toPreviewPx, updateTransform, applyContentTextBoxAutoLayout],
+    [applyContentTextBoxAutoLayout, theme.contentWritingMode, toPreviewPx, updateTransform],
   )
 
   const syncContentPreviewTextBox = useCallback(
@@ -1463,7 +1984,9 @@ export function ThemePreviewEditor({
    */
   const snapShortLayerTightContent = useCallback(
     (k: TextElementKey, el: HTMLElement) => {
-      if (k !== 'time' && k !== 'date') return
+      if (k !== 'time' && k !== 'date' && k !== 'countdown') return
+      if (k === 'countdown' && theme.target !== 'rest') return
+      const measureEl = getTextLayoutRoot(el)
       const container = containerRef.current
       if (!container) return
       const cw = Math.max(1, container.offsetWidth)
@@ -1473,27 +1996,30 @@ export function ThemePreviewEditor({
       const pad2 = padEdge * 2
       const maxBodyPx = Math.max(1, cw * CONTENT_TEXT_BOX_CAP_RATIO)
       const prev = {
-        width: el.style.width,
-        height: el.style.height,
-        maxWidth: el.style.maxWidth,
-        maxHeight: el.style.maxHeight,
-        overflow: el.style.overflow,
-        minHeight: el.style.minHeight,
+        width: measureEl.style.width,
+        height: measureEl.style.height,
+        maxWidth: measureEl.style.maxWidth,
+        maxHeight: measureEl.style.maxHeight,
+        overflow: measureEl.style.overflow,
+        minHeight: measureEl.style.minHeight,
       }
-      el.style.overflow = 'visible'
-      el.style.maxHeight = 'none'
-      el.style.minHeight = '0'
+      measureEl.style.overflow = 'visible'
+      measureEl.style.maxHeight = 'none'
+      measureEl.style.minHeight = '0'
 
-      el.style.width = 'max-content'
-      el.style.maxWidth = `${maxBodyPx}px`
-      el.style.height = 'auto'
-      const wRead = Math.max(1, el.offsetWidth, el.scrollWidth)
+      measureEl.style.width = 'max-content'
+      measureEl.style.maxWidth = `${maxBodyPx}px`
+      measureEl.style.height = 'auto'
+      const wRead = Math.max(1, measureEl.offsetWidth, measureEl.scrollWidth)
 
-      const fontPx = k === 'date' ? dateFontPx : timeFontPx
+      const fontPx =
+        k === 'date' ? dateFontPx : k === 'countdown' ? countdownFontPx : timeFontPx
       const previewFont = toPreviewPx(fontPx)
       /** 斜体字形外倾时 scrollWidth 偶发偏紧，加一点像素余量避免右侧被裁切 */
       const italicSlackPx =
-        (k === 'date' && theme.dateFontItalic === true) || (k === 'time' && theme.timeFontItalic === true)
+        (k === 'date' && theme.dateFontItalic === true) ||
+        (k === 'time' && theme.timeFontItalic === true) ||
+        (k === 'countdown' && theme.countdownFontItalic === true)
           ? Math.ceil(previewFont * 0.55)
           : 0
       const raw = (el.textContent ?? '').replace(/\u00a0/g, ' ')
@@ -1507,16 +2033,16 @@ export function ThemePreviewEditor({
         Math.max(wRead + italicSlackPx, minFromChars + italicSlackPx, minFloor + italicSlackPx),
       )
 
-      el.style.width = `${wIntrinsic}px`
-      el.style.maxWidth = 'none'
-      const hBody = Math.max(1, el.scrollHeight)
+      measureEl.style.width = `${wIntrinsic}px`
+      measureEl.style.maxWidth = 'none'
+      const hBody = Math.max(1, measureEl.scrollHeight)
 
-      el.style.width = prev.width
-      el.style.height = prev.height
-      el.style.maxWidth = prev.maxWidth
-      el.style.maxHeight = prev.maxHeight
-      el.style.overflow = prev.overflow
-      el.style.minHeight = prev.minHeight
+      measureEl.style.width = prev.width
+      measureEl.style.height = prev.height
+      measureEl.style.maxWidth = prev.maxWidth
+      measureEl.style.maxHeight = prev.maxHeight
+      measureEl.style.overflow = prev.overflow
+      measureEl.style.minHeight = prev.minHeight
 
       const wPct = Math.min(96, Math.max(5, Math.round((wIntrinsic / cw) * 1000) / 10 + 0.5))
       const hPct = Math.min(100, Math.max(3, Math.round(((hBody + pad2) / ch) * 1000) / 10 + 0.3))
@@ -1536,15 +2062,142 @@ export function ThemePreviewEditor({
       })
       requestAnimationFrame(() => moveableRef.current?.updateRect())
     },
-    [toPreviewPx, updateTransform, timeFontPx, dateFontPx, theme.dateFontItalic, theme.timeFontItalic],
+    [
+      toPreviewPx,
+      updateTransform,
+      timeFontPx,
+      dateFontPx,
+      countdownFontPx,
+      theme.dateFontItalic,
+      theme.timeFontItalic,
+      theme.countdownFontItalic,
+      theme.target,
+    ],
   )
 
   /**
-   * 装饰文本：与主文案 `applyContentTextBoxAutoLayout` 同一套 60%/96% 栏宽规则，
-   * 写回图层 `transform`（含 `contentTextBoxUserSized: false`）。
+   * 装饰文本竖排：与主文案 `applyContentTextBoxAutoLayoutVertical` 同算法。
+   */
+  const applyDecoTextBoxAutoLayoutVertical = useCallback(
+    (layerId: string, el: HTMLElement, opts?: ContentTextBoxAutoOpts) => {
+      const force = opts?.force === true
+      const outer = el
+      const node = getTextLayoutRoot(el)
+      const container = containerRef.current
+      if (!container) return
+      const cur = getDecoTextLayerTransformRef.current(layerId)
+      if (!cur) return
+      const cw = Math.max(1, container.offsetWidth)
+      const ch = Math.max(1, container.offsetHeight)
+      const maxBlockPx =
+        cur.contentTextBoxUserSized === true
+          ? cw * CONTENT_TEXT_BOX_CAP_RATIO
+          : cw * CONTENT_TEXT_AUTO_FIT_MAX_RATIO
+      const capInlinePx = ch * CONTENT_TEXT_VERTICAL_INLINE_MAX_RATIO
+      const pad = toPreviewPx(3) * 2
+      const restoreOuter = pushVerticalMeasureUnconstrainOuter(outer, node, maxBlockPx)
+      const prev = {
+        width: node.style.width,
+        height: node.style.height,
+        maxWidth: node.style.maxWidth,
+        maxHeight: node.style.maxHeight,
+        overflow: node.style.overflow,
+        minHeight: node.style.minHeight,
+      }
+      let wBoxPx = 1
+      let hBoxPx = 1
+      try {
+        node.style.overflow = 'visible'
+        node.style.maxWidth = 'none'
+        node.style.maxHeight = 'none'
+        node.style.minHeight = '0'
+        node.style.width = 'max-content'
+        node.style.height = 'max-content'
+
+        const w0 = Math.max(1, node.offsetWidth, node.scrollWidth)
+        const h0 = Math.max(1, node.offsetHeight, node.scrollHeight)
+
+        const minBlockPx = Math.min(maxBlockPx, Math.max(40, toPreviewPx(24)))
+
+        if (h0 <= capInlinePx + 0.5) {
+          hBoxPx = Math.min(h0, capInlinePx)
+          wBoxPx = Math.max(minBlockPx, Math.min(w0, maxBlockPx))
+        } else {
+          node.style.maxHeight = `${capInlinePx}px`
+          node.style.height = 'auto'
+          node.style.width = 'max-content'
+          const w1 = Math.max(1, node.scrollWidth, node.offsetWidth)
+          hBoxPx = capInlinePx
+          wBoxPx = Math.max(minBlockPx, Math.min(w1, maxBlockPx))
+        }
+
+        node.style.width = prev.width
+        node.style.height = prev.height
+        node.style.maxWidth = prev.maxWidth
+        node.style.maxHeight = prev.maxHeight
+        node.style.overflow = prev.overflow
+        node.style.minHeight = prev.minHeight
+      } finally {
+        restoreOuter()
+      }
+
+      const wPctMax =
+        cur.contentTextBoxUserSized === true
+          ? CONTENT_TEXT_BOX_CAP_RATIO * 100
+          : CONTENT_TEXT_AUTO_FIT_MAX_RATIO * 100
+      const wPct = Math.min(wPctMax, Math.max(5, Math.round((wBoxPx / cw) * 1000) / 10 + 0.5))
+      const hPct = Math.min(
+        CONTENT_TEXT_AUTO_FIT_MAX_RATIO * 100,
+        Math.max(3, Math.round(((hBoxPx + pad) / ch) * 1000) / 10 + 0.3),
+      )
+      const curDecoNow = getDecoTextLayerTransformRef.current(layerId)
+      if (
+        !force &&
+        curDecoNow &&
+        curDecoNow.textBoxWidthPct != null &&
+        curDecoNow.textBoxHeightPct != null &&
+        curDecoNow.contentTextBoxUserSized !== true &&
+        Math.abs(curDecoNow.textBoxWidthPct - wPct) < 0.45 &&
+        Math.abs(curDecoNow.textBoxHeightPct - hPct) < 0.4
+      ) {
+        return
+      }
+      const patch = updateDecorationLayer(theme, layerId, {
+        transform: {
+          ...(curDecoNow ?? cur),
+          textBoxWidthPct: wPct,
+          textBoxHeightPct: hPct,
+          contentTextBoxUserSized: false,
+        },
+      })
+      if (patch) onUpdateTheme(theme.id, patch)
+      requestAnimationFrame(() => moveableRef.current?.updateRect())
+    },
+    [theme, toPreviewPx, onUpdateTheme],
+  )
+
+  /**
+   * 装饰文本：与主文案自动栏宽规则一致；竖排走 `applyDecoTextBoxAutoLayoutVertical`。
    */
   const applyDecoTextBoxAutoLayout = useCallback(
-    (layerId: string, el: HTMLElement) => {
+    (layerId: string, el: HTMLElement, opts?: ContentTextBoxAutoOpts) => {
+      const ly = ensureThemeLayers(theme).layers ?? []
+      const tl = ly.find((x) => x.id === layerId && x.kind === 'text') as TextThemeLayer | undefined
+      const decoWm = tl?.writingMode ?? 'horizontal-tb'
+      if (isVerticalWritingMode(decoWm)) {
+        applyDecoTextBoxAutoLayoutVertical(layerId, el, opts)
+        return
+      }
+      const force = opts?.force === true
+      if (!force && editingDecoLayerIdRef.current === layerId) {
+        const root = decoRefs.current[layerId]
+        const ae = document.activeElement
+        if (root && ae && root.contains(ae)) {
+          requestAnimationFrame(() => moveableRef.current?.updateRect())
+          return
+        }
+      }
+      const node = getTextLayoutRoot(el)
       const container = containerRef.current
       if (!container) return
       const cur = getDecoTextLayerTransformRef.current(layerId)
@@ -1552,24 +2205,24 @@ export function ThemePreviewEditor({
       const cw = Math.max(1, container.offsetWidth)
       const ch = Math.max(1, container.offsetHeight)
       const capInlinePx = cw * CONTENT_TEXT_INLINE_MAX_RATIO
-      const maxBodyPx = cw * CONTENT_TEXT_BOX_CAP_RATIO
+      const maxBodyPx = cw * CONTENT_TEXT_AUTO_FIT_MAX_RATIO
       const pad = toPreviewPx(3) * 2
       const prev = {
-        width: el.style.width,
-        height: el.style.height,
-        maxWidth: el.style.maxWidth,
-        maxHeight: el.style.maxHeight,
-        overflow: el.style.overflow,
-        minHeight: el.style.minHeight,
+        width: node.style.width,
+        height: node.style.height,
+        maxWidth: node.style.maxWidth,
+        maxHeight: node.style.maxHeight,
+        overflow: node.style.overflow,
+        minHeight: node.style.minHeight,
       }
-      el.style.overflow = 'visible'
-      el.style.maxHeight = 'none'
-      el.style.minHeight = '0'
+      node.style.overflow = 'visible'
+      node.style.maxHeight = 'none'
+      node.style.minHeight = '0'
 
-      el.style.width = 'max-content'
-      el.style.maxWidth = `${maxBodyPx}px`
-      el.style.height = 'auto'
-      const wRead = Math.max(1, el.offsetWidth, el.scrollWidth)
+      node.style.width = 'max-content'
+      node.style.maxWidth = `${maxBodyPx}px`
+      node.style.height = 'auto'
+      const wRead = Math.max(1, node.offsetWidth, node.scrollWidth)
       let wIntrinsic = Math.min(wRead, maxBodyPx)
 
       const minWpx = Math.min(maxBodyPx, Math.max(40, toPreviewPx(24)))
@@ -1577,21 +2230,25 @@ export function ThemePreviewEditor({
 
       const wBoxPx = wIntrinsic <= capInlinePx + 0.5 ? wIntrinsic : capInlinePx
 
-      el.style.width = `${wBoxPx}px`
-      el.style.maxWidth = 'none'
-      const hBody = Math.max(1, el.scrollHeight)
+      node.style.width = `${wBoxPx}px`
+      node.style.maxWidth = 'none'
+      const hBody = Math.max(1, node.scrollHeight)
 
-      el.style.width = prev.width
-      el.style.height = prev.height
-      el.style.maxWidth = prev.maxWidth
-      el.style.maxHeight = prev.maxHeight
-      el.style.overflow = prev.overflow
-      el.style.minHeight = prev.minHeight
+      node.style.width = prev.width
+      node.style.height = prev.height
+      node.style.maxWidth = prev.maxWidth
+      node.style.maxHeight = prev.maxHeight
+      node.style.overflow = prev.overflow
+      node.style.minHeight = prev.minHeight
 
-      const wPctMax = CONTENT_TEXT_BOX_CAP_RATIO * 100
+      const wPctMax = CONTENT_TEXT_AUTO_FIT_MAX_RATIO * 100
       const wPct = Math.min(wPctMax, Math.max(5, Math.round((wBoxPx / cw) * 1000) / 10 + 0.5))
-      const hPct = Math.min(100, Math.max(3, Math.round(((hBody + pad) / ch) * 1000) / 10 + 0.3))
+      const hPct = Math.min(
+        CONTENT_TEXT_AUTO_FIT_MAX_RATIO * 100,
+        Math.max(3, Math.round(((hBody + pad) / ch) * 1000) / 10 + 0.3),
+      )
       if (
+        !force &&
         cur.textBoxWidthPct != null &&
         cur.textBoxHeightPct != null &&
         cur.contentTextBoxUserSized !== true &&
@@ -1611,49 +2268,118 @@ export function ThemePreviewEditor({
       if (patch) onUpdateTheme(theme.id, patch)
       requestAnimationFrame(() => moveableRef.current?.updateRect())
     },
-    [theme, toPreviewPx, onUpdateTheme],
+    [theme, toPreviewPx, onUpdateTheme, applyDecoTextBoxAutoLayoutVertical],
   )
 
   /** 装饰文本：与主文案 `snapContentTextBoxHeightOnly` 对齐（userSized 时只调高度 pct）。 */
   const snapDecoTextBoxHeightOnly = useCallback(
     (layerId: string, el: HTMLElement) => {
+      if (editingDecoLayerIdRef.current === layerId) {
+        const root = decoRefs.current[layerId]
+        const ae = document.activeElement
+        if (root && ae && root.contains(ae)) {
+          requestAnimationFrame(() => moveableRef.current?.updateRect())
+          return
+        }
+      }
+      const node = getTextLayoutRoot(el)
       const container = containerRef.current
       if (!container) return
       const cur = getDecoTextLayerTransformRef.current(layerId)
       if (!cur) return
+      const ly = ensureThemeLayers(theme).layers ?? []
+      const tl = ly.find((x) => x.id === layerId && x.kind === 'text') as TextThemeLayer | undefined
+      const decoWm = tl?.writingMode ?? 'horizontal-tb'
       const cw = Math.max(1, container.offsetWidth)
       const ch = Math.max(1, container.offsetHeight)
       const pad = toPreviewPx(3) * 2
+      if (isVerticalWritingMode(decoWm)) {
+        if (cur.textBoxHeightPct == null || !Number.isFinite(cur.textBoxHeightPct)) {
+          applyDecoTextBoxAutoLayout(layerId, el)
+          return
+        }
+        const maxOuterPx =
+          cur.contentTextBoxUserSized === true
+            ? cw * CONTENT_TEXT_BOX_CAP_RATIO
+            : cw * CONTENT_TEXT_AUTO_FIT_MAX_RATIO
+        const restoreOuter = pushVerticalMeasureUnconstrainOuter(el, node, maxOuterPx)
+        const prev = {
+          width: node.style.width,
+          height: node.style.height,
+          maxWidth: node.style.maxWidth,
+          maxHeight: node.style.maxHeight,
+          overflow: node.style.overflow,
+          minHeight: node.style.minHeight,
+        }
+        let wBody = 1
+        try {
+          const hPctClamped = Math.max(3, Math.min(100, cur.textBoxHeightPct))
+          const hPx = Math.max(1, (hPctClamped / 100) * ch)
+          node.style.overflow = 'visible'
+          node.style.maxWidth = 'none'
+          node.style.minHeight = '0'
+          node.style.width = 'max-content'
+          node.style.height = 'auto'
+          node.style.maxHeight = `${hPx}px`
+          wBody = Math.max(1, node.scrollWidth, node.offsetWidth)
+
+          node.style.width = prev.width
+          node.style.height = prev.height
+          node.style.maxWidth = prev.maxWidth
+          node.style.maxHeight = prev.maxHeight
+          node.style.overflow = prev.overflow
+          node.style.minHeight = prev.minHeight
+        } finally {
+          restoreOuter()
+        }
+
+        const wCapPct =
+          cur.contentTextBoxUserSized === true
+            ? CONTENT_TEXT_BOX_CAP_RATIO * 100
+            : CONTENT_TEXT_AUTO_FIT_MAX_RATIO * 100
+        const wPct = Math.min(wCapPct, Math.max(5, Math.round((wBody / cw) * 1000) / 10 + 0.5))
+        if (cur.textBoxWidthPct != null && Math.abs(cur.textBoxWidthPct - wPct) < 0.45) return
+        const patch = updateDecorationLayer(theme, layerId, {
+          transform: {
+            ...cur,
+            textBoxWidthPct: wPct,
+          },
+        })
+        if (patch) onUpdateTheme(theme.id, patch)
+        requestAnimationFrame(() => moveableRef.current?.updateRect())
+        return
+      }
       if (cur.textBoxWidthPct == null || !Number.isFinite(cur.textBoxWidthPct)) {
         applyDecoTextBoxAutoLayout(layerId, el)
         return
       }
       const prev = {
-        width: el.style.width,
-        height: el.style.height,
-        maxWidth: el.style.maxWidth,
-        maxHeight: el.style.maxHeight,
-        overflow: el.style.overflow,
-        minHeight: el.style.minHeight,
+        width: node.style.width,
+        height: node.style.height,
+        maxWidth: node.style.maxWidth,
+        maxHeight: node.style.maxHeight,
+        overflow: node.style.overflow,
+        minHeight: node.style.minHeight,
       }
       const wPctClamped = Math.max(5, Math.min(CONTENT_TEXT_BOX_CAP_RATIO * 100, cur.textBoxWidthPct))
       const wPx = (wPctClamped / 100) * cw
-      el.style.overflow = 'visible'
-      el.style.maxHeight = 'none'
-      el.style.minHeight = '0'
-      el.style.width = `${wPx}px`
-      el.style.maxWidth = 'none'
-      el.style.height = 'auto'
-      const hBody = Math.max(1, el.scrollHeight)
+      node.style.overflow = 'visible'
+      node.style.maxHeight = 'none'
+      node.style.minHeight = '0'
+      node.style.width = `${wPx}px`
+      node.style.maxWidth = 'none'
+      node.style.height = 'auto'
+      const hBody = Math.max(1, node.scrollHeight)
 
-      el.style.width = prev.width
-      el.style.height = prev.height
-      el.style.maxWidth = prev.maxWidth
-      el.style.maxHeight = prev.maxHeight
-      el.style.overflow = prev.overflow
-      el.style.minHeight = prev.minHeight
+      node.style.width = prev.width
+      node.style.height = prev.height
+      node.style.maxWidth = prev.maxWidth
+      node.style.maxHeight = prev.maxHeight
+      node.style.overflow = prev.overflow
+      node.style.minHeight = prev.minHeight
 
-      const hPct = Math.min(100, Math.max(3, Math.round(((hBody + pad) / ch) * 1000) / 10 + 0.3))
+      const hCapPct = cur.contentTextBoxUserSized === true ? 100 : CONTENT_TEXT_AUTO_FIT_MAX_RATIO * 100
+      const hPct = Math.min(hCapPct, Math.max(3, Math.round(((hBody + pad) / ch) * 1000) / 10 + 0.3))
       if (cur.textBoxHeightPct != null && Math.abs(cur.textBoxHeightPct - hPct) < 0.35) return
       const patch = updateDecorationLayer(theme, layerId, {
         transform: {
@@ -1664,11 +2390,55 @@ export function ThemePreviewEditor({
       if (patch) onUpdateTheme(theme.id, patch)
       requestAnimationFrame(() => moveableRef.current?.updateRect())
     },
-    [theme, toPreviewPx, onUpdateTheme, applyDecoTextBoxAutoLayout],
+    [theme, toPreviewPx, onUpdateTheme, applyDecoTextBoxAutoLayout, applyDecoTextBoxAutoLayoutVertical],
   )
+
+  /** 装饰文本：仅新建层或某层 writingMode 变化时对该层 force 贴盒（见 decoWritingSigTouchedLayerIds）。 */
+  const decoWritingSigInitRef = useRef(false)
+  const prevDecoWritingLayoutSigRef = useRef<string>('')
+  useLayoutEffect(() => {
+    if (readOnly) return
+    if (!decoWritingSigInitRef.current) {
+      decoWritingSigInitRef.current = true
+      prevDecoWritingLayoutSigRef.current = decoTextLayerWritingSig
+      return
+    }
+    const prevSig = prevDecoWritingLayoutSigRef.current
+    if (prevSig === decoTextLayerWritingSig) return
+    prevDecoWritingLayoutSigRef.current = decoTextLayerWritingSig
+    const touched = decoWritingSigTouchedLayerIds(prevSig, decoTextLayerWritingSig)
+    if (touched.length === 0) return
+    const id = requestAnimationFrame(() => {
+      requestAnimationFrame(() => {
+        for (const layerId of touched) {
+          if (editingDecoLayerIdRef.current === layerId) continue
+          const el = decoRefs.current[layerId]
+          if (!el) continue
+          applyDecoTextBoxAutoLayout(layerId, el, { force: true })
+        }
+        moveableRef.current?.updateRect()
+      })
+    })
+    return () => cancelAnimationFrame(id)
+  }, [readOnly, decoTextLayerWritingSig, applyDecoTextBoxAutoLayout])
 
   const syncContentPreviewTextBoxRef = useRef(syncContentPreviewTextBox)
   syncContentPreviewTextBoxRef.current = syncContentPreviewTextBox
+
+  /** 绑定层竖排：见下方 useLayoutEffect 说明；需在 snap 短行 / 主文案栏宽 rAF 之后再打补丁。 */
+  const repairBindingVerticalWritingModeDom = useCallback(() => {
+    if (editingTextKeyRef.current != null) return
+    const th = themeForVerticalRepairRef.current
+    const repair = (root: HTMLElement | null, wm: PopupTextWritingMode | undefined) => {
+      if (!root || !wm || !isVerticalWritingMode(wm)) return
+      const innerEl = root.querySelector(`[${WB_TEXT_INNER}]`) as HTMLElement | null
+      if (!innerEl) return
+      const cs = getComputedStyle(innerEl).writingMode
+      if (cs === 'vertical-rl' || cs === 'vertical-lr') return
+      innerEl.style.setProperty('writing-mode', wm)
+    }
+    repair(contentRef.current, th.contentWritingMode)
+  }, [])
 
   /**
    * 主文案：文案或**字体/间距/对齐**变化时重算栏宽/高，避免 Moveable 仍按旧度量裁切。
@@ -1690,6 +2460,9 @@ export function ThemePreviewEditor({
       theme.textAlign,
       theme.contentTextAlign ?? '',
       theme.contentTextVerticalAlign ?? theme.textVerticalAlign ?? '',
+      theme.contentWritingMode ?? '',
+      theme.contentTextOrientation ?? '',
+      theme.contentCombineUprightDigits === true ? '1' : theme.contentCombineUprightDigits === false ? '0' : '',
       JSON.stringify(theme.contentTextEffects ?? {}),
     ].join('\x1e')
   }, [
@@ -1708,6 +2481,9 @@ export function ThemePreviewEditor({
     theme.contentTextAlign,
     theme.contentTextVerticalAlign,
     theme.textVerticalAlign,
+    theme.contentWritingMode,
+    theme.contentTextOrientation,
+    theme.contentCombineUprightDigits,
     theme.contentTextEffects,
   ])
 
@@ -1723,9 +2499,10 @@ export function ThemePreviewEditor({
         const node = contentRef.current
         if (node) syncContentPreviewTextBoxRef.current(node)
       }
+      repairBindingVerticalWritingModeDom()
     })
     return () => cancelAnimationFrame(id)
-  }, [readOnly, contentLayoutSnapSig, effectiveEditableKeys])
+  }, [readOnly, contentLayoutSnapSig, effectiveEditableKeys, repairBindingVerticalWritingModeDom])
 
   /**
    * 时间/日期短行层：`textBoxWidthPct` 会作为 max-width 残留；切换格式或字体后字符串变长会被 overflow:hidden 裁切，
@@ -1766,6 +2543,10 @@ export function ThemePreviewEditor({
         theme.dateUnderline === true ? '1' : '0',
         JSON.stringify(theme.timeTextEffects ?? {}),
         JSON.stringify(theme.dateTextEffects ?? {}),
+        theme.countdownWritingMode ?? '',
+        theme.countdownTextOrientation ?? '',
+        theme.countdownCombineUprightDigits === true ? '1' : theme.countdownCombineUprightDigits === false ? '0' : '',
+        theme.target,
       ].join('\x1e'),
     [
       theme.previewTimeText,
@@ -1800,8 +2581,40 @@ export function ThemePreviewEditor({
       theme.dateUnderline,
       theme.timeTextEffects,
       theme.dateTextEffects,
+      theme.countdownWritingMode,
+      theme.countdownTextOrientation,
+      theme.countdownCombineUprightDigits,
+      theme.target,
     ],
   )
+
+  /**
+   * Chromium：绑定层竖排内层在「退出 contentEditable / 同步栏宽」后，偶发丢失 computed writing-mode，退回横排，
+   * 叠合 inner overflow 后出现左右裁切。装饰层不经 applyContentTextBoxAutoLayout 故无此问题。
+   * 在展示态于 layout + 下一帧各修一次，确保与 theme 一致。
+   */
+  useLayoutEffect(() => {
+    if (readOnly) return
+    if (editingTextKey != null) return
+    repairBindingVerticalWritingModeDom()
+    let innerRaf = 0
+    const outerRaf = requestAnimationFrame(() => {
+      repairBindingVerticalWritingModeDom()
+      innerRaf = requestAnimationFrame(() => {
+        repairBindingVerticalWritingModeDom()
+      })
+    })
+    return () => {
+      cancelAnimationFrame(outerRaf)
+      cancelAnimationFrame(innerRaf)
+    }
+  }, [
+    readOnly,
+    editingTextKey,
+    contentLayoutSnapSig,
+    dateTimeIntrinsicSig,
+    repairBindingVerticalWritingModeDom,
+  ])
 
   useLayoutEffect(() => {
     if (readOnly) return
@@ -1818,6 +2631,7 @@ export function ThemePreviewEditor({
         if (timeRef.current) {
           snapShortLayerTightContent('time', timeRef.current)
         }
+        repairBindingVerticalWritingModeDom()
         moveableRef.current?.updateRect()
       })
     })
@@ -1825,7 +2639,7 @@ export function ThemePreviewEditor({
       cancelAnimationFrame(outer)
       cancelAnimationFrame(inner)
     }
-  }, [readOnly, dateTimeIntrinsicSig, selectedElementsSig, snapShortLayerTightContent])
+  }, [readOnly, dateTimeIntrinsicSig, selectedElementsSig, snapShortLayerTightContent, repairBindingVerticalWritingModeDom])
 
   /**
    * 角点等比缩放松手后：把 CSS scale 乘进主题字号并 reset scale→1，这样「缩放=改字号」且外框与文字度量一致；
@@ -2300,6 +3114,12 @@ export function ThemePreviewEditor({
     previewLabels?.date,
     contentLayoutSnapSig,
     dateTimeIntrinsicSig,
+    theme.contentWritingMode,
+    theme.countdownWritingMode,
+    theme.contentTextOrientation,
+    theme.countdownTextOrientation,
+    theme.contentCombineUprightDigits,
+    theme.countdownCombineUprightDigits,
     selectedElementsSig, selectedDecorationLayerId, transformSyncLocked, previewViewportWidth, popupPreviewAspect, editingTextKey, moveableTargets.length])
 
   const moveableTarget = useMemo(
@@ -2324,8 +3144,17 @@ export function ThemePreviewEditor({
       editingTextKey != null &&
       selectedElements.length === 1 &&
       selectedElements[0] === editingTextKey
-    return `${selectedElements.slice().sort().join(',')}|${editingTextKey ?? ''}|${rb ? 'box' : 'tf'}`
-  }, [selectedDecorationLayerId, marqueeDecorationLayerIds, selectedElements, editingTextKey, resizableEnabled, editingDecoLayerId])
+    const cwM = theme.contentWritingMode ?? 'horizontal-tb'
+    return `${selectedElements.slice().sort().join(',')}|${editingTextKey ?? ''}|${rb ? 'box' : 'tf'}|wm:${cwM}`
+  }, [
+    selectedDecorationLayerId,
+    marqueeDecorationLayerIds,
+    selectedElements,
+    editingTextKey,
+    resizableEnabled,
+    editingDecoLayerId,
+    theme.contentWritingMode,
+  ])
   /** 仅在「文字编辑态」显示四边/四角拉框，写入 textBoxWidthPct/HeightPct；预览态只用等比缩放（scalable）变换整块 */
   const resizableForTextBounds =
     resizableEnabled &&
@@ -2380,6 +3209,90 @@ export function ThemePreviewEditor({
     requestAnimationFrame(tick)
   }, [])
 
+  useEffect(() => {
+    return () => {
+      if (contentLayoutInputDebounceRef.current) clearTimeout(contentLayoutInputDebounceRef.current)
+      if (decoLayoutInputDebounceRef.current) clearTimeout(decoLayoutInputDebounceRef.current)
+    }
+  }, [])
+
+  const applyContentTextBoxAutoLayoutRef = useRef(applyContentTextBoxAutoLayout)
+  applyContentTextBoxAutoLayoutRef.current = applyContentTextBoxAutoLayout
+  const applyDecoTextBoxAutoLayoutRef = useRef(applyDecoTextBoxAutoLayout)
+  applyDecoTextBoxAutoLayoutRef.current = applyDecoTextBoxAutoLayout
+
+  /** 进入竖排主文案编辑：双 rAF 后再 force 重算，避免与编辑态外层列高样式同帧竞态导致量出窄宽/错 bh */
+  const verticalContentEditEntryRef = useRef(false)
+  const contentVerticalEditLastWmRef = useRef<string>(theme.contentWritingMode ?? 'horizontal-tb')
+  useLayoutEffect(() => {
+    const wmNow = theme.contentWritingMode ?? 'horizontal-tb'
+    if (contentVerticalEditLastWmRef.current !== wmNow) {
+      verticalContentEditEntryRef.current = false
+      contentVerticalEditLastWmRef.current = wmNow
+    }
+    if (readOnly || editingTextKey !== 'content') {
+      verticalContentEditEntryRef.current = false
+      return
+    }
+    const wm = wmNow
+    if (!isVerticalWritingMode(wm)) {
+      verticalContentEditEntryRef.current = false
+      return
+    }
+    if (getTransformRef.current('content').contentTextBoxUserSized === true) return
+    if (verticalContentEditEntryRef.current) return
+    const node = contentRef.current
+    if (!node) return
+    verticalContentEditEntryRef.current = true
+    let cancelled = false
+    requestAnimationFrame(() => {
+      requestAnimationFrame(() => {
+        if (cancelled) return
+        if (editingTextKeyRef.current !== 'content') return
+        applyContentTextBoxAutoLayoutRef.current(node, { force: true })
+        moveableRef.current?.updateRect()
+      })
+    })
+    return () => {
+      cancelled = true
+    }
+  }, [readOnly, editingTextKey, theme.contentWritingMode])
+
+  /** 进入竖排装饰文本编辑：同上；用 ref 避免 theme.layers 每键更新导致反复 force */
+  const verticalDecoEditEntryRef = useRef<string | null>(null)
+  useLayoutEffect(() => {
+    if (readOnly || !editingDecoLayerId) {
+      verticalDecoEditEntryRef.current = null
+      return
+    }
+    if (verticalDecoEditEntryRef.current === editingDecoLayerId) return
+    const ly = ensureThemeLayers(theme).layers ?? []
+    const tl = ly.find((x) => x.id === editingDecoLayerId && x.kind === 'text') as TextThemeLayer | undefined
+    if (!tl || tl.bindsReminderBody) return
+    const dwm = tl.writingMode ?? 'horizontal-tb'
+    if (!isVerticalWritingMode(dwm)) return
+    const cur = tl.transform ?? { x: 50, y: 50, rotation: 0, scale: 1 }
+    if (cur.contentTextBoxUserSized === true) return
+    const node = decoRefs.current[editingDecoLayerId]
+    if (!node) return
+    const layerId = editingDecoLayerId
+    verticalDecoEditEntryRef.current = layerId
+    let cancelled = false
+    requestAnimationFrame(() => {
+      requestAnimationFrame(() => {
+        if (cancelled) return
+        if (editingDecoLayerIdRef.current !== layerId) return
+        const n = decoRefs.current[layerId]
+        if (!n) return
+        applyDecoTextBoxAutoLayoutRef.current(layerId, n, { force: true })
+        moveableRef.current?.updateRect()
+      })
+    })
+    return () => {
+      cancelled = true
+    }
+  }, [readOnly, editingDecoLayerId, theme.layers, theme.id])
+
   const editSessionRef = useRef<TextElementKey | null>(null)
   useLayoutEffect(() => {
     if (!editingTextKey) {
@@ -2388,6 +3301,7 @@ export function ThemePreviewEditor({
     }
     const el = getTargetRef(editingTextKey)?.current
     if (!el) return
+    const textEl = getTextLayoutRoot(el)
     if (editSessionRef.current !== editingTextKey) {
       editSessionRef.current = editingTextKey
       const defaults: Record<TextElementKey, string> = {
@@ -2396,14 +3310,15 @@ export function ThemePreviewEditor({
         date: '2025年3月23日',
         countdown: '5',
       }
-      el.textContent = getDisplayText(editingTextKey, defaults[editingTextKey] ?? '')
+      textEl.textContent = getDisplayText(editingTextKey, defaults[editingTextKey] ?? '')
     }
     requestAnimationFrame(() => {
       const node = getTargetRef(editingTextKey)?.current
-      if (!node || document.activeElement === node) return
-      node.focus()
+      const te = node ? getTextLayoutRoot(node) : null
+      if (!te || document.activeElement === te) return
+      te.focus()
       const range = document.createRange()
-      range.selectNodeContents(node)
+      range.selectNodeContents(te)
       const sel = window.getSelection()
       sel?.removeAllRanges()
       sel?.addRange(range)
@@ -2425,14 +3340,15 @@ export function ThemePreviewEditor({
     if (!el) return
     if (decoEditSessionRef.current !== editingDecoLayerId) {
       decoEditSessionRef.current = editingDecoLayerId
-      el.textContent = td.text ?? ''
+      getTextLayoutRoot(el).textContent = td.text ?? ''
     }
     requestAnimationFrame(() => {
       const node = decoRefs.current[editingDecoLayerId]
-      if (!node || document.activeElement === node) return
-      node.focus()
+      const te = node ? getTextLayoutRoot(node) : null
+      if (!te || document.activeElement === te) return
+      te.focus()
       const range = document.createRange()
-      range.selectNodeContents(node)
+      range.selectNodeContents(te)
       const sel = window.getSelection()
       sel?.removeAllRanges()
       sel?.addRange(range)
@@ -2528,7 +3444,8 @@ export function ThemePreviewEditor({
   ])
 
   const renderTextLayerForKey = (layerId: string, key: TextElementKey, zi: number): React.ReactNode => {
-    const ref = getTargetRef(key)!
+    const ref = getTargetRef(key)
+    if (!ref) return null
     const label =
       key === 'content' ? '文本' : key === 'time' ? '12:00' : key === 'date' ? '2025年3月23日' : '5:00'
     const fontSize =
@@ -2557,20 +3474,104 @@ export function ThemePreviewEditor({
     const tform = getTransform(key)
     const bw = tform.textBoxWidthPct
     const bh = tform.textBoxHeightPct
-    const shortLineLayer = key === 'time' || key === 'date'
+    const bindingContentUserSized = key === 'content' && tform.contentTextBoxUserSized === true
+    const wm = writingModeForKey(theme, key)
+    const isVertical = isVerticalWritingMode(wm)
+    const shortLineLayer =
+      key === 'time' || key === 'date' || (key === 'countdown' && theme.target === 'rest')
     const shortLayerLockW = shortLineLayer && tform.shortLayerTextBoxLockWidth === true
     const tv = verticalAlignForKey(theme, key)
     const shortLayerFlexJustify = justifyFromTextAlign(ta)
     const shortLayerFlexAlign = alignFromVerticalAlign(tv)
     const contentFlexJustify = alignFromVerticalAlign(tv)
+    const innerTypo = {
+      writingMode: wm,
+      textOrientation: textOrientationForKey(theme, key),
+      combineUpright: combineUprightForKey(theme, key),
+      textAlign: textAlignForVerticalInner(ta),
+      letterSpacingPx: toPreviewPx(ls),
+      lineHeight: lh,
+    }
+    const innerStyle = verticalTextInnerDomStyle(
+      innerTypo,
+      shortLineLayer,
+      isVertical && isEditing && canEditText && !readOnly && useInlineTextEditing ? 'previewEdit' : 'popup',
+    )
+
+    const flushLayerTextBlur = (ev: React.FocusEvent<HTMLElement>) => {
+      if (!isEditing) return
+      const keepEditing =
+        moveableChromePointerDownRef.current || isThemePreviewMoveableChrome(ev.relatedTarget)
+      if (keepEditing) {
+        requestAnimationFrame(() => {
+          if (editingTextKeyRef.current !== key) return
+          const el = getTargetRef(key)?.current
+          const te = el ? getTextLayoutRoot(el) : null
+          te?.focus()
+        })
+        return
+      }
+      const root = ref.current
+      const text = (root ? getTextLayoutRoot(root).textContent : '')
+        ?.replace(/\u00a0/g, ' ')
+        .replace(/\n+$/g, '') ?? ''
+      if (contentLayoutInputDebounceRef.current) {
+        clearTimeout(contentLayoutInputDebounceRef.current)
+        contentLayoutInputDebounceRef.current = null
+      }
+      if (onLiveTextCommit) onLiveTextCommit(key, text)
+      else if (key === 'content') onUpdateTheme(theme.id, { previewContentText: text })
+      else if (key === 'time') onUpdateTheme(theme.id, { previewTimeText: text })
+      else onUpdateTheme(theme.id, { previewCountdownText: text })
+      setEditingTextKey(null)
+      requestAnimationFrame(() => {
+        requestAnimationFrame(() => {
+          const node = getTargetRef(key)?.current
+          if (!node) return
+          const wBefore = isVertical ? node.offsetWidth : 0
+          if (key === 'content') {
+            snapContentTextBoxHeightOnly(node)
+            if (isVertical) adjustBindingVerticalEdgeAnchor('content', node, wBefore)
+          } else {
+            const tf0 = getTransformRef.current(key)
+            if (tf0.textBoxWidthPct == null || tf0.textBoxHeightPct == null) {
+              snapShortLayerTightContent(key, node)
+            }
+          }
+          repairBindingVerticalWritingModeDom()
+        })
+      })
+    }
+
+    const innerMergedVerticalStyle = (
+      isVertical
+        ? ({ ...innerStyle, flexShrink: 0 } as Record<string, string | number>)
+        : innerStyle
+    ) as Record<string, string | number>
+
+    /** 竖排编辑：列高须为确定值；过小列高 + 窄块向会诱发假横条与失焦后框错乱（见 VERTICAL_EDIT_COLUMN_MIN_HEIGHT_PCT） */
+    const verticalEditColumnHeightPct =
+      !shortLineLayer && isVertical && isEditing && canEditText && !readOnly && useInlineTextEditing
+        ? (() => {
+            const cap = CONTENT_TEXT_VERTICAL_INLINE_MAX_RATIO * 100
+            if (bh != null && Number.isFinite(bh) && bh >= 8) {
+              const merged = Math.min(cap, Math.max(12, bh))
+              if (bindingContentUserSized) return merged
+              if (merged < VERTICAL_EDIT_COLUMN_MIN_HEIGHT_PCT) return cap
+              return merged
+            }
+            return cap
+          })()
+        : null
+
     return (
       <div
         key={layerId}
         ref={ref as React.RefObject<HTMLDivElement>}
         data-element-key={key}
-        contentEditable={isEditing}
-        suppressContentEditableWarning
-        className={`absolute ${readOnly ? 'cursor-default' : isEditing ? 'cursor-text select-text' : 'cursor-move'} rounded-sm`}
+        contentEditable={!isVertical && isEditing && useInlineTextEditing}
+        suppressContentEditableWarning={!isVertical && isEditing && useInlineTextEditing}
+        className={`absolute ${readOnly ? 'cursor-default' : isEditing && useInlineTextEditing ? 'cursor-text select-text' : 'cursor-move'} rounded-sm`}
         style={{
           left: 0, top: 0,
           transform: tf,
@@ -2578,8 +3579,7 @@ export function ThemePreviewEditor({
           color, fontSize: `${toPreviewPx(fontSize)}px`, fontWeight: getFontWeight(key),
           fontStyle: getFontStyle(key),
           textDecoration: getTextDecoration(key),
-          textAlign: ta,
-          letterSpacing: `${toPreviewPx(ls)}px`,
+          ...(isVertical ? {} : { textAlign: ta, letterSpacing: `${toPreviewPx(ls)}px` }),
           zIndex: zi,
           padding: `${toPreviewPx(3)}px`,
           ...(shortLineLayer
@@ -2587,15 +3587,20 @@ export function ThemePreviewEditor({
                 display: 'flex',
                 alignItems: shortLayerFlexAlign,
                 justifyContent: shortLayerFlexJustify,
-                /** 单行时间：行高贴字高，减少 flex 行盒上下「空行」导致操作框纵向变宽 */
-                lineHeight: 1,
+                lineHeight: isVertical ? undefined : 1,
               }
-            : {
-                display: 'flex',
-                flexDirection: 'column',
-                justifyContent: contentFlexJustify,
-                lineHeight: lh,
-              }),
+            : isEditing && !isVertical && useInlineTextEditing
+              ? { display: 'block', lineHeight: lh }
+              : {
+                  display: 'flex',
+                  flexDirection: 'column',
+                  justifyContent: contentFlexJustify,
+                  /** 竖排：列在物理上的左右与 vertical-rl / vertical-lr 对齐（横排仍 stretch） */
+                  ...(isVertical && !shortLineLayer
+                    ? { alignItems: wm === 'vertical-rl' ? ('flex-end' as const) : ('flex-start' as const) }
+                    : {}),
+                  lineHeight: lh,
+                }),
           fontFamily: resolvePopupFontFamilyCss(theme, key),
           outline: 'none',
           ...layerTextEffectsReactStyle(theme, key),
@@ -2608,14 +3613,17 @@ export function ThemePreviewEditor({
                 }
               : {
                   width: 'max-content',
-                  maxWidth: bw != null && Number.isFinite(bw) ? `${Math.min(96, Math.max(5, bw))}%` : '96%',
+                  maxWidth:
+                    bw != null && Number.isFinite(bw)
+                      ? `${Math.min(96, Math.max(5, bw))}%`
+                      : `${CONTENT_TEXT_AUTO_FIT_MAX_RATIO * 100}%`,
                   boxSizing: 'border-box' as const,
                 }
             : bw != null && Number.isFinite(bw)
               ? { width: `${bw}%`, maxWidth: '100%', boxSizing: 'border-box' as const }
-              : { maxWidth: '96%' }),
+              : { maxWidth: `${CONTENT_TEXT_AUTO_FIT_MAX_RATIO * 100}%` }),
           ...(shortLineLayer
-            ? bh != null && Number.isFinite(bh) && isEditing
+            ? bh != null && Number.isFinite(bh) && isEditing && useInlineTextEditing
               ? { minHeight: `${bh}%`, height: 'auto', maxHeight: '100%', overflow: 'hidden' as const }
               : {
                   height: 'auto' as const,
@@ -2625,15 +3633,38 @@ export function ThemePreviewEditor({
                       : '100%',
                   overflow: 'hidden' as const,
                 }
-            : bh != null && Number.isFinite(bh)
-              ? isEditing
-                ? { minHeight: `${bh}%`, height: 'auto', maxHeight: '100%', overflow: 'visible' as const }
-                : { height: `${bh}%`, maxHeight: '100%', overflow: 'visible' as const }
-              : {}),
-          whiteSpace: (shortLineLayer ? 'nowrap' : 'pre-wrap') as 'nowrap' | 'pre-wrap',
-          wordWrap: (shortLineLayer ? 'normal' : 'break-word') as 'normal' | 'break-word',
-          overflowWrap: (shortLineLayer ? 'normal' : 'break-word') as 'normal' | 'break-word',
-          ...(shortLineLayer ? {} : { wordBreak: 'keep-all' as const }),
+            : !shortLineLayer && isVertical
+              ? verticalEditColumnHeightPct != null
+                ? {
+                    height: `${verticalEditColumnHeightPct}%`,
+                    maxHeight: `${CONTENT_TEXT_VERTICAL_INLINE_MAX_RATIO * 100}%`,
+                    ...(bw != null && Number.isFinite(bw)
+                      ? {}
+                      : { maxWidth: `${CONTENT_TEXT_AUTO_FIT_MAX_RATIO * 100}%` }),
+                    boxSizing: 'border-box' as const,
+                    overflowX: 'visible' as const,
+                    overflowY: 'visible' as const,
+                  }
+                : bh != null && Number.isFinite(bh)
+                  ? {
+                      height: `${Math.min(100, Math.max(3, bh))}%`,
+                      maxHeight: '100%',
+                      boxSizing: 'border-box' as const,
+                      overflow: 'visible' as const,
+                    }
+                  : {}
+              : bh != null && Number.isFinite(bh)
+                ? isEditing && useInlineTextEditing
+                  ? { minHeight: `${bh}%`, height: 'auto', maxHeight: '100%', overflow: 'visible' as const }
+                  : { height: `${bh}%`, maxHeight: '100%', overflow: 'visible' as const }
+                : {}),
+          whiteSpace: (shortLineLayer && !isVertical ? 'nowrap' : isVertical ? 'normal' : 'pre-wrap') as
+            | 'nowrap'
+            | 'pre-wrap'
+            | 'normal',
+          wordWrap: (shortLineLayer && !isVertical ? 'normal' : 'break-word') as 'normal' | 'break-word',
+          overflowWrap: (shortLineLayer && !isVertical ? 'normal' : 'break-word') as 'normal' | 'break-word',
+          ...(shortLineLayer && !isVertical ? {} : !shortLineLayer ? { wordBreak: 'keep-all' as const } : {}),
         }}
         onMouseDownCapture={(e) => {
           if (e.button !== 0) return
@@ -2644,7 +3675,11 @@ export function ThemePreviewEditor({
             e.stopPropagation()
             flushSync(() => {
               onSelectElements([key])
-              setEditingTextKey(key)
+              if (panelFirstTextEditing && onRequestPanelTextFocus) {
+                onRequestPanelTextFocus({ kind: 'binding', key })
+              } else {
+                setEditingTextKey(key)
+              }
             })
             setMoveableTargets([e.currentTarget])
           }
@@ -2652,66 +3687,88 @@ export function ThemePreviewEditor({
         onMouseDown={(e) => handleTextPointerDown(key, e)}
         onClick={(e) => handleElementClick(key, e)}
         onInput={
-          isEditing
+          !isVertical && isEditing && useInlineTextEditing
             ? () => {
-                requestAnimationFrame(() => {
-                  const node = getTargetRef(key)?.current
-                  if (node && key === 'content') {
-                    const tr = getTransformRef.current('content')
-                    if (tr.contentTextBoxUserSized === true) snapContentTextBoxHeightOnly(node)
-                    else applyContentTextBoxAutoLayout(node)
-                  }
+                requestAnimationFrame(() => moveableRef.current?.updateRect())
+                if (key !== 'content') return
+                if (contentLayoutInputDebounceRef.current) clearTimeout(contentLayoutInputDebounceRef.current)
+                contentLayoutInputDebounceRef.current = window.setTimeout(() => {
+                  contentLayoutInputDebounceRef.current = null
+                  const node = getTargetRef('content')?.current
+                  if (!node || editingTextKeyRef.current !== 'content') return
+                  const tr = getTransformRef.current('content')
+                  if (tr.contentTextBoxUserSized === true) snapContentTextBoxHeightOnly(node)
+                  else applyContentTextBoxAutoLayout(node)
                   moveableRef.current?.updateRect()
-                })
+                }, TEXT_EDIT_LAYOUT_DEBOUNCE_MS)
               }
             : undefined
         }
-        onBlur={(ev: React.FocusEvent<HTMLDivElement>) => {
-          if (!isEditing) return
-          const keepEditing =
-            moveableChromePointerDownRef.current || isThemePreviewMoveableChrome(ev.relatedTarget)
-          if (keepEditing) {
-            requestAnimationFrame(() => {
-              if (editingTextKeyRef.current !== key) return
-              getTargetRef(key)?.current?.focus()
-            })
-            return
-          }
-          const elBlur = ref.current
-          const text = (elBlur?.textContent ?? '').replace(/\u00a0/g, ' ').replace(/\n+$/g, '')
-          if (onLiveTextCommit) onLiveTextCommit(key, text)
-          else if (key === 'content') onUpdateTheme(theme.id, { previewContentText: text })
-          else if (key === 'time') onUpdateTheme(theme.id, { previewTimeText: text })
-          else onUpdateTheme(theme.id, { previewCountdownText: text })
-          setEditingTextKey(null)
-          requestAnimationFrame(() => {
-            requestAnimationFrame(() => {
-              const node = getTargetRef(key)?.current
-              if (!node) return
-              if (key === 'content') snapContentTextBoxHeightOnly(node)
-              else {
-                const tf0 = getTransformRef.current(key)
-                if (tf0.textBoxWidthPct == null || tf0.textBoxHeightPct == null) {
-                  snapShortLayerTightContent(key, node)
+        onBlur={!isVertical && isEditing && useInlineTextEditing ? flushLayerTextBlur : undefined}
+        onKeyDown={
+          !isVertical && isEditing && useInlineTextEditing
+            ? (e) => {
+                if (e.key === 'Escape') {
+                  e.preventDefault()
+                  setEditingTextKey(null)
+                  void ref.current?.blur()
+                }
+                if (e.key === 'Enter' && !e.shiftKey) {
+                  e.preventDefault()
+                  void ref.current?.blur()
                 }
               }
-            })
-          })
-        }}
-        onKeyDown={(e) => {
-          if (!isEditing) return
-          if (e.key === 'Escape') {
-            e.preventDefault()
-            setEditingTextKey(null)
-            void ref.current?.blur()
-          }
-          if (e.key === 'Enter' && !e.shiftKey) {
-            e.preventDefault()
-            void ref.current?.blur()
-          }
-        }}
+            : undefined
+        }
       >
-        {!isEditing ? displayText : null}
+        {isVertical ? (
+          <div
+            key={`${layerId}-wb-${wm}-${isEditing && canEditText && useInlineTextEditing ? 'e' : 'v'}`}
+            {...{ [WB_TEXT_INNER]: '1' }}
+            contentEditable={isEditing && canEditText && useInlineTextEditing}
+            suppressContentEditableWarning={isEditing && canEditText && useInlineTextEditing}
+            style={innerMergedVerticalStyle}
+            className="min-h-0 min-w-0 outline-none"
+            onInput={
+              isVertical && isEditing && canEditText && useInlineTextEditing
+                ? () => {
+                    requestAnimationFrame(() => moveableRef.current?.updateRect())
+                    if (key !== 'content') return
+                    if (contentLayoutInputDebounceRef.current) clearTimeout(contentLayoutInputDebounceRef.current)
+                    contentLayoutInputDebounceRef.current = window.setTimeout(() => {
+                      contentLayoutInputDebounceRef.current = null
+                      const node = getTargetRef('content')?.current
+                      if (!node || editingTextKeyRef.current !== 'content') return
+                      const tr = getTransformRef.current('content')
+                      if (tr.contentTextBoxUserSized === true) snapContentTextBoxHeightOnly(node)
+                      else applyContentTextBoxAutoLayout(node)
+                      moveableRef.current?.updateRect()
+                    }, TEXT_EDIT_LAYOUT_DEBOUNCE_MS)
+                  }
+                : undefined
+            }
+            onBlur={isVertical && isEditing && canEditText && useInlineTextEditing ? flushLayerTextBlur : undefined}
+            onKeyDown={
+              isVertical && isEditing && canEditText && useInlineTextEditing
+                ? (e) => {
+                    if (e.key === 'Escape') {
+                      e.preventDefault()
+                      setEditingTextKey(null)
+                      void getTextLayoutRoot(ref.current ?? document.body).blur()
+                    }
+                    if (e.key === 'Enter' && !e.shiftKey) {
+                      e.preventDefault()
+                      void getTextLayoutRoot(ref.current ?? document.body).blur()
+                    }
+                  }
+                : undefined
+            }
+          >
+            {!isEditing ? displayText : null}
+          </div>
+        ) : (
+          !isEditing ? displayText : null
+        )}
       </div>
     )
   }
@@ -2870,11 +3927,65 @@ export function ThemePreviewEditor({
                 contentTextEffects: td.textEffects,
               }
               const isDecoEditing = editingDecoLayerId === L.id
+              const decoInlineEditing = isDecoEditing && useInlineTextEditing
               const decoAlign = (td.textAlign ?? theme.textAlign) as PopupTheme['textAlign']
               const decoVerticalAlign = td.textVerticalAlign ?? theme.textVerticalAlign ?? 'middle'
               const decoTf = td.transform ?? { x: 50, y: 50, rotation: 0, scale: 1 }
               const decoBw = decoTf.textBoxWidthPct
               const decoBh = decoTf.textBoxHeightPct
+              const decoWm = td.writingMode ?? 'horizontal-tb'
+              const decoIsVertical = isVerticalWritingMode(decoWm)
+              const decoInnerStyle = verticalTextInnerDomStyle(
+                {
+                  writingMode: decoWm,
+                  textOrientation: td.textOrientation,
+                  combineUpright:
+                    td.combineUprightDigits === true ? true : td.combineUprightDigits === false ? false : false,
+                  textAlign: textAlignForVerticalInner(decoAlign),
+                  letterSpacingPx: toPreviewPx(td.letterSpacing ?? 0),
+                  lineHeight: td.lineHeight ?? 1.35,
+                },
+                false,
+                decoIsVertical && decoInlineEditing && !readOnly ? 'previewEdit' : 'popup',
+              )
+              const decoInnerPreviewStyle = decoIsVertical
+                ? decoInlineEditing && !readOnly
+                  ? decoInnerStyle
+                  : ({ ...decoInnerStyle, overflow: 'hidden' as const } as Record<string, string | number>)
+                : decoInnerStyle
+              /** 横排字距/行高/对齐放在内层，外层永不 contentEditable，与主文案竖排内层一致，避免父级重渲染清空可编辑区 */
+              const decoInnerDomStyle = (
+                decoIsVertical
+                  ? decoInnerPreviewStyle
+                  : ({
+                      display: 'block',
+                      boxSizing: 'border-box',
+                      maxWidth: '100%',
+                      maxHeight: '100%',
+                      overflow: 'auto',
+                      lineHeight: td.lineHeight ?? 1.35,
+                      textAlign: decoAlign,
+                      letterSpacing: `${toPreviewPx(td.letterSpacing ?? 0)}px`,
+                      whiteSpace: 'pre-wrap',
+                      wordWrap: 'break-word',
+                      overflowWrap: 'break-word',
+                      wordBreak: 'keep-all',
+                    } as Record<string, string | number>)
+              ) as Record<string, string | number>
+              const decoUserSized = td.transform?.contentTextBoxUserSized === true
+              const decoVerticalEditColHPct =
+                decoIsVertical && decoInlineEditing && !readOnly
+                  ? (() => {
+                      const cap = CONTENT_TEXT_VERTICAL_INLINE_MAX_RATIO * 100
+                      if (decoBh != null && Number.isFinite(decoBh) && decoBh >= 8) {
+                        const merged = Math.min(cap, Math.max(12, decoBh))
+                        if (decoUserSized) return merged
+                        if (merged < VERTICAL_EDIT_COLUMN_MIN_HEIGHT_PCT) return cap
+                        return merged
+                      }
+                      return cap
+                    })()
+                  : null
               return (
                 <div
                   key={L.id}
@@ -2882,9 +3993,7 @@ export function ThemePreviewEditor({
                     decoRefs.current[L.id] = el
                   }}
                   data-deco-layer-id={L.id}
-                  contentEditable={isDecoEditing && !readOnly}
-                  suppressContentEditableWarning
-                  className={`absolute rounded-sm ${readOnly ? 'cursor-default' : isDecoEditing ? 'cursor-text select-text' : 'cursor-move'}`}
+                  className={`absolute rounded-sm ${readOnly ? 'cursor-default' : decoInlineEditing ? 'cursor-text select-text' : 'cursor-move'}`}
                   style={{
                     left: 0,
                     top: 0,
@@ -2896,26 +4005,39 @@ export function ThemePreviewEditor({
                     fontWeight: td.fontWeight ?? 500,
                     fontStyle: td.fontItalic === true ? 'italic' : 'normal',
                     textDecoration: td.textUnderline === true ? 'underline' : 'none',
-                    lineHeight: td.lineHeight ?? 1.35,
-                    textAlign: decoAlign,
-                    letterSpacing: `${toPreviewPx(td.letterSpacing ?? 0)}px`,
                     padding: `${toPreviewPx(3)}px`,
                     fontFamily: resolveDecoFontFamilyCss(td.fontFamilyPreset, td.fontFamilySystem),
                     display: 'flex',
                     flexDirection: 'column',
                     justifyContent: alignFromVerticalAlign(decoVerticalAlign),
+                    alignItems: decoIsVertical
+                      ? decoWm === 'vertical-rl'
+                        ? 'flex-end'
+                        : 'flex-start'
+                      : 'stretch',
                     /** 与 renderTextLayerForKey(content) 完全一致：有 textBox 才定宽；无 textBox 仅限制 maxWidth。 */
                     ...(decoBw != null && Number.isFinite(decoBw)
                       ? { width: `${Math.min(96, Math.max(5, decoBw))}%`, maxWidth: '100%', boxSizing: 'border-box' as const }
-                      : { maxWidth: '96%' }),
-                    ...(decoBh != null && Number.isFinite(decoBh)
-                      ? isDecoEditing
-                        ? { minHeight: `${decoBh}%`, height: 'auto', maxHeight: '100%', overflow: 'visible' as const }
-                        : { height: `${Math.min(100, Math.max(3, decoBh))}%`, maxHeight: '100%', overflow: 'visible' as const }
-                      : {}),
-                    whiteSpace: 'pre-wrap',
-                    wordBreak: 'keep-all',
-                    overflowWrap: 'break-word',
+                      : { maxWidth: `${CONTENT_TEXT_AUTO_FIT_MAX_RATIO * 100}%` }),
+                    ...(decoVerticalEditColHPct != null
+                      ? {
+                          height: `${decoVerticalEditColHPct}%`,
+                          maxHeight: `${CONTENT_TEXT_VERTICAL_INLINE_MAX_RATIO * 100}%`,
+                          ...(decoBw != null && Number.isFinite(decoBw)
+                            ? {}
+                            : { maxWidth: `${CONTENT_TEXT_AUTO_FIT_MAX_RATIO * 100}%` }),
+                          boxSizing: 'border-box' as const,
+                          overflowX: 'visible' as const,
+                          overflowY: 'visible' as const,
+                        }
+                      : decoBh != null && Number.isFinite(decoBh)
+                        ? {
+                            height: `${Math.min(100, Math.max(3, decoBh))}%`,
+                            maxHeight: '100%',
+                            boxSizing: 'border-box' as const,
+                            overflow: 'visible' as const,
+                          }
+                        : {}),
                     outline: 'none',
                     ...layerTextEffectsReactStyle(fakeTheme, 'content'),
                   }}
@@ -2929,7 +4051,11 @@ export function ThemePreviewEditor({
                         onSelectStructuralLayer?.(null)
                         onSelectElements([])
                         onSelectDecorationLayer?.(L.id)
-                        setEditingDecoLayerId(L.id)
+                        if (panelFirstTextEditing && onRequestPanelTextFocus) {
+                          onRequestPanelTextFocus({ kind: 'decoration', layerId: L.id })
+                        } else {
+                          setEditingDecoLayerId(L.id)
+                        }
                       })
                       setMoveableTargets([e.currentTarget as HTMLDivElement])
                     }
@@ -2938,7 +4064,7 @@ export function ThemePreviewEditor({
                     if (readOnly || e.button !== 0) return
                     if (e.shiftKey) return
                     if (e.detail >= 2) return
-                    if (editingDecoLayerId === L.id) return
+                    if (decoInlineEditing) return
                     e.stopPropagation()
                     flushSync(() => {
                       setMarqueeDecorationLayerIds([])
@@ -2949,90 +4075,128 @@ export function ThemePreviewEditor({
                     setMoveableTargets([e.currentTarget as HTMLDivElement])
                     scheduleDragStart(e.nativeEvent)
                   }}
-                  onBlur={(ev) => {
-                    if (!isDecoEditing) return
-                    const keepEditing =
-                      moveableChromePointerDownRef.current || isThemePreviewMoveableChrome(ev.relatedTarget)
-                    if (keepEditing) {
-                      requestAnimationFrame(() => {
-                        if (editingDecoLayerIdRef.current !== L.id) return
-                        decoRefs.current[L.id]?.focus()
-                      })
-                      return
-                    }
-                    const elBlur = decoRefs.current[L.id]
-                    const text = (elBlur?.textContent ?? '').replace(/\u00a0/g, ' ').replace(/\n+$/g, '').slice(0, 2000)
-                    let patch: Partial<PopupTheme> | null = null
-                    if (elBlur && containerRef.current) {
-                      const css = elBlur.style.transform || decoStyleTransformById[L.id] || ''
-                      const { translateX, translateY, rotation, scale } = parseTransformValues(css)
-                      const pos = translateToThemePercent(elBlur, translateX, translateY)
-                      const list = ensureThemeLayers(theme).layers ?? []
-                      const curLayer = list.find((x) => x.id === L.id)
-                      const curTransform =
-                        curLayer && (curLayer.kind === 'text' || curLayer.kind === 'image')
-                          ? (curLayer as TextThemeLayer | ImageThemeLayer).transform
-                          : undefined
-                      const patchTransform: TextTransform = {
-                        ...(curTransform ?? { x: 50, y: 50, rotation: 0, scale: 1 }),
-                        x: pos.x,
-                        y: pos.y,
-                        rotation: +rotation.toFixed(2),
-                        scale: +scale.toFixed(4),
-                      }
-                      patch = updateDecorationLayer(theme, L.id, { text, transform: patchTransform })
-                    } else {
-                      patch = updateDecorationLayer(theme, L.id, { text })
-                    }
-                    if (patch) onUpdateTheme(theme.id, patch)
-                    setEditingDecoLayerId(null)
-                    requestAnimationFrame(() => {
-                      requestAnimationFrame(() => {
-                        const node = decoRefs.current[L.id]
-                        if (node) snapDecoTextBoxHeightOnly(L.id, node)
-                        else moveableRef.current?.updateRect()
-                      })
-                    })
-                  }}
-                  onInput={
-                    isDecoEditing
-                      ? () => {
-                          requestAnimationFrame(() => {
-                            const node = decoRefs.current[L.id]
-                            if (!node) return
-                            const tr = getDecoTextLayerTransformRef.current(L.id)
-                            if (!tr) return
-                            if (tr.contentTextBoxUserSized === true) snapDecoTextBoxHeightOnly(L.id, node)
-                            else applyDecoTextBoxAutoLayout(L.id, node)
-                            moveableRef.current?.updateRect()
-                          })
-                        }
-                      : undefined
-                  }
-                  onKeyDown={(e) => {
-                    if (!isDecoEditing) return
-                    if (e.key === 'Escape') {
-                      e.preventDefault()
-                      setEditingDecoLayerId(null)
-                      decoRefs.current[L.id]?.blur()
-                    }
-                    if (e.key === 'Enter' && !e.shiftKey) {
-                      e.preventDefault()
-                      decoRefs.current[L.id]?.blur()
-                    }
-                  }}
                 >
-                  {!isDecoEditing ? (td.text ?? '') : null}
+                  <span
+                    key={`${L.id}-wb-${decoWm}-${decoInlineEditing && !readOnly ? 'e' : 'v'}`}
+                    {...{ [WB_TEXT_INNER]: '1' }}
+                    contentEditable={decoInlineEditing && !readOnly}
+                    suppressContentEditableWarning={decoInlineEditing && !readOnly}
+                    style={decoInnerDomStyle}
+                    className="min-h-0 min-w-0 flex-1 outline-none"
+                    onInput={
+                      decoInlineEditing && !readOnly
+                        ? () => {
+                            requestAnimationFrame(() => moveableRef.current?.updateRect())
+                            if (decoLayoutInputDebounceRef.current) clearTimeout(decoLayoutInputDebounceRef.current)
+                            const layerId = L.id
+                            decoLayoutInputDebounceRef.current = window.setTimeout(() => {
+                              decoLayoutInputDebounceRef.current = null
+                              if (editingDecoLayerIdRef.current !== layerId) return
+                              const node = decoRefs.current[layerId]
+                              if (!node) return
+                              const tr = getDecoTextLayerTransformRef.current(layerId)
+                              if (!tr) return
+                              if (tr.contentTextBoxUserSized === true) snapDecoTextBoxHeightOnly(layerId, node)
+                              else applyDecoTextBoxAutoLayout(layerId, node)
+                              moveableRef.current?.updateRect()
+                            }, TEXT_EDIT_LAYOUT_DEBOUNCE_MS)
+                          }
+                        : undefined
+                    }
+                    onBlur={(ev) => {
+                      if (!decoInlineEditing) return
+                      const keepEditing =
+                        moveableChromePointerDownRef.current || isThemePreviewMoveableChrome(ev.relatedTarget)
+                      if (keepEditing) {
+                        requestAnimationFrame(() => {
+                          if (editingDecoLayerIdRef.current !== L.id) return
+                          const root = decoRefs.current[L.id]
+                          getTextLayoutRoot(root ?? document.body).focus()
+                        })
+                        return
+                      }
+                      if (decoLayoutInputDebounceRef.current) {
+                        clearTimeout(decoLayoutInputDebounceRef.current)
+                        decoLayoutInputDebounceRef.current = null
+                      }
+                      const elBlur = decoRefs.current[L.id]
+                      const text = (elBlur ? getTextLayoutRoot(elBlur).textContent : '')
+                        ?.replace(/\u00a0/g, ' ')
+                        .replace(/\n+$/g, '')
+                        .slice(0, 2000) ?? ''
+                      let patch: Partial<PopupTheme> | null = null
+                      if (elBlur && containerRef.current) {
+                        const css = elBlur.style.transform || decoStyleTransformById[L.id] || ''
+                        const { translateX, translateY, rotation, scale } = parseTransformValues(css)
+                        const pos = translateToThemePercent(elBlur, translateX, translateY)
+                        const list = ensureThemeLayers(theme).layers ?? []
+                        const curLayer = list.find((x) => x.id === L.id)
+                        const curTransform =
+                          curLayer && (curLayer.kind === 'text' || curLayer.kind === 'image')
+                            ? (curLayer as TextThemeLayer | ImageThemeLayer).transform
+                            : undefined
+                        const patchTransform: TextTransform = {
+                          ...(curTransform ?? { x: 50, y: 50, rotation: 0, scale: 1 }),
+                          x: pos.x,
+                          y: pos.y,
+                          rotation: +rotation.toFixed(2),
+                          scale: +scale.toFixed(4),
+                        }
+                        patch = updateDecorationLayer(theme, L.id, { text, transform: patchTransform })
+                      } else {
+                        patch = updateDecorationLayer(theme, L.id, { text })
+                      }
+                      if (patch) onUpdateTheme(theme.id, patch)
+                      setEditingDecoLayerId(null)
+                      requestAnimationFrame(() => {
+                        requestAnimationFrame(() => {
+                          const node = decoRefs.current[L.id]
+                          if (node) {
+                            const wBefore = decoIsVertical ? node.offsetWidth : 0
+                            snapDecoTextBoxHeightOnly(L.id, node)
+                            if (decoIsVertical) adjustDecoVerticalEdgeAnchor(L.id, node, wBefore)
+                          } else moveableRef.current?.updateRect()
+                        })
+                      })
+                    }}
+                    onKeyDown={
+                      decoInlineEditing && !readOnly
+                        ? (e) => {
+                            if (e.key === 'Escape') {
+                              e.preventDefault()
+                              setEditingDecoLayerId(null)
+                              getTextLayoutRoot(decoRefs.current[L.id] ?? document.body).blur()
+                            }
+                            if (e.key === 'Enter' && !e.shiftKey) {
+                              e.preventDefault()
+                              getTextLayoutRoot(decoRefs.current[L.id] ?? document.body).blur()
+                            }
+                          }
+                        : undefined
+                    }
+                  >
+                    {!decoInlineEditing ? (td.text ?? '') : null}
+                  </span>
                 </div>
               )
             }
             case 'image': {
               const im = L as ImageThemeLayer
-              const url = rendererSafePreviewImageUrl((im.imagePath ?? '').trim(), previewImageUrlMap)
+              const pathTrim = (im.imagePath ?? '').trim()
+              const url = rendererSafePreviewImageUrl(pathTrim, previewImageUrlMap)
               const dtf = decoStyleTransformById[L.id] ?? 'translate(0px,0px) rotate(0deg) scale(1)'
               const tw = im.transform?.textBoxWidthPct ?? 28
               const th = im.transform?.textBoxHeightPct ?? 22
               const fit = im.objectFit === 'contain' ? 'contain' : 'cover'
+              const maxWpct = Math.min(96, Math.max(5, tw))
+              const maxHpct = Math.min(100, Math.max(3, th))
+              const contEl = containerRef.current
+              const cw0 = contEl?.clientWidth ?? 0
+              const ch0 = contEl?.clientHeight ?? 0
+              const capsReady = cw0 > 2 && ch0 > 2
+              const capPxW = capsReady ? (cw0 * maxWpct) / 100 : null
+              const capPxH = capsReady ? (ch0 * maxHpct) / 100 : null
+              const isContain = fit === 'contain'
               return (
                 <div
                   key={L.id}
@@ -3047,15 +4211,19 @@ export function ThemePreviewEditor({
                     transform: dtf,
                     transformOrigin: 'center',
                     zIndex: zi,
-                    width: `${Math.min(96, Math.max(5, tw))}%`,
-                    height: `${Math.min(100, Math.max(3, th))}%`,
-                    maxWidth: '100%',
-                    maxHeight: '100%',
                     boxSizing: 'border-box',
-                    backgroundImage: url ? `url("${url}")` : 'none',
-                    backgroundSize: fit,
-                    backgroundPosition: 'center',
-                    backgroundRepeat: 'no-repeat',
+                    ...(isContain
+                      ? {
+                          /** 上限只加在 img 上：父级同时 max-height 会钳死「已用高度」而子图仍按宽算出更高，导致上下溢出、Moveable 量高偏矮 */
+                          display: 'inline-block',
+                          lineHeight: 0,
+                        }
+                      : {
+                          width: `${maxWpct}%`,
+                          height: `${maxHpct}%`,
+                          maxWidth: '100%',
+                          maxHeight: '100%',
+                        }),
                   }}
                   onMouseDown={(e) => {
                     if (readOnly || e.button !== 0) return
@@ -3070,7 +4238,33 @@ export function ThemePreviewEditor({
                     setMoveableTargets([e.currentTarget as HTMLDivElement])
                     scheduleDragStart(e.nativeEvent)
                   }}
-                />
+                >
+                  {url ? (
+                    <img
+                      alt=""
+                      src={url}
+                      draggable={false}
+                      decoding="async"
+                      className={`pointer-events-none select-none ${isContain ? '' : 'h-full w-full'}`}
+                      style={
+                        isContain
+                          ? {
+                              display: 'block',
+                              width: 'auto',
+                              height: 'auto',
+                              maxWidth: capPxW != null ? `${capPxW}px` : `${maxWpct}%`,
+                              maxHeight: capPxH != null ? `${capPxH}px` : `${maxHpct}%`,
+                              objectFit: fit,
+                            }
+                          : { objectFit: fit, display: 'block' }
+                      }
+                      onLoad={(ev) => {
+                        const img = ev.currentTarget
+                        applyDecoImageIntrinsicBox(L.id, pathTrim, img.naturalWidth, img.naturalHeight)
+                      }}
+                    />
+                  ) : null}
+                </div>
               )
             }
             default:
@@ -3093,7 +4287,7 @@ export function ThemePreviewEditor({
             container={containerRef.current}
             snapContainer={containerRef}
             individualGroupable={false}
-            useResizeObserver
+            useResizeObserver={false}
             defaultGroupOrigin="50% 50%"
             draggable={true}
             rotatable={true}
@@ -3102,28 +4296,40 @@ export function ThemePreviewEditor({
             snappable={true}
             snapDirections={{ top: true, left: true, bottom: true, right: true, center: true, middle: true }}
             elementSnapDirections={{ top: true, left: true, bottom: true, right: true, center: true, middle: true }}
-            snapThreshold={5}
+            /** 0.56+ 以 snapHorizontal/VerticalThreshold 为准，snapThreshold 已弃用；默认仅 5px 贴边不易感知 */
+            snapThreshold={14}
+            snapHorizontalThreshold={14}
+            snapVerticalThreshold={14}
             isDisplaySnapDigit={true}
             snapGap={true}
             elementGuidelines={elementGuidelineRefs()}
-            horizontalGuidelines={containerRef.current ? [containerRef.current.offsetHeight * 0.25, containerRef.current.offsetHeight * 0.5, containerRef.current.offsetHeight * 0.75] : []}
-            verticalGuidelines={containerRef.current ? [containerRef.current.offsetWidth * 0.25, containerRef.current.offsetWidth * 0.5, containerRef.current.offsetWidth * 0.75] : []}
+            horizontalGuidelines={previewSnapGuidelines.horizontal}
+            verticalGuidelines={previewSnapGuidelines.vertical}
             throttleDrag={0} throttleRotate={0} throttleScale={0.01}
             rotationPosition="top"
             renderDirections={resizableForTextBounds ? ['nw', 'ne', 'sw', 'se', 'n', 's', 'e', 'w'] : ['nw', 'ne', 'sw', 'se']}
             edge={false}
 
-            onDragStart={() => { resetMoveableVisualPipeline(); setTransformSyncLocked(true) }}
+            onDragStart={() => {
+              transformSyncLockedRef.current = true
+              resetMoveableVisualPipeline()
+              setTransformSyncLocked(true)
+            }}
             onDrag={({ target, transform }) => {
               applyMoveableFrame([{ target, transform }])
             }}
             onDragEnd={({ target }) => {
               flushMoveableVisual('sync')
               finalizeElement(target)
+              transformSyncLockedRef.current = false
               setTransformSyncLocked(false)
             }}
 
-            onRotateStart={() => { resetMoveableVisualPipeline(); setTransformSyncLocked(true) }}
+            onRotateStart={() => {
+              transformSyncLockedRef.current = true
+              resetMoveableVisualPipeline()
+              setTransformSyncLocked(true)
+            }}
             onRotate={({ target, transform, afterTransform, inputEvent }) => {
               const css = snapRotateInFullTransform(pickMoveableCssTransform({ transform, afterTransform }), inputEvent)
               applyMoveableFrame([{ target, transform: css }])
@@ -3131,10 +4337,12 @@ export function ThemePreviewEditor({
             onRotateEnd={({ target }) => {
               flushMoveableVisual('sync')
               finalizeElement(target)
+              transformSyncLockedRef.current = false
               setTransformSyncLocked(false)
             }}
 
             onScaleStart={({ inputEvent, direction }) => {
+              transformSyncLockedRef.current = true
               resetMoveableVisualPipeline()
               setTransformSyncLocked(true)
               takeSnapshots()
@@ -3167,7 +4375,7 @@ export function ThemePreviewEditor({
                 }
               } else {
                 const corner = fixedCornerFromScaleDirection(scaleDirectionForPinRef.current)
-                const pos = getBoxCornerInContainer(er, cr, corner)
+                const pos = getRotatedLocalCornerInContainer(el, cr, corner)
                 scalePinBoxRef.current = { mode: 'corner', corner, pinX: pos.x, pinY: pos.y }
               }
             }}
@@ -3196,7 +4404,7 @@ export function ThemePreviewEditor({
                 } else {
                   const dir = scaleDirectionForPinRef.current ?? [1, 1]
                   const corner = fixedCornerFromScaleDirection(dir)
-                  const pos = getBoxCornerInContainer(er, cr, corner)
+                  const pos = getRotatedLocalCornerInContainer(target, cr, corner)
                   scalePinBoxRef.current = { mode: 'corner', corner, pinX: pos.x, pinY: pos.y }
                 }
                 pin = scalePinBoxRef.current
@@ -3204,7 +4412,7 @@ export function ThemePreviewEditor({
               let dlx = 0
               let dty = 0
               if (pin.mode === 'corner') {
-                const cur = getBoxCornerInContainer(er, cr, pin.corner)
+                const cur = getRotatedLocalCornerInContainer(target, cr, pin.corner)
                 dlx = pin.pinX - cur.x
                 dty = pin.pinY - cur.y
               } else {
@@ -3224,20 +4432,32 @@ export function ThemePreviewEditor({
               scaleDirectionForPinRef.current = null
               flushMoveableVisual('sync')
               finalizeScaleBakesFontSize(target)
+              transformSyncLockedRef.current = false
               setTransformSyncLocked(false)
             }}
 
-            onDragGroupStart={() => { resetMoveableVisualPipeline(); setTransformSyncLocked(true); takeSnapshots() }}
+            onDragGroupStart={() => {
+              transformSyncLockedRef.current = true
+              resetMoveableVisualPipeline()
+              setTransformSyncLocked(true)
+              takeSnapshots()
+            }}
             onDragGroup={({ events }) => {
               applyMoveableFrame(events.map(ev => ({ target: ev.target, transform: ev.transform })))
             }}
             onDragGroupEnd={({ events }) => {
               flushMoveableVisual('sync')
               events.forEach(ev => finalizeElement(ev.target))
+              transformSyncLockedRef.current = false
               setTransformSyncLocked(false)
             }}
 
-            onRotateGroupStart={() => { resetMoveableVisualPipeline(); setTransformSyncLocked(true); takeSnapshots() }}
+            onRotateGroupStart={() => {
+              transformSyncLockedRef.current = true
+              resetMoveableVisualPipeline()
+              setTransformSyncLocked(true)
+              takeSnapshots()
+            }}
             onRotateGroup={({ events, inputEvent }) => {
               if (groupMode) {
                 applyMoveableFrame(events.map(ev => ({
@@ -3263,10 +4483,12 @@ export function ThemePreviewEditor({
             onRotateGroupEnd={({ events }) => {
               flushMoveableVisual('sync')
               events.forEach(ev => finalizeElement(ev.target))
+              transformSyncLockedRef.current = false
               setTransformSyncLocked(false)
             }}
 
             onScaleGroupStart={() => {
+              transformSyncLockedRef.current = true
               resetMoveableVisualPipeline()
               setTransformSyncLocked(true)
               takeSnapshots()
@@ -3298,10 +4520,15 @@ export function ThemePreviewEditor({
             onScaleGroupEnd={({ events }) => {
               flushMoveableVisual('sync')
               events.forEach(ev => finalizeScaleBakesFontSize(ev.target))
+              transformSyncLockedRef.current = false
               setTransformSyncLocked(false)
             }}
 
-            onResizeStart={() => { resetMoveableVisualPipeline(); setTransformSyncLocked(true) }}
+            onResizeStart={() => {
+              transformSyncLockedRef.current = true
+              resetMoveableVisualPipeline()
+              setTransformSyncLocked(true)
+            }}
             onResize={(e) => {
               if (!(e.target instanceof HTMLElement)) return
               const el = e.target
@@ -3313,6 +4540,7 @@ export function ThemePreviewEditor({
             onResizeEnd={(e) => {
               flushMoveableVisual('sync')
               if (e.target instanceof HTMLElement) finalizeResize(e.target)
+              transformSyncLockedRef.current = false
               setTransformSyncLocked(false)
             }}
           />

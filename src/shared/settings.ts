@@ -29,7 +29,7 @@ export const SYSTEM_REST_POPUP_THEME_ID = 'theme_rest_default' as const
 /**
  * 子项主文案为空时弹窗显示的兜底，与系统默认结束主题的预览文案一致。
  */
-export const BUILTIN_MAIN_POPUP_FALLBACK_BODY = '时间到！'
+export const BUILTIN_MAIN_POPUP_FALLBACK_BODY = '时间到啦'
 
 /**
  * 休息弹窗 restContent 为空时的兜底，与系统默认休息主题预览文案一致。
@@ -49,6 +49,10 @@ export type PopupOverlayGradientDirection =
   | 'custom'
 export type PopupTextAlign = 'left' | 'center' | 'right' | 'start' | 'end' | 'justify'
 export type PopupTextVerticalAlign = 'top' | 'middle' | 'bottom'
+/** 文字排向；缺省 horizontal-tb 与旧主题兼容 */
+export type PopupTextWritingMode = 'horizontal-tb' | 'vertical-rl' | 'vertical-lr'
+/** 竖排时字符朝向 */
+export type PopupTextOrientationMode = 'mixed' | 'upright' | 'sideways'
 export type PopupImageSourceType = 'single' | 'folder'
 export type PopupFolderPlayMode = 'sequence' | 'random'
 
@@ -205,6 +209,22 @@ export interface PopupTheme {
   contentLineHeight?: number
   timeLineHeight?: number
   countdownLineHeight?: number
+  /** 排向；缺省横排 */
+  contentWritingMode?: PopupTextWritingMode
+  /** 兼容旧 JSON；时间/日期不开放竖排，normalize 会剥 vertical-* */
+  timeWritingMode?: PopupTextWritingMode
+  dateWritingMode?: PopupTextWritingMode
+  countdownWritingMode?: PopupTextWritingMode
+  contentTextOrientation?: PopupTextOrientationMode
+  /** 兼容旧数据；时间/日期横排下不使用 */
+  timeTextOrientation?: PopupTextOrientationMode
+  dateTextOrientation?: PopupTextOrientationMode
+  countdownTextOrientation?: PopupTextOrientationMode
+  /** 直排内数字合并（text-combine-upright）；短层默认开，主文案默认关 */
+  contentCombineUprightDigits?: boolean
+  timeCombineUprightDigits?: boolean
+  dateCombineUprightDigits?: boolean
+  countdownCombineUprightDigits?: boolean
   /**
    * 主题工坊/预览用占位文案（真实弹窗仍用提醒子项的 content / 时间等；仅无子项上下文时用于预览与编辑）。
    */
@@ -405,7 +425,7 @@ export function getDefaultPresetPools(): PresetPools {
       '下班',
       '吃饭',
       '睡觉',
-      '时间到',
+      '时间到啦',
     ],
     restContent: [
       '休息一下',
@@ -441,9 +461,9 @@ function defaultMainTheme(): PopupTheme {
     timeFontSize: 100,
     countdownFontSize: 180,
     textAlign: 'center',
-    contentTransform: { x: 50, y: 42, rotation: 0, scale: 1 },
+    contentTransform: { x: 50, y: 36, rotation: 0, scale: 1 },
     /** 时间单行高度随字，不设 textBoxHeightPct，与预览 Moveable 贴边一致 */
-    timeTransform: { x: 50, y: 55, rotation: 0, scale: 1 },
+    timeTransform: { x: 50, y: 62, rotation: 0, scale: 1 },
   }
 }
 
@@ -471,14 +491,15 @@ function defaultRestTheme(): PopupTheme {
     timeFontSize: 100,
     countdownFontSize: 180,
     textAlign: 'center',
-    contentTransform: { x: 50, y: 42, rotation: 0, scale: 1 },
-    timeTransform: { x: 50, y: 55, rotation: 0, scale: 1 },
-    countdownTransform: { x: 50, y: 70, rotation: 0, scale: 1, textBoxHeightPct: 20 },
+    contentTransform: { x: 50, y: 36, rotation: 0, scale: 1 },
+    timeTransform: { x: 50, y: 62, rotation: 0, scale: 1 },
+    countdownTransform: { x: 50, y: 78, rotation: 0, scale: 1, textBoxHeightPct: 20 },
   }
 }
 
 export function getDefaultPopupThemes(): PopupTheme[] {
-  return [ensureThemeLayers(defaultMainTheme()), ensureThemeLayers(defaultRestTheme())]
+  /** 休息默认在前、结束默认在后，与主题工坊列表/筛选习惯一致 */
+  return [ensureThemeLayers(defaultRestTheme()), ensureThemeLayers(defaultMainTheme())]
 }
 
 /**
@@ -493,11 +514,15 @@ export function mergeSystemBuiltinPopupThemes(themes: PopupTheme[]): PopupTheme[
   const hasMain = themes.some((t) => t.id === SYSTEM_MAIN_POPUP_THEME_ID)
   const hasRest = themes.some((t) => t.id === SYSTEM_REST_POPUP_THEME_ID)
   let next = [...themes]
-  if (!hasMain) next = [mainSnap, ...next]
   if (!hasRest) {
     const mainIdx = next.findIndex((t) => t.id === SYSTEM_MAIN_POPUP_THEME_ID)
-    if (mainIdx >= 0) next.splice(mainIdx + 1, 0, restSnap)
-    else next.push(restSnap)
+    if (mainIdx >= 0) next.splice(mainIdx, 0, restSnap)
+    else next.unshift(restSnap)
+  }
+  if (!hasMain) {
+    const restIdx = next.findIndex((t) => t.id === SYSTEM_REST_POPUP_THEME_ID)
+    if (restIdx >= 0) next.splice(restIdx + 1, 0, mainSnap)
+    else next.unshift(mainSnap)
   }
   return next
 }

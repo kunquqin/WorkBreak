@@ -175,9 +175,11 @@ function SortableLayerRow({
   return (
     <li ref={setNodeRef} style={style} className="list-none">
       <div
-        className={`min-w-0 rounded-md border border-slate-200 bg-white px-2 py-1.5 shadow-sm transition-colors ${
-          selected ? 'border-sky-300 bg-sky-50' : ''
-        } ${isDragging ? 'opacity-90 shadow-md' : ''}`}
+        className={`min-w-0 rounded-md border px-2 py-1.5 transition-colors ${
+          selected
+            ? 'border-sky-400 bg-sky-50 ring-1 ring-sky-200 shadow-none'
+            : `border-slate-200 bg-white ${isDragging ? 'shadow-md' : 'shadow-sm'}`
+        } ${isDragging ? 'opacity-90' : ''}`}
       >
         <div className="flex min-w-0 items-center gap-1.5">
           {!readOnly && (

@@ -21,3 +21,23 @@ alwaysApply: false
 
 - Windows / Chromium 下，**单行 nowrap** 在 **`height: %` + `overflow: auto`** 时仍可能画出**纵向滚动条**（编辑态与弹窗）。
 - **做法**：**time / countdown** 固定高度用 **`overflow: hidden`**；**content** 多行仍 **`overflow: auto`**。
+
+## 4. contentEditable 不要包在 `flex-direction: column` 里
+
+- 编辑态下浏览器会插入 **div/br**，在 **flex 列**里每个块级子节点占一行 → **假换行**、**scrollHeight** 暴涨、Moveable 外框忽高忽低。
+- **做法**：**`isEditing` / 装饰编辑态** 用 **`display: block`**；非编辑态再保留 flex 垂直对齐。写回 **`textBox*Pct`** 可 **`TEXT_EDIT_LAYOUT_DEBOUNCE_MS` 防抖**，**blur** 清定时器并 snap。
+
+## 5. 旋转后四角缩放：固定角勿用 AABB
+
+- **`getBoundingClientRect()`** 是**轴对齐外接框**，四角≠旋转后真实顶点；`onScale` 里用 AABB 角做 pin 会像锚在「全局外框」上。
+- **做法**：**`getRotatedLocalCornerInContainer`**（`offsetWidth/Height`×scale + rotate）。
+
+## 6. 日期/时间短行与 ISO 预设
+
+- 改格式/locale/字体后须 **snap + `updateRect`**；**勿**仅当选中该层才 snap（`dateTimeIntrinsicSig` 路径应对层上 DOM 存在即跑）。
+- **ISO 预设** locale 用 **`en-CA`**，勿 **`sv-SE`**（否则「星期」会变成瑞典语等）。
+
+## 7. 拾色器拖动与撤销栈
+
+- 每次 `input` 若都 **`pushPast` + `structuredClone(整主题)`** 会极卡。
+- **做法**：**`PopupThemeEditUpdateMeta.skipHistory`** + 色块内 **rAF 合并**；**`wrappedOnUpdateTheme` 第三参**向下透传。

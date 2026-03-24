@@ -88,9 +88,9 @@
 │           ├── vite-env.d.ts # 类型声明（含 window.electronAPI）
 │           ├── types.ts      # 类型与默认值（可引用 src/shared）
 │           ├── pages/        # 页面级组件（如 Settings.tsx）
-│           ├── components/   # 通用 UI（如 AddSubReminderModal、SegmentProgressBars）
+│           ├── components/   # 通用 UI（如 AddSubReminderModal、SegmentProgressBars、PopupThemeColorSwatch）
+│           ├── hooks/        # 如 usePopupThemeEditHistory（主题编辑撤销 / skipHistory）
 │           ├── stores/       # 状态（后续添加）
-│           ├── hooks/        # 自定义 Hooks（后续添加）
 │           └── utils/        # 工具（如 durationFormat、stopwatchUtils）
 │
 └── out/                      # 构建产物（git 忽略）
@@ -196,7 +196,7 @@
 - **弹窗内容精简**：主弹窗仅显示"提醒内容 + 时间"；休息弹窗仅显示"休息提醒 + 时间"（由主题排版决定可见层）。**休息段最后 N 秒**单独为固定黑底倒计时页（「休息即将结束」+ 数字），**不**沿用休息主题图层。
 - **关闭按钮**：右上角黑色圆底白色 SVG 细线 X（`stroke-width` 控制粗细），鼠标移动时显示、静止 2 秒后隐藏；支持 `Esc` 键关闭。**不要**用"知道了"大按钮。
 - **文字尺寸**：使用显式像素值（如 `${contentFont}px`），不使用 CSS `clamp()`，保证渲染确定性与预览一致性。
-- **文字定位**：使用 `TextTransform` 百分比绝对定位（`left: x%; top: y%; transform: translate(-50%, -50%) rotate() scale()`），主进程 `transformStyle()` 辅助函数生成 CSS。无 transform 字段时使用默认位置（主弹窗：内容 y=42%、时间 y=55%；休息弹窗：内容 y=30%、倒计时 y=70%）。
+- **文字定位**：使用 `TextTransform` 百分比绝对定位（`left: x%; top: y%; transform: translate(-50%, -50%) rotate() scale()`），主进程 `transformStyle()` 辅助函数生成 CSS。无 transform 字段时使用默认位置（主弹窗 legacy：内容 y=36%、时间 y=62%；休息弹窗 legacy 同主/时间间距，倒计时约 y=78%；图层栈以主题字段为准）。
 - **休息弹窗 tick 动画**：使用独立 CSS `scale` 属性（非 `transform`），避免覆盖定位 transform。Electron 28+ / Chromium 120+ 支持。
 
 ### 4.13 弹窗主题预览（ThemePreviewEditor / PopupThemeEditorPanel）
@@ -214,7 +214,10 @@
 - **主文案 content 栏宽（`TextTransform` + ThemePreviewEditor）**：仅 **content** 适用「≤ 画布约 **60%** 时横向贴字、超出则锁 **60%** 换行」的自动栏宽；**`contentTextBoxUserSized`** 为 true 时（预览四边拉框或面板填宽高）宽度不再随字数自动变，可拉至约 **96%**；**失焦**在**当前宽度**下只自动增高（`textBoxHeightPct`）。**`textBoxWidthPct` 上限 96%**（normalize / 弹窗 / 预览一致）。
 - **时间 / 倒计时「短层」**：**`shortLayerTextBoxLockWidth`**（`shared/settings.ts` / `main/settings.ts` normalize）。**未锁定**：`width: max-content`，**`textBoxWidthPct` 仅作 `max-width` 上限**（Moveable 外框贴「12:00」等单行）；**预览四边拉框** `finalizeResize` 后置 **`shortLayerTextBoxLockWidth: true`** 恢复百分比**定宽条**。**`reminderWindow.textBoxLayoutCss`** 与 **`ThemePreviewEditor`** 样式须同步。固定 **`height: %`** 时 **time/countdown 用 `overflow: hidden`**，**content** 仍 **`overflow: auto`**（避免 Windows/Chromium 在 **nowrap** 下单行误出纵向滚动条）。
 - **`effectiveEditableKeys` 稳定化**：**不要**把父组件**内联**的 **`onLiveTextCommit` 函数引用**放进 `useMemo` 依赖（子项每秒因时钟重渲染 → 新引用 → `liveSnap` 等 effect 误触发抖动）。用 **`Boolean(onLiveTextCommit)`** + 显式 **`editableTextKeys` 签名串**（排序 `join`）；默认 **`['content']` / 全层** 数组用**模块级常量**，避免每帧 `new []`。
-- **单选四角等比缩放锚点**：拖某角则锁定**对角**在预览容器内的像素位置（Moveable **`direction`** → **`fixedCornerFromScaleDirection`**，每帧修正 `translate`）；**`scaleDirectionForPinRef`** 供 Ctrl 切换中心后再松键时恢复对角语义；**Ctrl** 仍锁定 **AABB 中心**。
+- **单选四角等比缩放锚点**：拖某角则锁定**对角**在预览容器内的像素位置（Moveable **`direction`** → **`fixedCornerFromScaleDirection`**，每帧修正 `translate`）；**`scaleDirectionForPinRef`** 供 Ctrl 切换中心后再松键时恢复对角语义；**Ctrl** 仍锁定 **元素 AABB 中心**（与形心一致）。**旋转后**「对角」须按 **物体本地四角** 计算：**`getRotatedLocalCornerInContainer`**（`offsetWidth/Height`×`scale` + `rotate` 映射到容器坐标）；**禁止**仅用 **`getBoundingClientRect` 的轴对齐外接矩形四角** 当固定点，否则锚点会像贴在全局外框上。
+- **日期绑定层与短行裁切**：时间/日期层 `textBoxWidthPct` 在未锁宽时常作 **`max-width` 上限**；改 **格式、locale、字体、斜体** 后须触发 **`snapShortLayerTightContent`** 与 **`Moveable.updateRect`**（`dateTimeIntrinsicSig`、`contentLayoutSnapSig` 等）；面板改日期时 **勿** 仅当「当前选中日期层」才 snap（否则未选中会裁切）。**ISO 风格**预设 locale 为 **`en-CA`**（`shared/popupThemeDateFormat.ts`），**勿用 `sv-SE`**，否则勾选「星期」会出现瑞典语星期名。
+- **contentEditable 与 flex 列布局**：主文案 / 倒计时 / 装饰文本在 **非编辑态** 可用 **`display:flex` + `flex-direction:column`** 做垂直对齐；**进入编辑态** 须改为 **`display:block`**（或外层 flex、内层单独可编辑块），否则 Chromium 在可编辑区内插入的 **div/br** 会变成 **flex 子项纵向堆叠**，出现「未换行却空行」、**`scrollHeight` 虚高**、Moveable 外框忽高忽低。输入时写回 **`textBox*Pct`** 可 **短防抖**（如 `TEXT_EDIT_LAYOUT_DEBOUNCE_MS`），**`blur` 时清定时器并做一次 snap**；卸载时清理定时器。
+- **主题色与拾色器性能**：统一用 **`PopupThemeColorSwatch`**（默认 **`h-9`/`w-12`**，与输入框同高）；拾色器连续 `input` 时通过 **`PopupThemeEditUpdateMeta.skipHistory`**（`usePopupThemeEditHistory`）避免每帧 **`structuredClone(整主题)`** 压撤销栈，并在色块内用 **rAF 合并**；**`mergedWrappedOnUpdateTheme` / `ThemePreviewEditor` 的 `onUpdateTheme`** 第三参 **`meta?`** 可选、须向下透传。
 
 ### 4.14 进度沉淀规范（强制执行）
 

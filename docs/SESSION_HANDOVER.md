@@ -1,12 +1,31 @@
-# 会话交接（**当前包版本 `0.0.15`** · 延续 v0.0.10u 主题/图层大改）
+# 会话交接（**当前包版本 `0.0.16`** · 延续 v0.0.10u 主题/图层大改）
 
 > 下一段「粘贴用交接提示」见文末代码块。
 
 ## 0.1 文字参数区布局重构（本轮）
 
+- **主题工坊列表（本次）**：缩略图卡片底部 **休息→浅蓝底/字**、**结束→浅绿底/字**，与顶栏蓝/绿语义一致；**主题名 `font-bold`**；筛选 chip **顺序**为 全部 → 休息 → 结束，且选中态 **蓝/绿** 高亮。`getDefaultPopupThemes` / `mergeSystemBuiltinPopupThemes` 默认 **休息系统主题在前、结束在后**。列表支持 **@dnd-kit `rectSortingStrategy` 拖拽排序**（左侧六点手柄，`onReorderThemes` 写回 `popupThemes`）。`npm run build` 已通过。
+- **预览区拖拽吸附（本次）**：`previewSnapGuidelines` 改为依赖 **`previewContainerWidth/Height` 状态**（`ResizeObserver` + `useLayoutEffect` 同步高），不再在 `useMemo` 内读 `containerRef`（首帧常为 null → 吸附线为空、贴边无磁力）。`Moveable` 补 **`snapHorizontalThreshold` / `snapVerticalThreshold`（14）`**：`react-moveable` 0.56 以二者为准，单独设 `snapThreshold` 已弃用且默认仅 5px 不易感知。
+- **主弹窗兜底文案与默认层间距（本次）**：`BUILTIN_MAIN_POPUP_FALLBACK_BODY` / `RESTORE_BINDING_BODY_MAIN` 与预设池「提醒内容」条目改为 **「时间到啦」**；系统默认结束/休息主题、新建用户主题、`ThemePreviewEditor` / 面板「变换」默认、legacy `transformStyle` 回退、装饰默认 y：**主文案 y 36%、时间 y 62%**（原 42/55），**休息倒计时 y 78%**（原 70），**日期 y 65%**（原 58）。`npm run build` 已通过。
+- **装饰图片层：操作框贴图边 + 拖拽更顺（本次）**：`contain` 下 **`max-width`/`max-height` 仅写在 `<img>`**（theme 上限换 px 或 %），外层 `inline-block` **不再**设 max-height：避免父盒被 max-height 钳短而子图仍按宽度算出更高、上下溢出，Moveable 量高偏矮。`onLoad` **仅当宽高比偏差 >~1.2%** 时写回 **`textBox*Pct`**。`cover` 仍为定比 div + 满铺。拖拽 **rAF 不刷 state**、松手 **sync**；手势起止 **同步 `transformSyncLockedRef`**。`npm run build` 已通过。
+- **横/竖排与直排数字（本次）**：产品约定 **竖排相关能力全免费**（不按会员门控）。`PopupTheme` / `TextThemeLayer` 增加 `writingMode`、`textOrientation`、`combineUprightDigits`；`popupVerticalText.ts` 统一内外层盒与短层 overflow；`reminderWindow` 与 `ThemePreviewEditor` 用内层 `data-wb-text-inner` 承载字距/行高，竖排外层 flex 对齐；`PopupThemeEditorPanel` 绑定层与装饰层「排版」增加排向（横 / 竖 rl / 竖 lr）、字符朝向、直排内数字合并及竖排说明；竖排内 `justify` 按居中。预览 **时间层默认行高**与主进程一致为 **`timeLineHeight ?? 1`**。`npm run build` 已通过。
+- **排向 UI 两级（本次）**：面板「排版」中排向改为 **横排 | 竖排**；仅竖排时在**同一行右侧**出现 **列序：左 | 右**（`vertical-lr` / `vertical-rl`）；横排时收起列序。从横排点「竖排」默认写入 `vertical-rl`。`npm run build` 已通过。
+- **竖排双击编辑外框压扁（本次）**：根因是编辑态仍用 **`height: textBoxHeightPct%`**，而该百分比在横排时常表示「一行」高度，竖排下列高应对字柱，沿用会导致极扁框 + 截断。主文案曾试 **`height:auto` + `min-height:min-content`**，但会阻碍换列；现主文案与装饰竖排编辑均改为 **确定列高 %**（见上/下条 `verticalEditColumnHeightPct` / `decoVerticalEditColHPct`）+ 内层 **`previewEdit` overflow**。只读仍用落盘 `bh%`。进入竖排编辑时 **`force` 重算** textBox（非 userSized），并用 ref 避免 callback/图层更新导致每帧重复。`npm run build` 已通过。
+- **竖排假横向滚动条（本次）**：`writing-mode: vertical-*` 下内层 **`overflow:auto`** 易在块轴（物理水平）因亚像素/与 flex 子项最小尺寸交互误判溢出，出现**底部横向滚动条**。`popupVerticalText` 非 short 内层改为 **`overflow-x:hidden; overflow-y:auto`**，并补 **`min-width/min-height:0`**；真弹窗主文案外层 `textBoxLayoutCss` 在竖排时同步；预览主文案竖排内层 **`min-w-0`**。`npm run build` 已通过。
+- **预览自动栏宽/栏高 80% + 横竖切换重算（本次）**：`ThemePreviewEditor` 引入 **`CONTENT_TEXT_AUTO_FIT_MAX_RATIO = 0.8`**：主文案与装饰文本**自动贴合**时宽、高默认不超过预览区 **80%**，超出在框内换行/换列并由内层 **overflow 滚动**；**手动拉框**仍可至 **96%**（`CONTENT_TEXT_BOX_CAP_RATIO`）。**横排 ↔ 竖排**切换时对主文案 **`force` 重算**并清除 `contentTextBoxUserSized`；装饰文本按图层 **`writingMode` 签名**在首帧之后 **`force` 重算**。装饰层补齐 **`applyDecoTextBoxAutoLayoutVertical`** / 竖排 **`snapDecoTextBoxHeightOnly`**。竖排失焦后 **`adjustBindingVerticalEdgeAnchor` / `adjustDecoVerticalEdgeAnchor`** 按列序固定左或右边缘，避免栏宽变化时整块相对列序漂移。`npm run build` 已通过。
+- **竖排主文案编辑态外框与 80% 换列（本次）**：编辑态曾与横排共用外层 `height: auto`，父级高度不定，内层 `max-height: 100%` 无法约束列高，列会撑满预览区、文字溢出框；失焦后写回 `textBoxHeightPct` 又正常。已改为 **竖排且非短行绑定层** 外层始终用固定 `height: textBoxHeightPct%`（与只读一致）；尚无 `textBoxHeightPct` 时仅在编辑态加 `max-height: 80%` 画布高兜底。进入竖排内容编辑时 **`useLayoutEffect`** 立即跑一次 `applyContentTextBoxAutoLayout`，尽快写入 `bh`。`npm run build` 已通过。
+- **装饰文本竖排编辑换列（本次续）**：与主文案对齐——竖排装饰 **编辑态** 外层用 **`decoVerticalEditColHPct`**（有 `textBoxHeightPct≥8` 时钳在 12–80%，否则整列 80%），内层 `verticalTextInnerDomStyle(..., 'previewEdit')`；**非编辑**竖排仍叠 `overflow: hidden`。避免编辑态 `height:auto` + 内层 `overflow:hidden` 挡块向换列。`npm run build` 已通过。
+- **新建装饰文本 Moveable 底边「往下长」动画感（本次）**：`decoTextLayerWritingSig` 的 effect 曾对**每个**装饰层 `applyDecoTextBoxAutoLayout(..., { force: true })`，新建一条会连带旧层多次 `onUpdateTheme` + `ResizeObserver` 跟高，外框像被拉长。改为仅对签名中 **新建或 writingMode 变化** 的 id 做 force 贴盒；`Moveable` 关闭 **`useResizeObserver`**（仍由 `theme.layers` / 显式 `updateRect` 同步）；`index.css` 对 **`.moveable-control-box`** 设 **`transition: none`** 兜底。`npm run build` 已通过。
+- **参数区优先编辑文字（方案 A，本次）**：`PopupThemeEditorPanel` 内 `ThemePreviewEditor` 启用 **`panelFirstTextEditing` + `onRequestPanelTextFocus`**：绑定主文案与装饰文本在预览中 **只读**（无画布 `contentEditable`）；**双击**对应层则展开参数区并 **聚焦右侧 textarea**（主文案 / 装饰各一）。主题工坊浮动编辑、子项内嵌小预览 **未改**，仍可走画布双击。`npm run build` 已通过。
+- **竖排画布编辑列高过小 / 失焦框错乱（本次）**：横排多行切竖排后只读正常，双击画布编辑若仍沿用横排遗留的较小 `textBoxHeightPct`（如 12% 行高）作列高，列过矮会挤多块向、假横条与 `snap` 写回错乱。新增 **`VERTICAL_EDIT_COLUMN_MIN_HEIGHT_PCT`（28）**：非手动拉框时编辑态列高若合并后低于阈值则改用画布 **80%**；主文案与装饰一致。移除与 `verticalContentEditEntryRef` 重复的 `wasEditingContentVerticalRef` effect；进入竖排编辑的 **force 自动布局** 改为 **双 `requestAnimationFrame`** 后再跑（主文案 + 装饰），避免与编辑态外层样式同帧竞态。`npm run build` 已通过。
+- **竖排块向宽度测量被外层窄条夹死（本次）**：竖排结构为「外层 `width:%` + 内层 `data-wb-text-inner`」。测量内层 `max-content`/`scrollWidth` 时外层仍为横排遗留的窄百分比，flex 子项无法横向长出多列，`scrollWidth` 偏小 → 编辑时 Moveable 不随列变宽、失焦写回 `textBoxWidthPct` 后呈长条截断。新增 **`pushVerticalMeasureUnconstrainOuter`**：测量瞬间将外层改为 `width:max-content` + `maxWidth` 像素上限（自动 80% / 手动拉框 96%），再恢复。**主文案** `applyContentTextBoxAutoLayoutVertical` / `snapContentTextBoxHeightOnly`、**装饰** `applyDecoTextBoxAutoLayoutVertical` / `snapDecoTextBoxHeightOnly` 均包裹测量段；并去掉竖排自动布局在「焦点在内层」时的整段跳过，使防抖输入能写回正确块向宽度。`npm run build` 已通过。
+- **PopupThemeColorSwatch 受控 input 警告（本次）**：色块用 `value` 但仅用原生 `addEventListener('input')`，React 认为无 `onChange` 的受控字段，控制台警告且在新版下可能表现为只读、连带主题面板交互异常。已改为 **`onChange` + `onBlur` 走 React 事件**，内层仍保留首帧入撤销栈 + rAF 合并 + `skipHistory` 逻辑。`npm run build` 已通过。
+- **预览区不再编辑休息倒计时层（本次）**：倒计时由运行时弹窗绘制，已从 `ThemePreviewEditor` 移除休息主题下的倒计时叠加层与 `textLayerPairs` 条目；`PopupThemeEditorPanel` 从 `selectedElements` 剔除残留的 `countdown`（**主/休息**均处理，避免仅选中 `countdown` 时图层栏无行匹配、高亮消失）。**Settings** 用稳定空数组 `EMPTY_THEME_TEXT_SELECTION` 替代未写入 map 时的每帧 `?? []`。**主文案 / 装饰文本编辑**：防抖写回 theme 时焦点仍在编辑区内则跳过写回等（见前文）。`npm run build` 已通过。
 - **日期绑定层（本次）**：图层栏 **+ 日期** 添加唯一 `bindingDate` 层；`Intl.DateTimeFormat` 按主题字段输出年月日/星期（可关、可设格式与 BCP 47 locale）；预设「中文常用 / 英文 US / ISO / 仅星期」。预览支持 `previewDateText` 固定串 + 30s 刷新；真弹窗在生成 HTML 时用当前时刻（与静态时间层一致）。涉及 `popupThemeDateFormat.ts`、`reminderWindow` 图层分支、`ThemePreviewEditor` 的 `TextElementKey` 含 `date`、`PopupThemeEditorPanel` 日期区、主进程 `normalize` 补全日期字段。
 - **「ISO 风格」出现瑞典语星期 + 日期裁切（本次）**：原 ISO 预设用 **`sv-SE`** 换 YYYY-MM-DD，用户勾选「星期」后星期名为瑞典语（**tisdag = 星期二**）。已改为 **`en-CA`**，星期为英文；面板「ISO 风格」按钮增加 `title` 说明。预览 **`snapShortLayerTightContent`**：① 面板改格式后**无论是否选中日期/时间层**都重算 textBox，避免裁切；② **斜体**层加宽度余量。已存主题若仍为 `sv-SE` 可再点一次 ISO 或改 Locale。
 - **拾色器拖动卡顿（本次）**：根因是每次 `input` 都走 `wrappedOnUpdateTheme` → **`structuredClone(整主题)`** 压撤销栈。已增加 **`PopupThemeEditUpdateMeta.skipHistory`**；**`PopupThemeColorSwatch`** 用原生 `input` 监听：首帧正常入栈，拖动中 **`skipHistory` + `requestAnimationFrame` 合并**；`change`/`blur` 收尾刷新。`ThemeStudio` / `PopupThemeEditorPanel` / `ThemePreviewEditor` 类型已兼容第三参可选。
+- **旋转后四角缩放锚点错位（本次）**：等比缩放时 `onScale` 用 **`getBoundingClientRect` 的 AABB 四角**当「固定对角」，旋转后 AABB 角≠物体真实角，表现为锚在全局外接矩形上。**修复**：**`getRotatedLocalCornerInContainer`** 用 **`offsetWidth/Height` × scale + rotate** 算真实四角相对容器坐标，再校正 `translate`。
+- **编辑文字时「假换行」与 Moveable 高度乱跳（本次）**：**contentEditable** 与 **`display:flex; flex-direction:column`** 叠加时，浏览器插入的 **div/br** 会变成 **flex 子项纵向堆叠**，scrollHeight 虚高；每键 **`applyContentTextBoxAutoLayout` 写回 theme** 又触发重渲染，与旋转/缩放时的 **`updateRect`** 叠加更明显。**修复**：主文案/倒计时/装饰文本 **仅在编辑态** 改为 **`display:block`**；主文案与装饰文本 **`onInput` 对写回 textBox 防抖 ~90ms**（仍每帧 `updateRect`），**blur** 清定时器并照常 snap。
 - **时间/日期/主文案改字体或格式后 Moveable 裁切（本次）**：短行层 `textBoxWidthPct` 作 `max-width` 上限时，若字符串变长或度量变宽未重算会裁切。已用 **`contentLayoutSnapSig`** 扩大主文案栏宽同步触发条件；**`dateTimeIntrinsicSig`** + 选中时 **`snapShortLayerTightContent` + `updateRect`**；并在 **`updateRect` 的 `useEffect` 依赖**中补 **`preview*Text`、日期显示/格式、`datePreviewTick`、`previewLabels`、`contentLayoutSnapSig`、`dateTimeIntrinsicSig`** 作双保险。`npm run build` 已通过。
 - **浮动编辑顶栏 Tab 顺序（本次）**：**休息壁纸（蓝）** 在左、**结束壁纸（绿）** 在右（`ThemeStudio.tsx` 浮动弹窗 `tablist` 对调 JSX 顺序；`border-l` 分隔线在右侧「结束壁纸」上）。
 - **Delete/Backspace 删除图层与图层栏一致（本次）**：`ThemePreviewEditor` 在 `keyboardScope` 内将 **Backspace/Delete** 统一为 **`removeThemeLayers`**（与 `PopupThemeLayersBar` × 同源），可删 **背景/遮罩/主文案绑定层/时间层/装饰文本/装饰图片**；框选多装饰层时一次删净；成功后清空相关选中态。**`popupThemeLayers.ts`** 新增 **`removeThemeLayers`**，单删仍走 **`removeThemeLayer`**。`PopupThemeEditorPanel` 不再单独拦截装饰层删除，避免与预览逻辑重复；**`ThemeStudioEditWorkspace`** 向左栏预览传入 **`selectedStructuralLayerId`** 以便删结构层。`npm run build` 已通过。
@@ -236,7 +255,7 @@
 
 ## 11. 版本信息
 
-- **当前 package 版本**：**`0.0.15`**（见根目录 `package.json`；git tag 以你本地打标为准）
+- **当前 package 版本**：**`0.0.16`**（见根目录 `package.json`；git tag 以你本地打标为准）
 - **内容概览**：主题工坊「+ 创建壁纸」、浮动编辑顶栏 **休息壁纸（蓝）/ 结束壁纸（绿）**（左→右）切换 `target`；子项「编辑主题」**锁定用途**；休息主题预览含 **content + time + countdown（绑定层）**；**休息结束最后几秒**仍固定黑底（`buildRestEndCountdownHtml`），与主题图层硬切；`ThemeStudioFloatingEditor` 保留 **`bannerMain`** 别名避免 HMR 残留 `ReferenceError`
 - **图层 V1**：数据 + 主进程按序渲染 + 工坊/Panel 图层栏与预览 Moveable 已接（见 **§1 · 弹窗主题 · 图层 V1**）；**待办**：全链路手测、`AddSubReminderModal` 小预览是否需显式传图层相关 props、`POPUP_THEME_PLAN` 里程碑勾选与 V1.5 浮动工具栏等
 
@@ -359,7 +378,7 @@
 ## 12. 新会话开头可粘贴的交接提示
 
 ```
-【WorkBreak — 新会话交接（package **0.0.15** · 图层 V1 已接主链路）】
+【WorkBreak — 新会话交接（package **0.0.16** · 图层 V1 已接主链路）】
 
 请先读：
 - AGENTS.md：**4.11–4.16**（含 4.15 图层 V1 规格、4.16 ThemeStudio 重构注意、4.12 休息结束倒计时与主弹窗图层说明）
@@ -372,10 +391,11 @@
 - **图层 V1 主链路已落地**：`popupThemeLayers` 迁移、`reminderWindow` 按 layers 渲染、休息 **`countdownStr`**、工坊 **图层栏** + **ThemePreviewEditor** 按 z 序与装饰 Moveable；**`npm run build`** 已通过（preload **`lib.entry`** 已补）
 
 **下一步（建议）**：
-1. 手测：**删除图层 → 保存 → 重启**，确认空栈与「+ 背景/遮罩」恢复；真弹窗主文案字号与工坊一致
-2. 手测：图层顺序与真弹窗 z 序、休息弹窗倒计时绑定层、大图装饰临时目录加载
-3. 核对 **子项小预览**（`AddSubReminderModal`）是否需传入图层栏相关 props（当前多为可选）
-4. 更新 **POPUP_THEME_PLAN** 里程碑勾选；可选 **V1.5** 选中态浮动工具栏
+1. 手测：主文案 / 时间 / 日期 / 装饰 / 休息主题倒计时在 **横排与竖排** 下的编辑、失焦 snap、Moveable 外框与 **真弹窗** 一致；`justify` 在竖排表现
+2. 手测：**删除图层 → 保存 → 重启**，确认空栈与「+ 背景/遮罩」恢复；真弹窗主文案字号与工坊一致
+3. 手测：图层顺序与真弹窗 z 序、休息弹窗倒计时绑定层、大图装饰临时目录加载
+4. 核对 **子项小预览**（`AddSubReminderModal`）是否需传入图层栏相关 props（当前多为可选）
+5. 更新 **POPUP_THEME_PLAN** 里程碑勾选；可选 **V1.5** 选中态浮动工具栏
 
 图层 V1 产品结论（必须遵守）：
 1. **文本层 / 时间层**：各层可 **增删**；**时间层** 至多 **1**；**主文案绑定** 文本层与根字段 **`content*`** 双向同步（`mergeContentThemePatchIntoBindingTextLayer` / `themePatchFromBindingTextLayer`）。**休息段最后几秒** 仍为固定黑底页，**不**在主题预览里叠倒计时层。

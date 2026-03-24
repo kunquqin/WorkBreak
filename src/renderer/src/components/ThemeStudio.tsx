@@ -1,4 +1,24 @@
-import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type RefObject } from 'react'
+import {
+  useCallback,
+  useEffect,
+  useLayoutEffect,
+  useMemo,
+  useRef,
+  useState,
+  type CSSProperties,
+  type KeyboardEvent,
+  type RefObject,
+} from 'react'
+import {
+  DndContext,
+  type DragEndEvent,
+  PointerSensor,
+  closestCenter,
+  useSensor,
+  useSensors,
+} from '@dnd-kit/core'
+import { SortableContext, arrayMove, rectSortingStrategy, useSortable } from '@dnd-kit/sortable'
+import type { Transform } from '@dnd-kit/utilities'
 import { collectPopupThemeImagePathsForPreview } from '../utils/popupThemePreview'
 import type { PopupTheme, PopupThemeTarget } from '../types'
 import { ThemePreviewEditor, type TextElementKey } from './ThemePreviewEditor'
@@ -7,6 +27,15 @@ import { clonePopupThemeForFork, popupThemeContentEquals } from '../../../shared
 import { addImageDecorationLayer, mergeContentThemePatchIntoBindingTextLayer } from '../../../shared/popupThemeLayers'
 import { ensureThemeLayers } from '../../../shared/settings'
 import { usePopupThemeEditHistory, type PopupThemeEditUpdateMeta } from '../hooks/usePopupThemeEditHistory'
+
+/** 与设置页大类排序一致：可变高网格项禁用 scale 形变，仅平移 */
+function sortableTranslateOnly(t: Transform | null): string | undefined {
+  if (!t) return undefined
+  const x = t.x ?? 0
+  const y = t.y ?? 0
+  if (x === 0 && y === 0) return undefined
+  return `translate3d(${Math.round(x)}px, ${Math.round(y)}px, 0)`
+}
 
 function themeDraftDirty(baseline: PopupTheme, draft: PopupTheme): boolean {
   if ((baseline.name ?? '').trim() !== (draft.name ?? '').trim()) return true
@@ -230,6 +259,105 @@ function ThemeStudioThumbnail({
   )
 }
 
+function ThemeStudioSortGrip() {
+  return (
+    <svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor" className="text-slate-400" aria-hidden>
+      <circle cx="9" cy="6" r="1.5" />
+      <circle cx="15" cy="6" r="1.5" />
+      <circle cx="9" cy="12" r="1.5" />
+      <circle cx="15" cy="12" r="1.5" />
+      <circle cx="9" cy="18" r="1.5" />
+      <circle cx="15" cy="18" r="1.5" />
+    </svg>
+  )
+}
+
+type SortableThemeStudioCardProps = {
+  theme: PopupTheme
+  previewImageUrlMap: Record<string, string>
+  previewViewportWidth: number
+  popupPreviewAspect: '16:9' | '4:3'
+  onOpenEdit: (themeId: string) => void
+}
+
+function SortableThemeStudioCard({
+  theme: t,
+  previewImageUrlMap,
+  previewViewportWidth,
+  popupPreviewAspect,
+  onOpenEdit,
+}: SortableThemeStudioCardProps) {
+  const { attributes, listeners, setNodeRef, transform, transition, isDragging } = useSortable({
+    id: t.id,
+    animateLayoutChanges: () => false,
+  })
+  const dragStyle: CSSProperties = {
+    transform: sortableTranslateOnly(transform),
+    transition,
+    zIndex: isDragging ? 50 : undefined,
+  }
+  const isMain = t.target === 'main'
+  const footerTone = isMain
+    ? 'border-emerald-100 bg-emerald-50/90'
+    : 'border-sky-100 bg-sky-50/90'
+  const subTone = isMain ? 'text-emerald-800' : 'text-sky-800'
+
+  const open = () => onOpenEdit(t.id)
+  const onThumbKey = (e: KeyboardEvent) => {
+    if (e.key === 'Enter' || e.key === ' ') {
+      e.preventDefault()
+      open()
+    }
+  }
+
+  return (
+    <div
+      ref={setNodeRef}
+      style={dragStyle}
+      className={`group flex flex-col overflow-hidden rounded-xl border border-slate-200 bg-white text-left shadow-sm transition-shadow hover:border-slate-300 hover:shadow-md ${
+        isDragging ? 'opacity-95 shadow-lg ring-2 ring-slate-300' : ''
+      }`}
+    >
+      <div
+        role="button"
+        tabIndex={0}
+        onClick={open}
+        onKeyDown={onThumbKey}
+        className="min-h-0 shrink-0 cursor-pointer outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-slate-400"
+      >
+        <ThemeStudioThumbnail
+          theme={t}
+          previewImageUrlMap={previewImageUrlMap}
+          previewViewportWidth={previewViewportWidth}
+          popupPreviewAspect={popupPreviewAspect}
+        />
+      </div>
+      <div className={`flex items-start gap-1 border-t p-2.5 ${footerTone}`}>
+        <button
+          type="button"
+          className="mt-0.5 shrink-0 touch-none rounded p-0.5 text-slate-500 hover:bg-black/5 active:cursor-grabbing cursor-grab"
+          aria-label="拖动排序"
+          {...listeners}
+          {...attributes}
+          onClick={(e) => e.stopPropagation()}
+        >
+          <ThemeStudioSortGrip />
+        </button>
+        <div
+          role="button"
+          tabIndex={0}
+          className="min-w-0 flex-1 cursor-pointer outline-none focus-visible:ring-2 focus-visible:ring-slate-400 rounded-sm"
+          onClick={open}
+          onKeyDown={onThumbKey}
+        >
+          <p className="truncate text-sm font-bold text-slate-900">{t.name || t.id}</p>
+          <p className={`text-[11px] font-medium ${subTone}`}>{isMain ? '结束壁纸' : '休息壁纸'}</p>
+        </div>
+      </div>
+    </div>
+  )
+}
+
 export type ThemeStudioListViewProps = {
   themes: PopupTheme[]
   previewImageUrlMap: Record<string, string>
@@ -238,6 +366,8 @@ export type ThemeStudioListViewProps = {
   onOpenEdit: (themeId: string) => void
   /** 打开浮动编辑弹窗；在弹窗内选择结束/休息壁纸类型 */
   onAddTheme: () => void
+  /** 拖拽调整 `popupThemes` 顺序（与筛选无关：按 id 在全量列表中移动） */
+  onReorderThemes: (next: PopupTheme[]) => void
 }
 
 export function ThemeStudioListView({
@@ -247,6 +377,7 @@ export function ThemeStudioListView({
   popupPreviewAspect,
   onOpenEdit,
   onAddTheme,
+  onReorderThemes,
 }: ThemeStudioListViewProps) {
   const [filter, setFilter] = useState<'all' | 'main' | 'rest'>('all')
   const filtered = useMemo(() => {
@@ -254,26 +385,49 @@ export function ThemeStudioListView({
     return themes.filter((t) => t.target === filter)
   }, [themes, filter])
 
-  const chip = (id: typeof filter, label: string) => (
-    <button
-      key={id}
-      type="button"
-      onClick={() => setFilter(id)}
-      className={`rounded-md px-3 py-1.5 text-xs font-medium transition-colors ${
-        filter === id ? 'bg-slate-800 text-white' : 'bg-white text-slate-600 ring-1 ring-slate-200 hover:bg-slate-50'
-      }`}
-    >
-      {label}
-    </button>
-  )
+  const sensors = useSensors(useSensor(PointerSensor, { activationConstraint: { distance: 6 } }))
+
+  const onDragEnd = (event: DragEndEvent) => {
+    const { active, over } = event
+    if (!over || active.id === over.id) return
+    const activeId = String(active.id)
+    const overId = String(over.id)
+    const oldFull = themes.findIndex((t) => t.id === activeId)
+    const newFull = themes.findIndex((t) => t.id === overId)
+    if (oldFull < 0 || newFull < 0) return
+    onReorderThemes(arrayMove(themes, oldFull, newFull))
+  }
+
+  const chip = (id: typeof filter, label: string) => {
+    const active = filter === id
+    let activeCls = 'bg-slate-800 text-white'
+    let inactiveCls = 'bg-white text-slate-600 ring-1 ring-slate-200 hover:bg-slate-50'
+    if (id === 'rest') {
+      activeCls = 'bg-blue-600 text-white shadow-sm'
+      inactiveCls = 'bg-white text-blue-900 ring-1 ring-blue-200 hover:bg-blue-50/80'
+    } else if (id === 'main') {
+      activeCls = 'bg-emerald-600 text-white shadow-sm'
+      inactiveCls = 'bg-white text-emerald-900 ring-1 ring-emerald-200 hover:bg-emerald-50/80'
+    }
+    return (
+      <button
+        key={id}
+        type="button"
+        onClick={() => setFilter(id)}
+        className={`rounded-md px-3 py-1.5 text-xs font-medium transition-colors ${active ? activeCls : inactiveCls}`}
+      >
+        {label}
+      </button>
+    )
+  }
 
   return (
     <div className="flex min-h-0 flex-1 flex-col gap-4">
       <div className="flex flex-wrap items-center justify-between gap-3">
         <div className="flex flex-wrap items-center gap-2">
           {chip('all', '全部')}
-          {chip('main', '结束壁纸')}
           {chip('rest', '休息壁纸')}
+          {chip('main', '结束壁纸')}
         </div>
         <button
           type="button"
@@ -284,36 +438,22 @@ export function ThemeStudioListView({
         </button>
       </div>
       <div className="min-h-0 flex-1 overflow-y-auto overscroll-contain">
-        <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4">
-          {filtered.map((t) => (
-            <div
-              key={t.id}
-              role="button"
-              tabIndex={0}
-              onClick={() => onOpenEdit(t.id)}
-              onKeyDown={(e) => {
-                if (e.key === 'Enter' || e.key === ' ') {
-                  e.preventDefault()
-                  onOpenEdit(t.id)
-                }
-              }}
-              className="group flex flex-col overflow-hidden rounded-xl border border-slate-200 bg-white text-left shadow-sm transition-shadow hover:border-slate-300 hover:shadow-md focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-slate-400"
-            >
-              <ThemeStudioThumbnail
-                theme={t}
-                previewImageUrlMap={previewImageUrlMap}
-                previewViewportWidth={previewViewportWidth}
-                popupPreviewAspect={popupPreviewAspect}
-              />
-              <div className="border-t border-slate-100 p-2.5">
-                <p className="truncate text-sm font-medium text-slate-800">{t.name || t.id}</p>
-                <p className="text-[11px] text-slate-500">
-                  {t.target === 'main' ? '结束壁纸' : '休息壁纸'}
-                </p>
-              </div>
+        <DndContext sensors={sensors} collisionDetection={closestCenter} onDragEnd={onDragEnd}>
+          <SortableContext items={filtered.map((t) => t.id)} strategy={rectSortingStrategy}>
+            <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4">
+              {filtered.map((t) => (
+                <SortableThemeStudioCard
+                  key={t.id}
+                  theme={t}
+                  previewImageUrlMap={previewImageUrlMap}
+                  previewViewportWidth={previewViewportWidth}
+                  popupPreviewAspect={popupPreviewAspect}
+                  onOpenEdit={onOpenEdit}
+                />
+              ))}
             </div>
-          ))}
-        </div>
+          </SortableContext>
+        </DndContext>
         {filtered.length === 0 && (
           <p className="py-12 text-center text-sm text-slate-500">当前筛选下没有主题。</p>
         )}
@@ -532,13 +672,17 @@ export function ThemeStudioFloatingEditor({
     baselineRef.current = structuredClone(t) as PopupTheme
   }, [themeId])
 
-  /** 首次进入某主题的编辑且未选层时默认选中绑定文本层，否则右侧「文本内容」与字体区不显示，易被误认为无法输入 */
+  /**
+   * 首次进入某主题：无有效绑定层选中时默认主文案；若仅有已废弃的 `countdown` 选中须剔除，否则图层栏无行匹配、看起来像「从没选中」。
+   */
   const bindingAutoSelectRef = useRef(new Set<string>())
   useLayoutEffect(() => {
     if (!themeId) return
     if (bindingAutoSelectRef.current.has(themeId)) return
     const cur = getSelectedElements(themeId)
-    if (cur.length > 0) {
+    const withoutCountdown = cur.filter((k) => k !== 'countdown')
+    if (withoutCountdown.length > 0) {
+      if (withoutCountdown.length !== cur.length) setSelectedElements(themeId, withoutCountdown)
       bindingAutoSelectRef.current.add(themeId)
       return
     }

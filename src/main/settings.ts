@@ -13,6 +13,11 @@ import {
   POPUP_BACKGROUND_IMAGE_BLUR_MAX_PX,
   POPUP_FOLDER_CROSSFADE_MAX_SEC,
 } from '../shared/settings'
+import {
+  isVerticalWritingMode,
+  normalizePopupTextOrientationMode,
+  normalizePopupTextWritingMode,
+} from '../shared/popupVerticalText'
 
 export type { AppSettings, ReminderCategory, SubReminder } from '../shared/settings'
 
@@ -519,6 +524,26 @@ function normalizePopupThemes(raw: unknown): PopupTheme[] {
       const dateTextVerticalAlign = verticalAlignOrUndef(o.dateTextVerticalAlign)
       const dateLetterSpacing = letter(o.dateLetterSpacing)
       const dateLineHeight = lh(o.dateLineHeight)
+      const contentWritingMode = normalizePopupTextWritingMode(o.contentWritingMode)
+      const timeWmRaw = normalizePopupTextWritingMode(o.timeWritingMode)
+      const dateWmRaw = normalizePopupTextWritingMode(o.dateWritingMode)
+      /** 时间/日期不开放竖排：落盘时丢弃 vertical-rl / vertical-lr */
+      const timeWritingMode =
+        timeWmRaw && isVerticalWritingMode(timeWmRaw) ? undefined : timeWmRaw
+      const dateWritingMode = dateWmRaw && isVerticalWritingMode(dateWmRaw) ? undefined : dateWmRaw
+      const countdownWritingMode = normalizePopupTextWritingMode(o.countdownWritingMode)
+      const contentTextOrientation = normalizePopupTextOrientationMode(o.contentTextOrientation)
+      const timeTextOrientation = normalizePopupTextOrientationMode(o.timeTextOrientation)
+      const dateTextOrientation = normalizePopupTextOrientationMode(o.dateTextOrientation)
+      const countdownTextOrientation = normalizePopupTextOrientationMode(o.countdownTextOrientation)
+      const contentCombineUprightDigits =
+        o.contentCombineUprightDigits === true ? true : o.contentCombineUprightDigits === false ? false : undefined
+      const timeCombineUprightDigits =
+        o.timeCombineUprightDigits === true ? true : o.timeCombineUprightDigits === false ? false : undefined
+      const dateCombineUprightDigits =
+        o.dateCombineUprightDigits === true ? true : o.dateCombineUprightDigits === false ? false : undefined
+      const countdownCombineUprightDigits =
+        o.countdownCombineUprightDigits === true ? true : o.countdownCombineUprightDigits === false ? false : undefined
       const dateTextEffects = normalizeLayerTextEffects(o.dateTextEffects)
       const dateShowYear = o.dateShowYear === false ? false : undefined
       const dateShowMonth = o.dateShowMonth === false ? false : undefined
@@ -599,6 +624,18 @@ function normalizePopupThemes(raw: unknown): PopupTheme[] {
         ...(timeLineHeight !== undefined ? { timeLineHeight } : {}),
         ...(dateLineHeight !== undefined ? { dateLineHeight } : {}),
         ...(countdownLineHeight !== undefined ? { countdownLineHeight } : {}),
+        ...(contentWritingMode ? { contentWritingMode } : {}),
+        ...(timeWritingMode ? { timeWritingMode } : {}),
+        ...(dateWritingMode ? { dateWritingMode } : {}),
+        ...(countdownWritingMode ? { countdownWritingMode } : {}),
+        ...(contentTextOrientation ? { contentTextOrientation } : {}),
+        ...(timeTextOrientation ? { timeTextOrientation } : {}),
+        ...(dateTextOrientation ? { dateTextOrientation } : {}),
+        ...(countdownTextOrientation ? { countdownTextOrientation } : {}),
+        ...(contentCombineUprightDigits !== undefined ? { contentCombineUprightDigits } : {}),
+        ...(timeCombineUprightDigits !== undefined ? { timeCombineUprightDigits } : {}),
+        ...(dateCombineUprightDigits !== undefined ? { dateCombineUprightDigits } : {}),
+        ...(countdownCombineUprightDigits !== undefined ? { countdownCombineUprightDigits } : {}),
         ...(previewContentText ? { previewContentText } : {}),
         ...(previewTimeText ? { previewTimeText } : {}),
         ...(previewDateText ? { previewDateText } : {}),

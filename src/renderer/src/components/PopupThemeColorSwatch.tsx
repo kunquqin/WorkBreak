@@ -1,4 +1,11 @@
-import { useEffect, useLayoutEffect, useRef, type CSSProperties } from 'react'
+import {
+  useCallback,
+  useEffect,
+  useLayoutEffect,
+  useRef,
+  type ChangeEvent,
+  type CSSProperties,
+} from 'react'
 import type { PopupThemeEditUpdateMeta } from '../hooks/usePopupThemeEditHistory'
 
 function safeHexColor(raw: string | undefined, fallback: string): string {
@@ -17,8 +24,10 @@ export type PopupThemeColorSwatchProps = {
 }
 
 /**
- * 主题编辑器统一色块。拾色器拖动会高频触发 `input`：用 rAF 合并更新，并对撤销栈首帧压快照、后续 `skipHistory`，
+ * 主题编辑器统一色块。拾色器拖动会高频触发变更：用 rAF 合并更新，并对撤销栈首帧压快照、后续 `skipHistory`，
  * 避免每帧 `structuredClone(整主题)` 导致卡顿。
+ *
+ * 须使用 React `onChange`（不可仅用原生 `addEventListener`）：否则 `value` 受控时 React 会警告并可能按只读处理。
  */
 export function PopupThemeColorSwatch({
   value,
@@ -28,7 +37,6 @@ export function PopupThemeColorSwatch({
   style,
 }: PopupThemeColorSwatchProps) {
   const safe = safeHexColor(value, '#ffffff')
-  const inputRef = useRef<HTMLInputElement>(null)
   const onChangeRef = useRef(onChange)
   onChangeRef.current = onChange
 
@@ -45,24 +53,27 @@ export function PopupThemeColorSwatch({
     }
   }, [value])
 
-  useEffect(() => {
-    const el = inputRef.current
-    if (!el || disabled) return
-
-    const flushPending = () => {
-      if (rafRef.current) {
-        cancelAnimationFrame(rafRef.current)
-        rafRef.current = 0
-      }
-      const pv = pendingHexRef.current
-      pendingHexRef.current = null
-      if (pv != null && sessionCommittedRef.current) {
-        onChangeRef.current(pv, { skipHistory: true })
-      }
+  const flushPending = useCallback(() => {
+    if (rafRef.current) {
+      cancelAnimationFrame(rafRef.current)
+      rafRef.current = 0
     }
+    const pv = pendingHexRef.current
+    pendingHexRef.current = null
+    if (pv != null && sessionCommittedRef.current) {
+      onChangeRef.current(pv, { skipHistory: true })
+    }
+  }, [])
 
-    const handleInput = () => {
-      const v = el.value
+  const endSession = useCallback(() => {
+    flushPending()
+    sessionCommittedRef.current = false
+  }, [flushPending])
+
+  const handleChange = useCallback(
+    (e: ChangeEvent<HTMLInputElement>) => {
+      if (disabled) return
+      const v = e.target.value
       if (!sessionCommittedRef.current) {
         sessionCommittedRef.current = true
         onChangeRef.current(v, { skipHistory: false })
@@ -79,25 +90,17 @@ export function PopupThemeColorSwatch({
           }
         })
       }
-    }
+    },
+    [disabled],
+  )
 
-    const endSession = () => {
-      flushPending()
-      sessionCommittedRef.current = false
-    }
-
-    el.addEventListener('input', handleInput)
-    el.addEventListener('change', endSession)
-    el.addEventListener('blur', endSession)
+  useEffect(() => {
     return () => {
-      el.removeEventListener('input', handleInput)
-      el.removeEventListener('change', endSession)
-      el.removeEventListener('blur', endSession)
       if (rafRef.current) cancelAnimationFrame(rafRef.current)
       rafRef.current = 0
       pendingHexRef.current = null
     }
-  }, [disabled])
+  }, [])
 
   return (
     <div
@@ -105,9 +108,10 @@ export function PopupThemeColorSwatch({
       style={style}
     >
       <input
-        ref={inputRef}
         type="color"
         value={safe}
+        onChange={handleChange}
+        onBlur={endSession}
         disabled={disabled}
         className="absolute inset-0 box-border h-full w-full cursor-pointer border-0 p-0 [color-scheme:light]"
         aria-label="选择颜色"

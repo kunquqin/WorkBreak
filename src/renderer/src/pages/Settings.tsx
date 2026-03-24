@@ -1749,6 +1749,9 @@ function CategoryCard(props: CategoryCardProps) {
   )
 }
 
+/** 未写入 map 的主题选中态：勿每帧 `?? []` 新建数组，否则右侧面板 layout effect 依赖抖动 */
+const EMPTY_THEME_TEXT_SELECTION: TextElementKey[] = []
+
 export function Settings() {
   const [settings, setSettingsState] = useState<AppSettings>(defaultSettings)
   const [saveStatus, setSaveStatus] = useState<'idle' | 'saving' | 'ok' | 'error'>('idle')
@@ -1786,10 +1789,14 @@ export function Settings() {
     restPopupThemeId?: string
   }>(null)
   const [themeSelectedElementsMap, setThemeSelectedElementsMap] = useState<Record<string, TextElementKey[]>>({})
-  const getThemeSelectedElements = (themeId: string): TextElementKey[] => themeSelectedElementsMap[themeId] ?? []
-  const setThemeSelectedElements = (themeId: string, els: TextElementKey[]) => {
+  const getThemeSelectedElements = useCallback(
+    (themeId: string): TextElementKey[] =>
+      themeSelectedElementsMap[themeId] ?? EMPTY_THEME_TEXT_SELECTION,
+    [themeSelectedElementsMap],
+  )
+  const setThemeSelectedElements = useCallback((themeId: string, els: TextElementKey[]) => {
     setThemeSelectedElementsMap((prev) => ({ ...prev, [themeId]: els }))
-  }
+  }, [])
   const listContainerRefsMap = useRef<Record<string, React.RefObject<HTMLDivElement | null>>>({})
   const categoryReorderContainerRef = useRef<HTMLDivElement>(null)
   const categorySensors = useSensors(useSensor(PointerSensor, { activationConstraint: { distance: 8 } }))
@@ -2376,6 +2383,11 @@ export function Settings() {
       imageFolderPlayMode: 'sequence',
       imageFolderIntervalSec: 30,
       formatVersion: 1,
+      contentTransform: { x: 50, y: 36, rotation: 0, scale: 1 },
+      timeTransform: { x: 50, y: 62, rotation: 0, scale: 1 },
+      ...(target === 'rest'
+        ? { countdownTransform: { x: 50, y: 78, rotation: 0, scale: 1, textBoxHeightPct: 20 } }
+        : {}),
     }
     setPopupThemes(mergeSystemBuiltinPopupThemes([newTheme, ...popupThemes]))
     return id
@@ -2662,6 +2674,7 @@ export function Settings() {
                 const id = addPopupTheme('main')
                 setFloatingThemeEdit({ themeId: id, source: { kind: 'studio-list' }, isNewDraft: true })
               }}
+              onReorderThemes={setPopupThemes}
             />
           </div>
         ) : (

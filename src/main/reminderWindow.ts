@@ -1,12 +1,25 @@
 import { app, BrowserWindow, screen } from 'electron'
 import { copyFileSync, existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs'
 import { extname, join } from 'node:path'
-import type { PopupTheme, TextTransform } from '../shared/settings'
+import type {
+  PopupTextAlign,
+  PopupTextOrientationMode,
+  PopupTextWritingMode,
+  PopupTheme,
+  PopupTextVerticalAlign,
+  TextTransform,
+} from '../shared/settings'
 import { ensureThemeLayers, POPUP_BACKGROUND_IMAGE_BLUR_MAX_PX } from '../shared/settings'
 import type { ImageThemeLayer, PopupThemeLayer, TextThemeLayer } from '../shared/popupThemeLayers'
 import { layerTextEffectsCss, layerTextEffectsCssFromEffects } from '../shared/popupTextEffects'
 import { resolveDecoFontFamilyCss, resolvePopupFontFamilyCss } from '../shared/popupThemeFonts'
 import { formatPopupThemeDateString } from '../shared/popupThemeDateFormat'
+import {
+  WB_TEXT_INNER,
+  isVerticalWritingMode,
+  textAlignForVerticalInner,
+  verticalTextInnerBoxCss,
+} from '../shared/popupVerticalText'
 
 export interface ReminderPopupOptions {
   title: string
@@ -307,8 +320,98 @@ function transformStyle(t: TextTransform | undefined, fallbackX: number, fallbac
 /** 文字层固定排版区域（与 ThemePreviewEditor 中 textBoxWidthPct / textBoxHeightPct 一致） */
 type TextBoxLayer = 'content' | 'time' | 'date' | 'countdown'
 
-/** 时间与倒计时为实时单行数据，nowrap 避免窄 textBox 下被 overflow-wrap:anywhere 拆成「1」「2」「:」多行 */
-function textBoxLayoutCss(t: TextTransform | undefined, layer: TextBoxLayer): string {
+function themeLayerWritingMode(theme: PopupTheme, layer: TextBoxLayer): PopupTextWritingMode {
+  if (layer === 'content') return theme.contentWritingMode ?? 'horizontal-tb'
+  /** 时间/日期仅横排（与预览、面板一致） */
+  if (layer === 'time' || layer === 'date') return 'horizontal-tb'
+  return theme.countdownWritingMode ?? 'horizontal-tb'
+}
+
+function themeLayerTextOrientation(theme: PopupTheme, layer: TextBoxLayer): PopupTextOrientationMode | undefined {
+  if (layer === 'content') return theme.contentTextOrientation
+  if (layer === 'time' || layer === 'date') return undefined
+  return theme.countdownTextOrientation
+}
+
+/** 主文案默认关；时间/日期/倒计时未写磁盘时默认开（减少竖排数字一位一列） */
+function themeLayerCombineUpright(theme: PopupTheme, layer: TextBoxLayer): boolean {
+  if (layer === 'content') return theme.contentCombineUprightDigits === true
+  if (layer === 'time' || layer === 'date') return false
+  return theme.countdownCombineUprightDigits !== false
+}
+
+function isThemeLayerVertical(theme: PopupTheme | undefined, layer: TextBoxLayer): boolean {
+  if (!theme) return false
+  return isVerticalWritingMode(themeLayerWritingMode(theme, layer))
+}
+
+function popupLayerTypographyParts(
+  theme: PopupTheme | undefined,
+  layer: 'content' | 'time' | 'date' | 'countdown',
+): { align: PopupTextAlign; verticalAlign: PopupTextVerticalAlign; letterSpacing: number; lineHeight: number } {
+  const baseAlign = theme?.textAlign ?? 'center'
+  const baseVerticalAlign = theme?.textVerticalAlign ?? 'middle'
+  let align: PopupTextAlign = baseAlign
+  let verticalAlign: PopupTextVerticalAlign = baseVerticalAlign
+  let letterSpacing = 0
+  let lineHeight = layer === 'countdown' ? 1 : 1.35
+  if (layer === 'content') {
+    align = theme?.contentTextAlign ?? baseAlign
+    verticalAlign = theme?.contentTextVerticalAlign ?? baseVerticalAlign
+    letterSpacing = theme?.contentLetterSpacing ?? 0
+    lineHeight = theme?.contentLineHeight ?? 1.35
+  } else if (layer === 'time') {
+    align = theme?.timeTextAlign ?? baseAlign
+    verticalAlign = theme?.timeTextVerticalAlign ?? baseVerticalAlign
+    letterSpacing = theme?.timeLetterSpacing ?? 0
+    lineHeight = theme?.timeLineHeight ?? 1
+  } else if (layer === 'date') {
+    align = theme?.dateTextAlign ?? baseAlign
+    verticalAlign = theme?.dateTextVerticalAlign ?? baseVerticalAlign
+    letterSpacing = theme?.dateLetterSpacing ?? 0
+    lineHeight = theme?.dateLineHeight ?? 1
+  } else {
+    align = theme?.countdownTextAlign ?? baseAlign
+    verticalAlign = theme?.countdownTextVerticalAlign ?? baseVerticalAlign
+    letterSpacing = theme?.countdownLetterSpacing ?? 0
+    lineHeight = theme?.countdownLineHeight ?? 1
+  }
+  return { align, verticalAlign, letterSpacing, lineHeight }
+}
+
+/** 横排外层；竖排时字距/行高/ text-align 由内层 span 承担 */
+function layerTypographyCss(theme: PopupTheme | undefined, layer: 'content' | 'time' | 'date' | 'countdown'): string {
+  if (theme && isThemeLayerVertical(theme, layer)) return ''
+  const p = popupLayerTypographyParts(theme, layer)
+  return `text-align: ${p.align}; letter-spacing: ${p.letterSpacing}px; line-height: ${p.lineHeight}; --wb-v-align: ${p.verticalAlign};`
+}
+
+function wrapThemeTextVerticalInner(
+  theme: PopupTheme,
+  layer: TextBoxLayer,
+  shortLayer: boolean,
+  bodyEsc: string,
+): string {
+  const wm = themeLayerWritingMode(theme, layer)
+  if (!isVerticalWritingMode(wm)) return bodyEsc
+  const p = popupLayerTypographyParts(theme, layer)
+  const innerAlign = textAlignForVerticalInner(p.align)
+  const css = verticalTextInnerBoxCss(
+    {
+      writingMode: wm,
+      textOrientation: themeLayerTextOrientation(theme, layer),
+      combineUpright: themeLayerCombineUpright(theme, layer),
+      textAlign: innerAlign,
+      letterSpacingPx: p.letterSpacing,
+      lineHeight: p.lineHeight,
+    },
+    shortLayer,
+  )
+  return `<span ${WB_TEXT_INNER}="1" style="${escapeInlineStyleForHtmlAttribute(css)}">${bodyEsc}</span>`
+}
+
+/** 时间与倒计时为实时单行数据；竖排时 nowrap 改由内层 pre-wrap 负责 */
+function textBoxLayoutCss(t: TextTransform | undefined, layer: TextBoxLayer, vertical?: boolean): string {
   const w = t?.textBoxWidthPct
   const h = t?.textBoxHeightPct
   const lockW = t?.shortLayerTextBoxLockWidth === true
@@ -338,12 +441,17 @@ function textBoxLayoutCss(t: TextTransform | undefined, layer: TextBoxLayer): st
   if (h != null && Number.isFinite(h)) {
     const hp = Math.max(3, Math.min(100, h))
     if (layer === 'content') {
-      s += ` height: ${hp}%; max-height: 100%; overflow: auto;`
+      // 竖排外层若用 overflow:auto，块轴上易出现与内层叠加的横向假滚动条；与 popupVerticalText 内层一致拆开轴向
+      s +=
+        vertical === true
+          ? ` height: ${hp}%; max-height: 100%; overflow-x: hidden; overflow-y: auto; min-width: 0;`
+          : ` height: ${hp}%; max-height: 100%; overflow: auto;`
     } else {
       // 时间/倒计时单行：高度随字行盒，textBoxHeightPct 仅作上限，与预览 Moveable 贴字边一致
       s += ` height: auto; max-height: ${hp}%; overflow: hidden;`
     }
   }
+  if (vertical) return s
   if (layer === 'content') {
     // 与 ThemePreviewEditor 一致：不用 overflow-wrap:anywhere，避免窄框下中文被逐字强拆行（与编辑态不一致）
     s += ' white-space: pre-wrap; word-wrap: break-word; overflow-wrap: break-word; word-break: keep-all;'
@@ -351,38 +459,6 @@ function textBoxLayoutCss(t: TextTransform | undefined, layer: TextBoxLayer): st
     s += ' white-space: nowrap; word-break: keep-all; overflow-wrap: normal;'
   }
   return s
-}
-
-/** 与 ThemePreviewEditor 中单行时间/日期层：`shortLineLayer` 下强制 `lineHeight: 1` */
-function layerTypographyCss(theme: PopupTheme | undefined, layer: 'content' | 'time' | 'date' | 'countdown'): string {
-  const baseAlign = theme?.textAlign ?? 'center'
-  const baseVerticalAlign = theme?.textVerticalAlign ?? 'middle'
-  let align = baseAlign
-  let verticalAlign = baseVerticalAlign
-  let letterSpacing = 0
-  let lineHeight = layer === 'countdown' ? 1 : 1.35
-  if (layer === 'content') {
-    align = theme?.contentTextAlign ?? baseAlign
-    verticalAlign = theme?.contentTextVerticalAlign ?? baseVerticalAlign
-    letterSpacing = theme?.contentLetterSpacing ?? 0
-    lineHeight = theme?.contentLineHeight ?? 1.35
-  } else if (layer === 'time') {
-    align = theme?.timeTextAlign ?? baseAlign
-    verticalAlign = theme?.timeTextVerticalAlign ?? baseVerticalAlign
-    letterSpacing = theme?.timeLetterSpacing ?? 0
-    lineHeight = theme?.timeLineHeight ?? 1
-  } else if (layer === 'date') {
-    align = theme?.dateTextAlign ?? baseAlign
-    verticalAlign = theme?.dateTextVerticalAlign ?? baseVerticalAlign
-    letterSpacing = theme?.dateLetterSpacing ?? 0
-    lineHeight = theme?.dateLineHeight ?? 1
-  } else {
-    align = theme?.countdownTextAlign ?? baseAlign
-    verticalAlign = theme?.countdownTextVerticalAlign ?? baseVerticalAlign
-    letterSpacing = theme?.countdownLetterSpacing ?? 0
-    lineHeight = theme?.countdownLineHeight ?? 1
-  }
-  return `text-align: ${align}; letter-spacing: ${letterSpacing}px; line-height: ${lineHeight}; --wb-v-align: ${verticalAlign};`
 }
 
 /** 与 ThemePreviewEditor 时间层 `display:flex` + `justifyContent` 一致 */
@@ -409,14 +485,45 @@ function verticalAlignForThemeLayer(theme: PopupTheme | undefined, layer: 'conte
 /** 预览中各绑定文字层有 `padding: toPreviewPx(3)`；全屏按逻辑像素 3px 对齐 */
 const BINDING_TEXT_PADDING_PX = 3
 
-function textLayerTypographyCss(theme: PopupTheme | undefined, L: TextThemeLayer): string {
+function decoTypographyParts(
+  theme: PopupTheme | undefined,
+  L: TextThemeLayer,
+): { align: PopupTextAlign; verticalAlign: PopupTextVerticalAlign; letterSpacing: number; lineHeight: number } {
   const baseAlign = theme?.textAlign ?? 'center'
   const baseVerticalAlign = theme?.textVerticalAlign ?? 'middle'
-  const align = L.textAlign ?? baseAlign
-  const verticalAlign = L.textVerticalAlign ?? baseVerticalAlign
-  const ls = L.letterSpacing ?? 0
-  const lh = L.lineHeight ?? 1.35
-  return `text-align: ${align}; letter-spacing: ${ls}px; line-height: ${lh}; --wb-v-align: ${verticalAlign};`
+  return {
+    align: (L.textAlign ?? baseAlign) as PopupTextAlign,
+    verticalAlign: (L.textVerticalAlign ?? baseVerticalAlign) as PopupTextVerticalAlign,
+    letterSpacing: L.letterSpacing ?? 0,
+    lineHeight: L.lineHeight ?? 1.35,
+  }
+}
+
+function textLayerTypographyCss(theme: PopupTheme | undefined, L: TextThemeLayer): string {
+  const wm = L.writingMode ?? 'horizontal-tb'
+  if (isVerticalWritingMode(wm)) return ''
+  const p = decoTypographyParts(theme, L)
+  return `text-align: ${p.align}; letter-spacing: ${p.letterSpacing}px; line-height: ${p.lineHeight}; --wb-v-align: ${p.verticalAlign};`
+}
+
+function wrapDecoTextVerticalInner(theme: PopupTheme, L: TextThemeLayer, bodyEsc: string): string {
+  const wm = L.writingMode ?? 'horizontal-tb'
+  if (!isVerticalWritingMode(wm)) return bodyEsc
+  const p = decoTypographyParts(theme, L)
+  const innerAlign = textAlignForVerticalInner(p.align)
+  const combine = L.combineUprightDigits === true ? true : L.combineUprightDigits === false ? false : false
+  const css = verticalTextInnerBoxCss(
+    {
+      writingMode: wm,
+      textOrientation: L.textOrientation,
+      combineUpright: combine,
+      textAlign: innerAlign,
+      letterSpacingPx: p.letterSpacing,
+      lineHeight: p.lineHeight,
+    },
+    false,
+  )
+  return `<span ${WB_TEXT_INNER}="1" style="${escapeInlineStyleForHtmlAttribute(css)}">${bodyEsc}</span>`
 }
 
 function verticalAlignForTextLayer(theme: PopupTheme | undefined, L: TextThemeLayer): 'top' | 'middle' | 'bottom' {
@@ -501,8 +608,8 @@ function buildReminderHtmlLegacy(options: ReminderPopupOptions, htmlDir?: string
   const bgStyle = getBackgroundStyle(theme)
   const contentFontFamilyCss = resolvePopupFontFamilyCss(theme, 'content')
   const timeFontFamilyCss = resolvePopupFontFamilyCss(theme, 'time')
-  const contentPos = transformStyle(theme?.contentTransform, 50, 42)
-  const timePos = transformStyle(theme?.timeTransform, 50, 55)
+  const contentPos = transformStyle(theme?.contentTransform, 50, 36)
+  const timePos = transformStyle(theme?.timeTransform, 50, 62)
   const contentWeight = theme?.contentFontWeight ?? 600
   const timeWeight = theme?.timeFontWeight ?? 400
   const contentItalic = theme?.contentFontItalic === true ? 'italic' : 'normal'
@@ -513,6 +620,10 @@ function buildReminderHtmlLegacy(options: ReminderPopupOptions, htmlDir?: string
   const tyTime = layerTypographyCss(theme, 'time')
   const contentVA = flexAlignForTextVerticalAlign(verticalAlignForThemeLayer(theme, 'content'))
   const timeVA = flexAlignForTextVerticalAlign(verticalAlignForThemeLayer(theme, 'time'))
+  const contentVert = theme ? isThemeLayerVertical(theme, 'content') : false
+  const timeVert = theme ? isThemeLayerVertical(theme, 'time') : false
+  const bodyHtml = theme ? wrapThemeTextVerticalInner(theme, 'content', false, bodyEsc) : bodyEsc
+  const timeHtml = theme ? wrapThemeTextVerticalInner(theme, 'time', true, timeEsc) : timeEsc
 
   return `<!DOCTYPE html>
 <html lang="zh-CN">
@@ -524,8 +635,8 @@ function buildReminderHtmlLegacy(options: ReminderPopupOptions, htmlDir?: string
     html, body { width: 100%; height: 100%; min-height: 100%; margin: 0; color: #fff; font-family: system-ui, sans-serif; overflow: hidden; ${bgStyle} }
     .overlay { position: fixed; inset: 0; z-index: 1; background: ${overlayGradientCss(theme)}; opacity: ${overlayEnabled ? 1 : 0}; pointer-events: none; }
     .content { position: relative; z-index: 2; width: 100%; height: 100%; }
-    .line1 { ${contentPos} box-sizing: border-box; padding: ${BINDING_TEXT_PADDING_PX}px; display:flex; flex-direction:column; justify-content:${contentVA}; font-family: ${contentFontFamilyCss}; font-size: ${contentFont}px; color: ${contentColor}; ${tyContent} font-weight: ${contentWeight}; font-style: ${contentItalic}; text-decoration: ${contentUnderline}; ${textBoxLayoutCss(theme?.contentTransform, 'content')} ${layerTextEffectsCss(theme, 'content')} }
-    .line2 { ${timePos} box-sizing: border-box; padding: ${BINDING_TEXT_PADDING_PX}px; display: flex; align-items: ${timeVA}; justify-content: ${flexJustifyForTextAlign(theme?.timeTextAlign ?? theme?.textAlign ?? 'center')}; font-family: ${timeFontFamilyCss}; font-size: ${timeFont}px; color: ${timeColor}; ${tyTime} font-weight: ${timeWeight}; font-style: ${timeItalic}; text-decoration: ${timeUnderline}; ${textBoxLayoutCss(theme?.timeTransform, 'time')} ${layerTextEffectsCss(theme, 'time')} }
+    .line1 { ${contentPos} box-sizing: border-box; padding: ${BINDING_TEXT_PADDING_PX}px; display:flex; flex-direction:column; justify-content:${contentVA}; font-family: ${contentFontFamilyCss}; font-size: ${contentFont}px; color: ${contentColor}; ${tyContent} font-weight: ${contentWeight}; font-style: ${contentItalic}; text-decoration: ${contentUnderline}; ${textBoxLayoutCss(theme?.contentTransform, 'content', contentVert)} ${layerTextEffectsCss(theme, 'content')} }
+    .line2 { ${timePos} box-sizing: border-box; padding: ${BINDING_TEXT_PADDING_PX}px; display: flex; align-items: ${timeVA}; justify-content: ${flexJustifyForTextAlign(theme?.timeTextAlign ?? theme?.textAlign ?? 'center')}; font-family: ${timeFontFamilyCss}; font-size: ${timeFont}px; color: ${timeColor}; ${tyTime} font-weight: ${timeWeight}; font-style: ${timeItalic}; text-decoration: ${timeUnderline}; ${textBoxLayoutCss(theme?.timeTransform, 'time', timeVert)} ${layerTextEffectsCss(theme, 'time')} }
     ${REMINDER_CLOSE_CSS}
   </style>
 </head>
@@ -537,8 +648,8 @@ function buildReminderHtmlLegacy(options: ReminderPopupOptions, htmlDir?: string
   ${legacyBlurredBackgroundLayerHtml(theme)}
   <div class="overlay"></div>
   <div class="content">
-    <div class="line1">${bodyEsc}</div>
-    <div class="line2">${timeEsc}</div>
+    <div class="line1">${bodyHtml}</div>
+    <div class="line2">${timeHtml}</div>
   </div>
   ${REMINDER_CLOSE_HTML_SCRIPT}
 </body>
@@ -594,15 +705,17 @@ function renderLayerFragment(
         const fs = safeFontPx(theme.contentFontSize, 180, 16)
         const col = theme.contentColor || '#ffffff'
         const ff = resolvePopupFontFamilyCss(theme, 'content')
-        const pos = transformStyle(theme.contentTransform, 50, 42)
+        const pos = transformStyle(theme.contentTransform, 50, 36)
         const fw = theme.contentFontWeight ?? 600
         const fi = theme.contentFontItalic === true ? 'italic' : 'normal'
         const td = theme.contentUnderline === true ? 'underline' : 'none'
         const ty = layerTypographyCss(theme, 'content')
         const va = flexAlignForTextVerticalAlign(verticalAlignForThemeLayer(theme, 'content'))
         const fx = layerTextEffectsCss(theme, 'content')
-        const stBody = `${pos} z-index:${z}; pointer-events:none; box-sizing:border-box; padding:${BINDING_TEXT_PADDING_PX}px; display:flex; flex-direction:column; justify-content:${va}; font-family:${ff}; font-size:${fs}px; color:${col}; ${ty} font-weight:${fw}; font-style:${fi}; text-decoration:${td}; ${textBoxLayoutCss(theme.contentTransform, 'content')} ${fx}`
-        return `<div style="${escapeInlineStyleForHtmlAttribute(stBody)}">${srcEsc}</div>`
+        const cVert = isThemeLayerVertical(theme, 'content')
+        const innerB = wrapThemeTextVerticalInner(theme, 'content', false, srcEsc)
+        const stBody = `${pos} z-index:${z}; pointer-events:none; box-sizing:border-box; padding:${BINDING_TEXT_PADDING_PX}px; display:flex; flex-direction:column; justify-content:${va}; font-family:${ff}; font-size:${fs}px; color:${col}; ${ty} font-weight:${fw}; font-style:${fi}; text-decoration:${td}; ${textBoxLayoutCss(theme.contentTransform, 'content', cVert)} ${fx}`
+        return `<div style="${escapeInlineStyleForHtmlAttribute(stBody)}">${innerB}</div>`
       }
       const srcEsc = escapeHtml(tl.text ?? '')
       const fs = Math.max(1, Math.min(8000, Math.floor(tl.fontSize ?? 28)))
@@ -615,37 +728,43 @@ function renderLayerFragment(
       const decoFi = tl.fontItalic === true ? 'italic' : 'normal'
       const decoTd = tl.textUnderline === true ? 'underline' : 'none'
       /** 与绑定主文案层一致：box-sizing + 3px 内边距，避免预览与真弹窗度量偏差 */
-      const stDeco = `${pos} z-index:${z}; pointer-events:none; box-sizing:border-box; padding:${BINDING_TEXT_PADDING_PX}px; display:flex; flex-direction:column; justify-content:${va}; font-family:${ff}; font-size:${fs}px; color:${col}; ${ty} font-weight:${fw}; font-style:${decoFi}; text-decoration:${decoTd}; ${textBoxLayoutCss(tl.transform, 'content')} ${layerTextEffectsCssFromEffects(tl.textEffects)}`
-      return `<div style="${escapeInlineStyleForHtmlAttribute(stDeco)}">${srcEsc}</div>`
+      const dVert = isVerticalWritingMode(tl.writingMode ?? 'horizontal-tb')
+      const innerD = wrapDecoTextVerticalInner(theme, tl, srcEsc)
+      const stDeco = `${pos} z-index:${z}; pointer-events:none; box-sizing:border-box; padding:${BINDING_TEXT_PADDING_PX}px; display:flex; flex-direction:column; justify-content:${va}; font-family:${ff}; font-size:${fs}px; color:${col}; ${ty} font-weight:${fw}; font-style:${decoFi}; text-decoration:${decoTd}; ${textBoxLayoutCss(tl.transform, 'content', dVert)} ${layerTextEffectsCssFromEffects(tl.textEffects)}`
+      return `<div style="${escapeInlineStyleForHtmlAttribute(stDeco)}">${innerD}</div>`
     }
     case 'bindingTime': {
       const timeFont = safeFontPx(theme.timeFontSize, 100, 14)
       const timeColor = theme.timeColor || '#e2e8f0'
       const timeFontFamilyCss = resolvePopupFontFamilyCss(theme, 'time')
-      const timePos = transformStyle(theme.timeTransform, 50, 55)
+      const timePos = transformStyle(theme.timeTransform, 50, 62)
       const timeWeight = theme.timeFontWeight ?? 400
       const timeItalic = theme.timeFontItalic === true ? 'italic' : 'normal'
       const timeUnderline = theme.timeUnderline === true ? 'underline' : 'none'
       const tyTime = layerTypographyCss(theme, 'time')
       const tj = flexJustifyForTextAlign(theme?.timeTextAlign ?? theme?.textAlign ?? 'center')
       const tv = flexAlignForTextVerticalAlign(verticalAlignForThemeLayer(theme, 'time'))
-      const stTime = `${timePos} z-index:${z}; pointer-events:none; box-sizing:border-box; padding:${BINDING_TEXT_PADDING_PX}px; display:flex; align-items:${tv}; justify-content:${tj}; font-family:${timeFontFamilyCss}; font-size:${timeFont}px; color:${timeColor}; ${tyTime} font-weight:${timeWeight}; font-style:${timeItalic}; text-decoration:${timeUnderline}; ${textBoxLayoutCss(theme.timeTransform, 'time')} ${layerTextEffectsCss(theme, 'time')}`
-      return `<div style="${escapeInlineStyleForHtmlAttribute(stTime)}">${timeEsc}</div>`
+      const tVert = isThemeLayerVertical(theme, 'time')
+      const innerT = wrapThemeTextVerticalInner(theme, 'time', true, timeEsc)
+      const stTime = `${timePos} z-index:${z}; pointer-events:none; box-sizing:border-box; padding:${BINDING_TEXT_PADDING_PX}px; display:flex; align-items:${tv}; justify-content:${tj}; font-family:${timeFontFamilyCss}; font-size:${timeFont}px; color:${timeColor}; ${tyTime} font-weight:${timeWeight}; font-style:${timeItalic}; text-decoration:${timeUnderline}; ${textBoxLayoutCss(theme.timeTransform, 'time', tVert)} ${layerTextEffectsCss(theme, 'time')}`
+      return `<div style="${escapeInlineStyleForHtmlAttribute(stTime)}">${innerT}</div>`
     }
     case 'bindingDate': {
       if (!dateEsc) return ''
       const dateFont = safeFontPx(theme.dateFontSize, 72, 14)
       const dateColor = theme.dateColor || '#e2e8f0'
       const dateFontFamilyCss = resolvePopupFontFamilyCss(theme, 'date')
-      const datePos = transformStyle(theme.dateTransform, 50, 58)
+      const datePos = transformStyle(theme.dateTransform, 50, 65)
       const dateWeight = theme.dateFontWeight ?? 400
       const dateItalic = theme.dateFontItalic === true ? 'italic' : 'normal'
       const dateUnderline = theme.dateUnderline === true ? 'underline' : 'none'
       const tyDate = layerTypographyCss(theme, 'date')
       const dj = flexJustifyForTextAlign(theme?.dateTextAlign ?? theme?.textAlign ?? 'center')
       const dv = flexAlignForTextVerticalAlign(verticalAlignForThemeLayer(theme, 'date'))
-      const stDate = `${datePos} z-index:${z}; pointer-events:none; box-sizing:border-box; padding:${BINDING_TEXT_PADDING_PX}px; display:flex; align-items:${dv}; justify-content:${dj}; font-family:${dateFontFamilyCss}; font-size:${dateFont}px; color:${dateColor}; ${tyDate} font-weight:${dateWeight}; font-style:${dateItalic}; text-decoration:${dateUnderline}; ${textBoxLayoutCss(theme.dateTransform, 'date')} ${layerTextEffectsCss(theme, 'date')}`
-      return `<div style="${escapeInlineStyleForHtmlAttribute(stDate)}">${dateEsc}</div>`
+      const dVert = isThemeLayerVertical(theme, 'date')
+      const innerDt = wrapThemeTextVerticalInner(theme, 'date', true, dateEsc)
+      const stDate = `${datePos} z-index:${z}; pointer-events:none; box-sizing:border-box; padding:${BINDING_TEXT_PADDING_PX}px; display:flex; align-items:${dv}; justify-content:${dj}; font-family:${dateFontFamilyCss}; font-size:${dateFont}px; color:${dateColor}; ${tyDate} font-weight:${dateWeight}; font-style:${dateItalic}; text-decoration:${dateUnderline}; ${textBoxLayoutCss(theme.dateTransform, 'date', dVert)} ${layerTextEffectsCss(theme, 'date')}`
+      return `<div style="${escapeInlineStyleForHtmlAttribute(stDate)}">${innerDt}</div>`
     }
     case 'image': {
       const im = L as ImageThemeLayer

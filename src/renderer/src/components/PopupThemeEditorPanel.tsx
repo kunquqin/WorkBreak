@@ -1,5 +1,5 @@
-import { useRef, useEffect, useState, useCallback, useMemo, type RefObject } from 'react'
-import { ThemePreviewEditor, type TextElementKey } from './ThemePreviewEditor'
+import { useRef, useEffect, useLayoutEffect, useState, useCallback, useMemo, type RefObject } from 'react'
+import { ThemePreviewEditor, type PanelTextFocusRequest, type TextElementKey } from './ThemePreviewEditor'
 import type { PopupLayerTextEffects, PopupTheme, TextTransform } from '../types'
 import { usePopupThemeEditHistory, type PopupThemeEditUpdateMeta } from '../hooks/usePopupThemeEditHistory'
 import {
@@ -19,7 +19,12 @@ import {
 import { SystemFontFamilyPicker } from './SystemFontFamilyPicker'
 import { PopupThemeColorSwatch } from './PopupThemeColorSwatch'
 import { PopupThemeLayersBar } from './PopupThemeLayersBar'
-import { POPUP_BACKGROUND_IMAGE_BLUR_MAX_PX, POPUP_FOLDER_CROSSFADE_MAX_SEC } from '../../../shared/settings'
+import {
+  POPUP_BACKGROUND_IMAGE_BLUR_MAX_PX,
+  POPUP_FOLDER_CROSSFADE_MAX_SEC,
+  type PopupTextOrientationMode,
+  type PopupTextWritingMode,
+} from '../../../shared/settings'
 import type { ImageThemeLayer, TextThemeLayer } from '../../../shared/popupThemeLayers'
 import {
   POPUP_LAYER_BACKGROUND_ID,
@@ -43,6 +48,26 @@ function layerTypographyKeys(sel: TextElementKey): {
   if (sel === 'time') return { align: 'timeTextAlign', verticalAlign: 'timeTextVerticalAlign', letterSpacing: 'timeLetterSpacing', lineHeight: 'timeLineHeight' }
   if (sel === 'date') return { align: 'dateTextAlign', verticalAlign: 'dateTextVerticalAlign', letterSpacing: 'dateLetterSpacing', lineHeight: 'dateLineHeight' }
   return { align: 'countdownTextAlign', verticalAlign: 'countdownTextVerticalAlign', letterSpacing: 'countdownLetterSpacing', lineHeight: 'countdownLineHeight' }
+}
+
+/** 仅主文案、休息倒计时开放竖排/直排数字等；时间、日期固定横排 */
+function bindingWritingFieldNames(sel: 'content' | 'countdown'): {
+  writingMode: keyof PopupTheme
+  textOrientation: keyof PopupTheme
+  combineUpright: keyof PopupTheme
+} {
+  if (sel === 'content') {
+    return {
+      writingMode: 'contentWritingMode',
+      textOrientation: 'contentTextOrientation',
+      combineUpright: 'contentCombineUprightDigits',
+    }
+  }
+  return {
+    writingMode: 'countdownWritingMode',
+    textOrientation: 'countdownTextOrientation',
+    combineUpright: 'countdownCombineUprightDigits',
+  }
 }
 
 /** 主题内主提醒文案草稿（不含预览用占位），与预览双击写入同一字段 */
@@ -300,7 +325,19 @@ function PopupThemeEditorPanelCore({
   historyBundle,
 }: PopupThemeEditorPanelCoreProps) {
   const themeId = theme.id
+  /**
+   * 预览已不再提供倒计时绑定层；若磁盘/状态里仍残留单独 `countdown` 选中，
+   * 图层栏没有任何一行匹配 → 表现为「选中无高亮」。主壁纸 / 休息壁纸均剔除。
+   */
+  useLayoutEffect(() => {
+    if (!selectedElements.includes('countdown')) return
+    const next = selectedElements.filter((k) => k !== 'countdown')
+    onSelectElements(next.length > 0 ? next : ['content'])
+  }, [theme.id, selectedElements, onSelectElements])
   const layoutContainerRef = useRef<HTMLDivElement>(null)
+  const propertiesScrollRef = useRef<HTMLDivElement>(null)
+  const bindingContentTextareaRef = useRef<HTMLTextAreaElement>(null)
+  const decoTextareaRefs = useRef<Record<string, HTMLTextAreaElement | null>>({})
   const undoScopeRef: RefObject<HTMLElement | null> = editorSurfaceRef ?? layoutContainerRef
   const [layersCollapsed, setLayersCollapsed] = useState(false)
   const [propertiesCollapsed, setPropertiesCollapsed] = useState(false)
@@ -330,6 +367,42 @@ function PopupThemeEditorPanelCore({
     [layersPanelHeight],
   )
   const { undo, redo } = historyBundle
+
+  /** 方案 A：预览内文字只读，双击预览请求聚焦右侧参数区对应输入框 */
+  const handleRequestPanelTextFocus = useCallback(
+    (req: PanelTextFocusRequest) => {
+      setPropertiesCollapsed(false)
+      onSelectStructuralLayer(null)
+      if (req.kind === 'decoration') {
+        onSelectElements([])
+        onSelectDecorationLayer(req.layerId)
+        requestAnimationFrame(() => {
+          requestAnimationFrame(() => {
+            const ta = decoTextareaRefs.current[req.layerId]
+            ta?.scrollIntoView({ block: 'nearest', behavior: 'smooth' })
+            ta?.focus({ preventScroll: true })
+          })
+        })
+        return
+      }
+      onSelectDecorationLayer(null)
+      onSelectElements([req.key])
+      requestAnimationFrame(() => {
+        requestAnimationFrame(() => {
+          if (req.key === 'content') {
+            const ta = bindingContentTextareaRef.current
+            ta?.scrollIntoView({ block: 'nearest', behavior: 'smooth' })
+            ta?.focus({ preventScroll: true })
+          } else {
+            propertiesScrollRef.current
+              ?.querySelector('[data-panel-text-section]')
+              ?.scrollIntoView({ block: 'nearest', behavior: 'smooth' })
+          }
+        })
+      })
+    },
+    [onSelectDecorationLayer, onSelectElements, onSelectStructuralLayer],
+  )
 
   const [fontUiMode, setFontUiMode] = useState<Record<PopupTextFontLayer, 'preset' | 'system'>>(() => ({
     content: popupFontLayerUsesSystemTab(theme, 'content') ? 'system' : 'preset',
@@ -596,6 +669,8 @@ function PopupThemeEditorPanelCore({
                     ? undefined
                     : ['content']
               }
+              panelFirstTextEditing
+              onRequestPanelTextFocus={handleRequestPanelTextFocus}
             />
           </div>
         )}
@@ -609,7 +684,10 @@ function PopupThemeEditorPanelCore({
           </button>
         </div>
         {!propertiesCollapsed && (
-          <div className="min-h-0 flex-1 space-y-3 overflow-y-auto overscroll-contain px-3 py-2">
+          <div
+            ref={propertiesScrollRef}
+            className="min-h-0 flex-1 space-y-3 overflow-y-auto overscroll-contain px-3 py-2"
+          >
       {(effectivePanelFilter === 'all' || effectivePanelFilter === 'text') &&
         decoLayer &&
         decoLayer.kind === 'text' &&
@@ -625,12 +703,17 @@ function PopupThemeEditorPanelCore({
           const patchDecoFx = (p: Partial<PopupLayerTextEffects>, meta?: PopupThemeEditUpdateMeta) => {
             pushDeco({ textEffects: { ...decoEffects, ...p } }, meta)
           }
-          const dt = td.transform ?? { x: 50, y: 42, rotation: 0, scale: 1 }
+          const dt = td.transform ?? { x: 50, y: 36, rotation: 0, scale: 1 }
+          const decoWm = td.writingMode ?? 'horizontal-tb'
           return (
             <div className="space-y-2">
             <h4 className="text-xs font-semibold text-slate-700">文字</h4>
             <label className="block space-y-1 text-xs text-slate-600">
               <textarea
+                ref={(el) => {
+                  if (el) decoTextareaRefs.current[td.id] = el
+                  else delete decoTextareaRefs.current[td.id]
+                }}
                 rows={3}
                 value={td.text ?? ''}
                 onChange={(e) => pushDeco({ text: e.target.value.slice(0, 2000) })}
@@ -658,7 +741,7 @@ function PopupThemeEditorPanelCore({
               />
             </div>
             <div className="grid grid-cols-[60px_minmax(0,1fr)_72px] items-center gap-2 text-xs text-slate-600">
-              <span>字号</span>
+                <span>字号</span>
               <input
                 type="range"
                 min={1}
@@ -672,18 +755,18 @@ function PopupThemeEditorPanelCore({
                 }}
                 className="w-full accent-indigo-600"
               />
-              <input
-                type="number"
-                min={1}
-                max={8000}
-                value={td.fontSize ?? 28}
-                onChange={(e) => {
+                <input
+                  type="number"
+                  min={1}
+                  max={8000}
+                  value={td.fontSize ?? 28}
+                  onChange={(e) => {
                   const n = Number(e.target.value)
-                  if (!Number.isFinite(n)) return
+                    if (!Number.isFinite(n)) return
                   pushDeco({ fontSize: Math.max(1, Math.min(8000, Math.floor(n))) })
-                }}
-                className="w-full rounded border border-slate-300 px-2 py-1 text-sm"
-              />
+                  }}
+                  className="w-full rounded border border-slate-300 px-2 py-1 text-sm"
+                />
             </div>
             <div className="flex flex-wrap items-center gap-2 text-xs text-slate-600">
               <span className="shrink-0">颜色</span>
@@ -696,17 +779,17 @@ function PopupThemeEditorPanelCore({
               <h5 className="text-xs font-semibold text-slate-700">样式</h5>
               <div className="grid grid-cols-[60px_minmax(0,1fr)_auto] items-center gap-2 text-xs text-slate-600">
                 <span>字重</span>
-                <select
+              <select
                   value={td.fontWeight ?? 500}
                   onChange={(e) => pushDeco({ fontWeight: Number(e.target.value) })}
-                  className="w-full rounded border border-slate-300 px-2 py-1 text-sm"
-                >
+                className="w-full rounded border border-slate-300 px-2 py-1 text-sm"
+              >
                   {[100, 200, 300, 400, 500, 600, 700, 800, 900].map((w) => (
                     <option key={w} value={w}>
                       {w}
                     </option>
                   ))}
-                </select>
+              </select>
                 <div className="inline-flex rounded border border-slate-300 bg-white p-0.5">
                   <button
                     type="button"
@@ -734,6 +817,91 @@ function PopupThemeEditorPanelCore({
             </div>
             <div className="space-y-2">
               <h5 className="text-xs font-semibold text-slate-700">排版</h5>
+              <div className="flex flex-wrap items-center gap-x-3 gap-y-2">
+                <span className="text-[11px] text-slate-500 shrink-0">排向</span>
+                <div className="inline-flex rounded border border-slate-300 bg-white p-0.5">
+                  <button
+                    type="button"
+                    title="横排（从左到右）"
+                    onClick={() => pushDeco({ writingMode: 'horizontal-tb' })}
+                    className={`rounded px-2 py-0.5 text-[11px] ${
+                      decoWm === 'horizontal-tb'
+                        ? 'bg-slate-800 text-white'
+                        : 'text-slate-600 hover:bg-slate-100'
+                    }`}
+                  >
+                    横排
+                  </button>
+                  <button
+                    type="button"
+                    title="竖排"
+                    onClick={() => {
+                      if (decoWm === 'horizontal-tb') pushDeco({ writingMode: 'vertical-rl' })
+                    }}
+                    className={`rounded px-2 py-0.5 text-[11px] ${
+                      decoWm === 'vertical-rl' || decoWm === 'vertical-lr'
+                        ? 'bg-slate-800 text-white'
+                        : 'text-slate-600 hover:bg-slate-100'
+                    }`}
+                  >
+                    竖排
+                  </button>
+                </div>
+                {decoWm === 'vertical-rl' || decoWm === 'vertical-lr' ? (
+                  <>
+                    <span className="text-[11px] text-slate-500 shrink-0">列序</span>
+                    <div className="inline-flex rounded border border-slate-300 bg-white p-0.5">
+                      <button
+                        type="button"
+                        title="列从左向右（vertical-lr）"
+                        onClick={() => pushDeco({ writingMode: 'vertical-lr' })}
+                        className={`rounded px-2 py-0.5 text-[11px] ${
+                          decoWm === 'vertical-lr' ? 'bg-slate-800 text-white' : 'text-slate-600 hover:bg-slate-100'
+                        }`}
+                      >
+                        左
+                      </button>
+                      <button
+                        type="button"
+                        title="列从右向左（vertical-rl）"
+                        onClick={() => pushDeco({ writingMode: 'vertical-rl' })}
+                        className={`rounded px-2 py-0.5 text-[11px] ${
+                          decoWm === 'vertical-rl' ? 'bg-slate-800 text-white' : 'text-slate-600 hover:bg-slate-100'
+                        }`}
+                      >
+                        右
+                      </button>
+                    </div>
+                  </>
+                ) : null}
+              </div>
+              <div className="grid grid-cols-1 gap-2 sm:grid-cols-2">
+                <label className="text-xs text-slate-600 space-y-1">
+                  <span>字符朝向</span>
+                  <select
+                    value={td.textOrientation ?? 'mixed'}
+                    onChange={(e) => pushDeco({ textOrientation: e.target.value as PopupTextOrientationMode })}
+                    className="w-full rounded border border-slate-300 px-2 py-1 text-sm"
+                  >
+                    <option value="mixed">混合（默认）</option>
+                    <option value="upright">直立</option>
+                    <option value="sideways">侧转</option>
+                  </select>
+                </label>
+                <label className="inline-flex items-center gap-2 text-xs text-slate-700 mt-5 sm:mt-6">
+                  <input
+                    type="checkbox"
+                    checked={td.combineUprightDigits === true}
+                    onChange={(ev) => pushDeco({ combineUprightDigits: ev.target.checked })}
+                  />
+                  <span>直排内数字合并</span>
+                </label>
+              </div>
+              {(td.writingMode === 'vertical-rl' || td.writingMode === 'vertical-lr') ? (
+                <p className="text-[10px] text-slate-500 leading-snug">
+                  竖排时：字间距主要沿列方向；行高主要控制列间距。
+                </p>
+              ) : null}
               <div className="flex flex-wrap items-center gap-2">
                 <span className="text-[11px] text-slate-500 shrink-0">对齐</span>
                 <div className="inline-flex rounded border border-slate-300 bg-white p-0.5">
@@ -784,40 +952,40 @@ function PopupThemeEditorPanelCore({
                   ))}
                 </div>
               </div>
-              <div className="grid grid-cols-1 gap-2 sm:grid-cols-2">
+            <div className="grid grid-cols-1 gap-2 sm:grid-cols-2">
                 <label className="text-xs text-slate-600 space-y-1">
                   <span>字间距（px，-2～20）</span>
-                  <input
-                    type="number"
-                    min={-2}
-                    max={20}
-                    step={0.5}
-                    value={td.letterSpacing ?? 0}
-                    onChange={(e) => {
-                      const n = Number(e.target.value)
-                      if (!Number.isFinite(n)) return
-                      pushDeco({ letterSpacing: Math.max(-2, Math.min(20, n)) })
-                    }}
-                    className="w-full rounded border border-slate-300 px-2 py-1 text-sm"
-                  />
-                </label>
+                <input
+                  type="number"
+                  min={-2}
+                  max={20}
+                  step={0.5}
+                  value={td.letterSpacing ?? 0}
+                  onChange={(e) => {
+                    const n = Number(e.target.value)
+                    if (!Number.isFinite(n)) return
+                    pushDeco({ letterSpacing: Math.max(-2, Math.min(20, n)) })
+                  }}
+                  className="w-full rounded border border-slate-300 px-2 py-1 text-sm"
+                />
+              </label>
                 <label className="text-xs text-slate-600 space-y-1">
                   <span>行高（建议 1.1～2）</span>
-                  <input
-                    type="number"
-                    min={0.8}
-                    max={3}
-                    step={0.05}
-                    value={td.lineHeight ?? 1.35}
-                    onChange={(e) => {
-                      const n = Number(e.target.value)
-                      if (!Number.isFinite(n)) return
-                      pushDeco({ lineHeight: Math.max(0.8, Math.min(3, n)) })
-                    }}
-                    className="w-full rounded border border-slate-300 px-2 py-1 text-sm"
-                  />
-                </label>
-              </div>
+                <input
+                  type="number"
+                  min={0.8}
+                  max={3}
+                  step={0.05}
+                  value={td.lineHeight ?? 1.35}
+                  onChange={(e) => {
+                    const n = Number(e.target.value)
+                    if (!Number.isFinite(n)) return
+                    pushDeco({ lineHeight: Math.max(0.8, Math.min(3, n)) })
+                  }}
+                  className="w-full rounded border border-slate-300 px-2 py-1 text-sm"
+                />
+              </label>
+            </div>
             </div>
             <div className="space-y-2">
               <h5 className="text-xs font-semibold text-slate-700">效果</h5>
@@ -841,7 +1009,7 @@ function PopupThemeEditorPanelCore({
                       }
                     />
                     描边
-                  </label>
+            </label>
                   {decoEffects.strokeEnabled === true && (
                     <div className="space-y-2">
                       <label className="block text-[11px] text-slate-600 space-y-0.5">
@@ -1085,7 +1253,7 @@ function PopupThemeEditorPanelCore({
               </div>
               <button
                 type="button"
-                onClick={() => pushDeco({ transform: { x: 50, y: 42, rotation: 0, scale: 1 } })}
+                onClick={() => pushDeco({ transform: { x: 50, y: 36, rotation: 0, scale: 1 } })}
                 className="text-[11px] text-indigo-600 hover:text-indigo-800"
               >
                 重置为默认位置
@@ -1130,7 +1298,7 @@ function PopupThemeEditorPanelCore({
         )
       })()}
       {(effectivePanelFilter === 'all' || effectivePanelFilter === 'text') && !hidePrimaryTextForms && (
-        <div className="space-y-2">
+        <div className="space-y-2" data-panel-text-section>
           <h4 className="text-xs font-semibold text-slate-700">文字</h4>
           {showIdleTextHint && (
             <p className="text-[11px] text-slate-600 leading-relaxed">
@@ -1140,6 +1308,7 @@ function PopupThemeEditorPanelCore({
           {showContentColumn && (
             <label className="block space-y-1 text-xs text-slate-600">
               <textarea
+                ref={bindingContentTextareaRef}
                 rows={3}
                 value={
                   onLiveTextCommit != null
@@ -1151,7 +1320,7 @@ function PopupThemeEditorPanelCore({
                   onLiveTextCommit?.('content', v)
                   mergedWrappedOnUpdateTheme(themeId, { previewContentText: v })
                 }}
-                placeholder="可与左侧预览双击编辑互通"
+                placeholder="在此编辑主文案；左侧预览可双击定位到此处"
                 className="w-full resize-y rounded border border-slate-300 bg-white px-2 py-1.5 text-sm"
               />
             </label>
@@ -1178,70 +1347,70 @@ function PopupThemeEditorPanelCore({
                       void loadSystemFonts(false)
                       return
                     }
-                    const p: Partial<PopupTheme> =
-                      layer === 'content'
-                        ? { contentFontFamilySystem: undefined }
-                        : layer === 'time'
-                          ? { timeFontFamilySystem: undefined }
+                      const p: Partial<PopupTheme> =
+                        layer === 'content'
+                          ? { contentFontFamilySystem: undefined }
+                          : layer === 'time'
+                            ? { timeFontFamilySystem: undefined }
                           : layer === 'date'
                             ? { dateFontFamilySystem: undefined }
                             : { countdownFontFamilySystem: undefined }
-                    mergedWrappedOnUpdateTheme(themeId, p)
-                  }}
+                      mergedWrappedOnUpdateTheme(themeId, p)
+                    }}
                   presetOptions={POPUP_FONT_FAMILY_OPTIONS}
                   presetValue={popupFontPresetSelectValue(theme, layer)}
                   onPresetChange={(presetId) => {
                     const presetVal = presetId === DEFAULT_POPUP_FONT_PRESET_ID ? undefined : presetId
-                    if (layer === 'content') {
-                      mergedWrappedOnUpdateTheme(themeId, {
-                        contentFontFamilyPreset: presetVal,
-                        contentFontFamilySystem: undefined,
-                      })
-                    } else if (layer === 'time') {
-                      mergedWrappedOnUpdateTheme(themeId, {
-                        timeFontFamilyPreset: presetVal,
-                        timeFontFamilySystem: undefined,
-                      })
+                        if (layer === 'content') {
+                          mergedWrappedOnUpdateTheme(themeId, {
+                            contentFontFamilyPreset: presetVal,
+                            contentFontFamilySystem: undefined,
+                          })
+                        } else if (layer === 'time') {
+                          mergedWrappedOnUpdateTheme(themeId, {
+                            timeFontFamilyPreset: presetVal,
+                            timeFontFamilySystem: undefined,
+                          })
                     } else if (layer === 'date') {
                       mergedWrappedOnUpdateTheme(themeId, {
                         dateFontFamilyPreset: presetVal,
                         dateFontFamilySystem: undefined,
                       })
-                    } else {
-                      mergedWrappedOnUpdateTheme(themeId, {
-                        countdownFontFamilyPreset: presetVal,
-                        countdownFontFamilySystem: undefined,
-                      })
-                    }
-                  }}
-                  value={popupFontSystemInputValue(theme, layer)}
-                  fonts={systemFonts}
-                  fontsLoading={fontsLoading}
-                  onChange={(v) => {
-                    const sys = v || undefined
-                    if (layer === 'content') {
-                      mergedWrappedOnUpdateTheme(themeId, {
-                        contentFontFamilySystem: sys,
-                        contentFontFamilyPreset: undefined,
-                      })
-                    } else if (layer === 'time') {
-                      mergedWrappedOnUpdateTheme(themeId, {
-                        timeFontFamilySystem: sys,
-                        timeFontFamilyPreset: undefined,
-                      })
+                        } else {
+                          mergedWrappedOnUpdateTheme(themeId, {
+                            countdownFontFamilyPreset: presetVal,
+                            countdownFontFamilySystem: undefined,
+                          })
+                        }
+                      }}
+                      value={popupFontSystemInputValue(theme, layer)}
+                      fonts={systemFonts}
+                      fontsLoading={fontsLoading}
+                      onChange={(v) => {
+                        const sys = v || undefined
+                        if (layer === 'content') {
+                          mergedWrappedOnUpdateTheme(themeId, {
+                            contentFontFamilySystem: sys,
+                            contentFontFamilyPreset: undefined,
+                          })
+                        } else if (layer === 'time') {
+                          mergedWrappedOnUpdateTheme(themeId, {
+                            timeFontFamilySystem: sys,
+                            timeFontFamilyPreset: undefined,
+                          })
                     } else if (layer === 'date') {
                       mergedWrappedOnUpdateTheme(themeId, {
                         dateFontFamilySystem: sys,
                         dateFontFamilyPreset: undefined,
                       })
-                    } else {
-                      mergedWrappedOnUpdateTheme(themeId, {
-                        countdownFontFamilySystem: sys,
-                        countdownFontFamilyPreset: undefined,
-                      })
-                    }
-                  }}
-                />
+                        } else {
+                          mergedWrappedOnUpdateTheme(themeId, {
+                            countdownFontFamilySystem: sys,
+                            countdownFontFamilyPreset: undefined,
+                          })
+                        }
+                      }}
+                    />
               </div>
             ))}
             {window.electronAPI?.getSystemFontFamilies && systemFonts !== null && systemFonts.length === 0 && !fontsLoading && (
@@ -1310,8 +1479,8 @@ function PopupThemeEditorPanelCore({
                     }}
                     className="w-full rounded border border-slate-300 px-2 py-1 text-sm"
                   />
-                </div>
-              )}
+            </div>
+          )}
               {showDateColumn && (
                 <div className="grid grid-cols-[60px_minmax(0,1fr)_72px] items-center gap-2 text-xs text-slate-600">
                   <span>日期字号</span>
@@ -1339,10 +1508,10 @@ function PopupThemeEditorPanelCore({
                         dateFontSize: Number.isFinite(n) ? Math.max(1, Math.min(8000, Math.floor(n))) : 72,
                       })
                     }}
-                    className="w-full rounded border border-slate-300 px-2 py-1 text-sm"
+                  className="w-full rounded border border-slate-300 px-2 py-1 text-sm"
                   />
-                </div>
-              )}
+            </div>
+          )}
             </div>
           )}
           {(showContentColumn || showTimeColumn || showDateColumn) && (
@@ -1688,8 +1857,138 @@ function PopupThemeEditorPanelCore({
                 const lsVal = theme[letterSpacing]
                 const lhDefault = sel === 'countdown' ? 1 : sel === 'time' || sel === 'date' ? 1 : 1.35
                 const lhVal = theme[lineHeight] ?? lhDefault
+                const bw =
+                  sel === 'content'
+                    ? bindingWritingFieldNames('content')
+                    : sel === 'countdown'
+                      ? bindingWritingFieldNames('countdown')
+                      : null
+                const curWm = bw
+                  ? (((theme[bw.writingMode] as PopupTextWritingMode | undefined) ?? 'horizontal-tb') as PopupTextWritingMode)
+                  : 'horizontal-tb'
+                const isVert = Boolean(bw && (curWm === 'vertical-rl' || curWm === 'vertical-lr'))
+                const curOri = bw ? ((theme[bw.textOrientation] as PopupTextOrientationMode | undefined) ?? 'mixed') : 'mixed'
+                const combineOn = bw ? theme[bw.combineUpright] === true : false
+                const combineOff = bw ? theme[bw.combineUpright] === false : false
+                const combineDefaultShort = sel !== 'content'
+                const combineChecked = !bw ? false : sel === 'content' ? combineOn : combineOff ? false : combineDefaultShort
                 return (
                   <div className="space-y-2">
+                    {bw ? (
+                      <>
+                        <div className="flex flex-wrap items-center gap-x-3 gap-y-2">
+                          <span className="text-[11px] text-slate-500 shrink-0">排向</span>
+                          <div className="inline-flex rounded border border-slate-300 bg-white p-0.5">
+                            <button
+                              type="button"
+                              title="横排（从左到右）"
+                              onClick={() =>
+                                mergedWrappedOnUpdateTheme(themeId, { [bw.writingMode]: 'horizontal-tb' } as Partial<PopupTheme>)
+                              }
+                              className={`rounded px-2 py-0.5 text-[11px] ${
+                                curWm === 'horizontal-tb'
+                                  ? 'bg-slate-800 text-white'
+                                  : 'text-slate-600 hover:bg-slate-100'
+                              }`}
+                            >
+                              横排
+                            </button>
+                            <button
+                              type="button"
+                              title="竖排"
+                              onClick={() => {
+                                if (curWm === 'horizontal-tb') {
+                                  mergedWrappedOnUpdateTheme(themeId, {
+                                    [bw.writingMode]: 'vertical-rl',
+                                  } as Partial<PopupTheme>)
+                                }
+                              }}
+                              className={`rounded px-2 py-0.5 text-[11px] ${
+                                curWm === 'vertical-rl' || curWm === 'vertical-lr'
+                                  ? 'bg-slate-800 text-white'
+                                  : 'text-slate-600 hover:bg-slate-100'
+                              }`}
+                            >
+                              竖排
+                            </button>
+                          </div>
+                          {curWm === 'vertical-rl' || curWm === 'vertical-lr' ? (
+                            <>
+                              <span className="text-[11px] text-slate-500 shrink-0">列序</span>
+                              <div className="inline-flex rounded border border-slate-300 bg-white p-0.5">
+                                <button
+                                  type="button"
+                                  title="列从左向右（vertical-lr）"
+                                  onClick={() =>
+                                    mergedWrappedOnUpdateTheme(themeId, {
+                                      [bw.writingMode]: 'vertical-lr',
+                                    } as Partial<PopupTheme>)
+                                  }
+                                  className={`rounded px-2 py-0.5 text-[11px] ${
+                                    curWm === 'vertical-lr'
+                                      ? 'bg-slate-800 text-white'
+                                      : 'text-slate-600 hover:bg-slate-100'
+                                  }`}
+                                >
+                                  左
+                                </button>
+                                <button
+                                  type="button"
+                                  title="列从右向左（vertical-rl）"
+                                  onClick={() =>
+                                    mergedWrappedOnUpdateTheme(themeId, {
+                                      [bw.writingMode]: 'vertical-rl',
+                                    } as Partial<PopupTheme>)
+                                  }
+                                  className={`rounded px-2 py-0.5 text-[11px] ${
+                                    curWm === 'vertical-rl'
+                                      ? 'bg-slate-800 text-white'
+                                      : 'text-slate-600 hover:bg-slate-100'
+                                  }`}
+                                >
+                                  右
+                                </button>
+                              </div>
+                            </>
+                          ) : null}
+                        </div>
+                        <div className="grid grid-cols-1 gap-2 sm:grid-cols-2">
+                          <label className="text-xs text-slate-600 space-y-1">
+                            <span title="竖排时控制拉丁字母等朝向">字符朝向</span>
+                            <select
+                              value={curOri}
+                              onChange={(e) =>
+                                mergedWrappedOnUpdateTheme(themeId, {
+                                  [bw.textOrientation]: e.target.value as PopupTextOrientationMode,
+                                } as Partial<PopupTheme>)
+                              }
+                              className="w-full rounded border border-slate-300 px-2 py-1 text-sm"
+                            >
+                              <option value="mixed">混合（默认）</option>
+                              <option value="upright">直立</option>
+                              <option value="sideways">侧转</option>
+                            </select>
+                          </label>
+                          <label className="inline-flex items-center gap-2 text-xs text-slate-700 mt-5 sm:mt-6">
+                            <input
+                              type="checkbox"
+                              checked={combineChecked}
+                              onChange={(ev) =>
+                                mergedWrappedOnUpdateTheme(themeId, {
+                                  [bw.combineUpright]: ev.target.checked,
+                                } as Partial<PopupTheme>)
+                              }
+                            />
+                            <span title="将连续数字合并为直排块（竖排时更整齐）">直排内数字合并</span>
+                          </label>
+                        </div>
+                        {isVert ? (
+                          <p className="text-[10px] text-slate-500 leading-snug">
+                            竖排时：字间距主要沿列方向；行高主要控制列与列之间的间距。「两端对齐」在竖排内会按居中处理。
+                          </p>
+                        ) : null}
+                      </>
+                    ) : null}
                     <div className="flex flex-wrap items-center gap-2">
                       <span className="text-[11px] text-slate-500 shrink-0">对齐</span>
                       <div className="inline-flex rounded border border-slate-300 bg-white p-0.5">
@@ -1796,7 +2095,7 @@ function PopupThemeEditorPanelCore({
                 )
               })()
             )}
-            </div>
+          </div>
           )}
 
           {selectedElements.length > 0 && (effectivePanelFilter === 'all' || effectivePanelFilter === 'text') && (
@@ -1856,7 +2155,7 @@ function PopupThemeEditorPanelCore({
                                 onChange={(v, m) => patchFx({ strokeColor: v }, m)}
                               />
                               <span className="shrink-0 text-slate-500">不透明度</span>
-                              <input
+                            <input
                                 type="range"
                                 min={0}
                                 max={1}
@@ -1869,19 +2168,19 @@ function PopupThemeEditorPanelCore({
                                 }}
                                 className="min-w-[80px] flex-1 accent-indigo-600"
                               />
-                              <input
-                                type="number"
-                                min={0}
-                                max={1}
-                                step={0.05}
-                                value={e.strokeOpacity ?? 1}
-                                onChange={(ev) => {
-                                  const n = Number(ev.target.value)
-                                  if (!Number.isFinite(n)) return
-                                  patchFx({ strokeOpacity: Math.max(0, Math.min(1, n)) })
-                                }}
+                            <input
+                              type="number"
+                              min={0}
+                              max={1}
+                              step={0.05}
+                              value={e.strokeOpacity ?? 1}
+                              onChange={(ev) => {
+                                const n = Number(ev.target.value)
+                                if (!Number.isFinite(n)) return
+                                patchFx({ strokeOpacity: Math.max(0, Math.min(1, n)) })
+                              }}
                                 className="w-[72px] shrink-0 rounded border border-slate-300 px-2 py-1 text-xs"
-                              />
+                            />
                             </div>
                           </div>
                         </div>
@@ -1920,7 +2219,7 @@ function PopupThemeEditorPanelCore({
                                 onChange={(v, m) => patchFx({ shadowColor: v }, m)}
                               />
                               <span className="shrink-0 text-slate-500">不透明度</span>
-                              <input
+                            <input
                                 type="range"
                                 min={0}
                                 max={1}
@@ -1933,19 +2232,19 @@ function PopupThemeEditorPanelCore({
                                 }}
                                 className="min-w-[80px] flex-1 accent-indigo-600"
                               />
-                              <input
-                                type="number"
-                                min={0}
-                                max={1}
-                                step={0.05}
-                                value={e.shadowOpacity ?? 0.45}
-                                onChange={(ev) => {
-                                  const n = Number(ev.target.value)
-                                  if (!Number.isFinite(n)) return
-                                  patchFx({ shadowOpacity: Math.max(0, Math.min(1, n)) })
-                                }}
+                            <input
+                              type="number"
+                              min={0}
+                              max={1}
+                              step={0.05}
+                              value={e.shadowOpacity ?? 0.45}
+                              onChange={(ev) => {
+                                const n = Number(ev.target.value)
+                                if (!Number.isFinite(n)) return
+                                patchFx({ shadowOpacity: Math.max(0, Math.min(1, n)) })
+                              }}
                                 className="w-[72px] shrink-0 rounded border border-slate-300 px-2 py-1 text-xs"
-                              />
+                            />
                             </div>
                           </div>
                           <div className="grid grid-cols-1 gap-2 sm:grid-cols-2 lg:grid-cols-3">
@@ -2024,7 +2323,7 @@ function PopupThemeEditorPanelCore({
           )}
 
           {!isDecoTextSelected && (
-            <div className="border-t border-slate-100 pt-2 mt-1 space-y-2">
+          <div className="border-t border-slate-100 pt-2 mt-1 space-y-2">
             <div className="flex items-center justify-between">
               <h5 className="text-xs font-semibold text-slate-700">变换</h5>
             </div>
@@ -2034,16 +2333,16 @@ function PopupThemeEditorPanelCore({
               const tField = panelThemeTransformField(sel)
               const defaults: Record<string, Record<TextElementKey, TextTransform>> = {
                 main: {
-                  content: { x: 50, y: 42, rotation: 0, scale: 1 },
-                  time: { x: 50, y: 55, rotation: 0, scale: 1 },
-                  date: { x: 50, y: 58, rotation: 0, scale: 1 },
-                  countdown: { x: 50, y: 70, rotation: 0, scale: 1 },
+                  content: { x: 50, y: 36, rotation: 0, scale: 1 },
+                  time: { x: 50, y: 62, rotation: 0, scale: 1 },
+                  date: { x: 50, y: 65, rotation: 0, scale: 1 },
+                  countdown: { x: 50, y: 78, rotation: 0, scale: 1 },
                 },
                 rest: {
-                  content: { x: 50, y: 42, rotation: 0, scale: 1 },
-                  time: { x: 50, y: 55, rotation: 0, scale: 1 },
-                  date: { x: 50, y: 58, rotation: 0, scale: 1 },
-                  countdown: { x: 50, y: 70, rotation: 0, scale: 1 },
+                  content: { x: 50, y: 36, rotation: 0, scale: 1 },
+                  time: { x: 50, y: 62, rotation: 0, scale: 1 },
+                  date: { x: 50, y: 65, rotation: 0, scale: 1 },
+                  countdown: { x: 50, y: 78, rotation: 0, scale: 1 },
                 },
               }
               const def = defaults[theme.target]?.[sel] ?? { x: 50, y: 50, rotation: 0, scale: 1 }
@@ -2119,7 +2418,7 @@ function PopupThemeEditorPanelCore({
                 </div>
               )
             })()}
-            </div>
+          </div>
           )}
         </div>
       )}
@@ -2165,13 +2464,13 @@ function PopupThemeEditorPanelCore({
             return (
               <>
           <label className="inline-flex items-center gap-2 text-xs text-slate-700">
-            <input
-              type="checkbox"
-              checked={theme.overlayEnabled}
-              onChange={(e) => mergedWrappedOnUpdateTheme(themeId, { overlayEnabled: e.target.checked })}
-            />
-            启用遮罩
-          </label>
+              <input
+                type="checkbox"
+                checked={theme.overlayEnabled}
+                onChange={(e) => mergedWrappedOnUpdateTheme(themeId, { overlayEnabled: e.target.checked })}
+              />
+              启用遮罩
+            </label>
           <label className="block space-y-1 text-xs text-slate-600">
             <span>模式</span>
             <select
@@ -2229,7 +2528,7 @@ function PopupThemeEditorPanelCore({
               <div className="grid grid-cols-[60px_minmax(0,1fr)] items-center gap-2 text-xs text-slate-600">
                 <span>颜色</span>
                 <PopupThemeColorSwatch
-                  value={theme.overlayColor}
+                value={theme.overlayColor}
                   onChange={(v, m) => mergedWrappedOnUpdateTheme(themeId, { overlayColor: v }, m)}
                   disabled={disabled}
                 />
@@ -2263,7 +2562,7 @@ function PopupThemeEditorPanelCore({
                   <option value="bottomRightToTopLeft">右下 → 左上</option>
                   <option value="custom">自定义角度</option>
                 </select>
-              </label>
+            </label>
               <div className="grid grid-cols-[60px_minmax(0,1fr)_72px] items-center gap-2 text-xs text-slate-600">
                 <span>角度</span>
                 <div className="flex items-center gap-3">
@@ -2317,8 +2616,8 @@ function PopupThemeEditorPanelCore({
                     className="w-full accent-indigo-600 disabled:opacity-50"
                   />
                 </div>
-                <input
-                  type="number"
+              <input
+                type="number"
                   min={0}
                   max={359}
                   step={1}
@@ -2336,8 +2635,8 @@ function PopupThemeEditorPanelCore({
                 <span>起点透明</span>
                 <input
                   type="range"
-                  min={0}
-                  max={1}
+                min={0}
+                max={1}
                   step={0.01}
                   value={gradientStartOpacity}
                   onChange={(e) => {
@@ -2360,9 +2659,9 @@ function PopupThemeEditorPanelCore({
                     mergedWrappedOnUpdateTheme(themeId, { overlayGradientStartOpacity: Math.max(0, Math.min(1, n)) })
                   }}
                   disabled={disabled}
-                  className="w-full rounded border border-slate-300 px-2 py-1 text-sm disabled:opacity-50"
-                />
-              </div>
+                className="w-full rounded border border-slate-300 px-2 py-1 text-sm disabled:opacity-50"
+              />
+          </div>
               <div className="grid grid-cols-[60px_minmax(0,1fr)_72px] items-center gap-2 text-xs text-slate-600">
                 <span>终点透明</span>
                 <input
@@ -2568,7 +2867,7 @@ function PopupThemeEditorPanelCore({
           )}
         </div>
       )}
-          </div>
+        </div>
         )}
       </div>
     </div>

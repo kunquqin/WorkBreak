@@ -14,3 +14,8 @@ html {
   box-shadow: 0 4px 16px -2px rgba(0, 0, 0, 0.08);
 }
 
+/* react-moveable：目标尺寸随贴盒逐帧变化时，控制框勿做 CSS 过渡，避免外框底边「慢慢往下长」的错觉 */
+.moveable-control-box {
+  transition: none !important;
+}
+

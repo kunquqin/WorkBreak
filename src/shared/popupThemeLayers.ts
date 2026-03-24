@@ -2,7 +2,16 @@
  * 弹窗主题：图层顺序、可见性（文本 / 时间 / 图片 / 背景 / 遮罩）。
  * 文本层统一为 kind: 'text'；其中 bindsReminderBody 为 true 的层接收提醒主文案注入。
  */
-import type { PopupLayerTextEffects, PopupTextAlign, PopupTextVerticalAlign, PopupTheme, TextTransform } from './settings'
+import type {
+  PopupLayerTextEffects,
+  PopupTextAlign,
+  PopupTextOrientationMode,
+  PopupTextVerticalAlign,
+  PopupTextWritingMode,
+  PopupTheme,
+  TextTransform,
+} from './settings'
+import { normalizePopupTextOrientationMode, normalizePopupTextWritingMode } from './popupVerticalText'
 
 function sanitizeLayerTextEffects(raw: unknown): PopupLayerTextEffects | undefined {
   if (!raw || typeof raw !== 'object') return undefined
@@ -47,7 +56,7 @@ export const POPUP_LAYER_BINDING_DATE_ID = 'layer-binding-date'
 export const MAX_TEXT_LAYERS = 10
 
 /** 与 `settings.BUILTIN_*_POPUP_FALLBACK_BODY` 文案保持一致（避免 settings↔本模块循环依赖） */
-export const RESTORE_BINDING_BODY_MAIN = '时间到！'
+export const RESTORE_BINDING_BODY_MAIN = '时间到啦'
 export const RESTORE_BINDING_BODY_REST = '休息一下'
 export const MAX_DECORATION_IMAGE_LAYERS = 5
 
@@ -100,6 +109,10 @@ export interface TextThemeLayer extends PopupThemeLayerBase {
   /** 与主题根 `contentFontItalic` 等语义对齐，仅装饰/独立文本层使用；绑定层仍以根字段为准 */
   fontItalic?: boolean
   textUnderline?: boolean
+  /** 装饰文本排向与竖排选项（绑定主文案仍以主题根字段为准） */
+  writingMode?: PopupTextWritingMode
+  textOrientation?: PopupTextOrientationMode
+  combineUprightDigits?: boolean
 }
 
 export interface BindingTimeThemeLayer extends PopupThemeLayerBase {
@@ -129,7 +142,7 @@ function defaultFreeTextTransform(): TextTransform {
    * 用户手动拉框后再写入 textBox*Pct 持久化。
    */
   /** y 与绑定主文案默认 42% 对齐，新建装饰句视觉中心接近主文案 */
-  return { ...baseTransform(), x: 50, y: 42 }
+  return { ...baseTransform(), x: 50, y: 36 }
 }
 
 function defaultImageTransform(): TextTransform {
@@ -150,7 +163,7 @@ function bindingBodyTextFromTheme(theme: PopupTheme): Omit<TextThemeLayer, 'id' 
     lineHeight: theme.contentLineHeight,
     fontFamilyPreset: theme.contentFontFamilyPreset,
     fontFamilySystem: theme.contentFontFamilySystem,
-    transform: theme.contentTransform ?? { x: 50, y: 42, rotation: 0, scale: 1 },
+    transform: theme.contentTransform ?? { x: 50, y: 36, rotation: 0, scale: 1 },
     ...(te ? { textEffects: te } : {}),
   }
 }
@@ -245,7 +258,7 @@ function sanitizeLayer(raw: unknown, theme: PopupTheme): PopupThemeLayer | null 
     const fw = Number(o.fontWeight)
     const transform =
       normalizeLayerTransform(o.transform) ??
-      (baseBody ? baseBody.transform : binds ? { x: 50, y: 42, rotation: 0, scale: 1 } : defaultFreeTextTransform())
+      (baseBody ? baseBody.transform : binds ? { x: 50, y: 36, rotation: 0, scale: 1 } : defaultFreeTextTransform())
     const te = sanitizeLayerTextEffects(o.textEffects) ?? baseBody?.textEffects
     const align =
       o.textAlign === 'left' || o.textAlign === 'right' || o.textAlign === 'center' || o.textAlign === 'start' || o.textAlign === 'end' || o.textAlign === 'justify'
@@ -268,6 +281,10 @@ function sanitizeLayer(raw: unknown, theme: PopupTheme): PopupThemeLayer | null 
     const fontWeight = Number.isFinite(fw)
       ? Math.max(100, Math.min(900, Math.round(fw / 100) * 100))
       : baseBody?.fontWeight
+    const writingMode = normalizePopupTextWritingMode(o.writingMode)
+    const textOrientation = normalizePopupTextOrientationMode(o.textOrientation)
+    const combineUprightDigits =
+      o.combineUprightDigits === true ? true : o.combineUprightDigits === false ? false : undefined
     return {
       id,
       kind: 'text',
@@ -287,6 +304,9 @@ function sanitizeLayer(raw: unknown, theme: PopupTheme): PopupThemeLayer | null 
       ...(te ? { textEffects: te } : {}),
       ...(o.fontItalic === true ? { fontItalic: true as const } : {}),
       ...(o.textUnderline === true ? { textUnderline: true as const } : {}),
+      ...(writingMode ? { writingMode } : {}),
+      ...(textOrientation ? { textOrientation } : {}),
+      ...(combineUprightDigits !== undefined ? { combineUprightDigits } : {}),
     }
   }
 
@@ -310,6 +330,8 @@ function sanitizeLayer(raw: unknown, theme: PopupTheme): PopupThemeLayer | null 
     const fw = Number(o.fontWeight)
     const transform = normalizeLayerTransform(o.transform) ?? defaultFreeTextTransform()
     const te = sanitizeLayerTextEffects(o.textEffects)
+    const decoWm = normalizePopupTextWritingMode(o.writingMode)
+    const decoOri = normalizePopupTextOrientationMode(o.textOrientation)
     return {
       id,
       kind: 'text',
@@ -335,6 +357,10 @@ function sanitizeLayer(raw: unknown, theme: PopupTheme): PopupThemeLayer | null 
       ...(te ? { textEffects: te } : {}),
       ...(o.fontItalic === true ? { fontItalic: true as const } : {}),
       ...(o.textUnderline === true ? { textUnderline: true as const } : {}),
+      ...(decoWm ? { writingMode: decoWm } : {}),
+      ...(decoOri ? { textOrientation: decoOri } : {}),
+      ...(o.combineUprightDigits === true ? { combineUprightDigits: true as const } : {}),
+      ...(o.combineUprightDigits === false ? { combineUprightDigits: false as const } : {}),
     }
   }
 
@@ -465,7 +491,7 @@ export function reorderLayers(theme: PopupTheme, fromIndex: number, toIndex: num
 }
 
 /**
- * 恢复唯一「主文案」绑定层（用户曾删除时）；文案随 `theme.target`：`main`→时间到！，`rest`→休息一下。
+ * 恢复唯一「主文案」绑定层（用户曾删除时）；文案随 `theme.target`：`main`→时间到啦，`rest`→休息一下。
  * 不计入 MAX_TEXT_LAYERS 限制（与必选层语义一致）。
  */
 export function addBindingContentLayer(theme: PopupTheme): Partial<PopupTheme> | null {
@@ -539,7 +565,7 @@ export function addDateLayer(theme: PopupTheme): Partial<PopupTheme> | null {
   layers.push(L)
   const patch: Partial<PopupTheme> = { layers }
   if (!theme.dateTransform) {
-    patch.dateTransform = { x: 50, y: 58, rotation: 0, scale: 1 }
+    patch.dateTransform = { x: 50, y: 65, rotation: 0, scale: 1 }
   }
   if (theme.dateFontSize == null) {
     patch.dateFontSize = 72
