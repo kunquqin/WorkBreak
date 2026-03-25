@@ -22,7 +22,25 @@ export function setLiveWallpaperTrayHooks(hooks: LiveWallpaperTrayHooks | null) 
 export function rebuildTrayMenu() {
   if (!tray) return
   const items: Electron.MenuItemConstructorOptions[] = [
-    { label: '打开设置', click: () => mainWindowRef?.show() },
+    {
+      label: '打开设置',
+      click: () => {
+        const w = mainWindowRef
+        if (!w || w.isDestroyed()) return
+        w.show()
+        w.focus()
+        try {
+          w.webContents.focus()
+        } catch {
+          /* ignore */
+        }
+        try {
+          w.focusOnWebView()
+        } catch {
+          /* ignore */
+        }
+      },
+    },
   ]
   if (liveWallpaperTrayHooks?.isActive()) {
     items.push({
@@ -48,8 +66,24 @@ export function createTray(mainWindow: BrowserWindow) {
 
   tray.setToolTip('WorkBreak - 可配置提醒')
   rebuildTrayMenu()
-  tray.on('double-click', () => mainWindow?.show())
-  tray.on('click', () => mainWindow?.show())
+  const showAndFocus = () => {
+    const w = mainWindow
+    if (!w || w.isDestroyed()) return
+    w.show()
+    w.focus()
+    try {
+      w.webContents.focus()
+    } catch {
+      /* ignore */
+    }
+    try {
+      w.focusOnWebView()
+    } catch {
+      /* ignore */
+    }
+  }
+  tray.on('double-click', showAndFocus)
+  tray.on('click', showAndFocus)
 }
 
 export function destroyTray() {

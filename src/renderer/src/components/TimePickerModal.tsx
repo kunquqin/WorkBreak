@@ -28,12 +28,13 @@ const hideScrollbar =
   '[scrollbar-width:none] [-ms-overflow-style:none] [&::-webkit-scrollbar]:hidden'
 
 const WheelRow = memo(
-  function WheelRow({ v, selected }: { v: number; selected: boolean }) {
+  function WheelRow({ v, selected, idx }: { v: number; selected: boolean; idx: number }) {
     return (
       <div
         role="option"
         aria-selected={selected}
         data-wheel-row={v}
+        data-wheel-index={idx}
         className={`snap-center shrink-0 w-full flex items-center justify-center text-2xl tabular-nums leading-none rounded ${
           selected ? 'text-slate-900 font-semibold' : 'text-slate-300 font-normal'
         }`}
@@ -43,7 +44,7 @@ const WheelRow = memo(
       </div>
     )
   },
-  (a, b) => a.v === b.v && a.selected === b.selected
+  (a, b) => a.v === b.v && a.selected === b.selected && a.idx === b.idx
 )
 
 type WheelColumnProps = {
@@ -57,6 +58,7 @@ type WheelColumnProps = {
 
 export function WheelColumn({ label, min, max, value, onChange, onLiveChange }: WheelColumnProps) {
   const ref = useRef<HTMLDivElement>(null)
+  const editInputRef = useRef<HTMLInputElement>(null)
   const normalizingRef = useRef(false)
   const settleTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
   const rafRef = useRef<number | null>(null)
@@ -66,6 +68,12 @@ export function WheelColumn({ label, min, max, value, onChange, onLiveChange }: 
 
   const [live, setLive] = useState(value)
   const [dragging, setDragging] = useState(false)
+  /** 单击当前居中数字进入键盘输入；遮罩期内阻止底层滚轮拖拽 */
+  const [editing, setEditing] = useState(false)
+  const [draft, setDraft] = useState('')
+  /** 进入编辑瞬间的取值，Esc 取消时完整回滚（含父级 onLiveChange） */
+  const editBaselineRef = useRef(value)
+  const skipBlurCommitRef = useRef(false)
   /** 与 live 同步，供 flushScrollToLive 在 setState 之外比较，避免在 setState updater 内调用 emitLive（会触发父组件 setState，违反 React 规则） */
   const liveRef = useRef(value)
   liveRef.current = live
@@ -128,11 +136,23 @@ export function WheelColumn({ label, min, max, value, onChange, onLiveChange }: 
 
   /** 受控 value 从父组件更新时（如新建闹钟默认改为「当前时间」）必须重新对齐滚动，不能只依赖挂载时的一次同步 */
   useEffect(() => {
+    if (editing) return
     scrollToValue(value, 'auto')
     liveRef.current = value
     setLive(value)
     emitLive(value)
-  }, [value, scrollToValue, emitLive])
+  }, [value, scrollToValue, emitLive, editing])
+
+  useEffect(() => {
+    if (!editing) return
+    const id = requestAnimationFrame(() => {
+      const inp = editInputRef.current
+      if (!inp) return
+      inp.focus()
+      inp.select()
+    })
+    return () => cancelAnimationFrame(id)
+  }, [editing])
 
   const normalizeIfNeeded = useCallback(() => {
     const el = ref.current
@@ -272,8 +292,49 @@ export function WheelColumn({ label, min, max, value, onChange, onLiveChange }: 
     [onChange, emitLive, scrollToValue, normalizeIfNeeded]
   )
 
+  /** 输入过程中：同步滚轮 + 预览（onLiveChange），不写 onChange 以免父状态未确认即落盘 */
+  const applyDraftNumberLive = useCallback(
+    (raw: string) => {
+      const digits = raw.replace(/\D/g, '').slice(0, 2)
+      if (digits === '') return
+      let n = parseInt(digits, 10)
+      if (Number.isNaN(n)) return
+      n = Math.max(min, Math.min(max, n))
+      liveRef.current = n
+      setLive(n)
+      emitLive(n)
+      scrollToValue(n, 'auto')
+      requestAnimationFrame(() => {
+        normalizeIfNeeded()
+      })
+    },
+    [min, max, emitLive, scrollToValue, normalizeIfNeeded]
+  )
+
+  const commitEditing = useCallback(() => {
+    const digits = draft.replace(/\D/g, '').slice(0, 2)
+    let n: number
+    if (digits === '') {
+      n = liveRef.current
+    } else {
+      const parsed = parseInt(digits, 10)
+      n = Number.isNaN(parsed) ? editBaselineRef.current : Math.max(min, Math.min(max, parsed))
+    }
+    setEditing(false)
+    setDraft('')
+    pickValue(n)
+  }, [draft, min, max, pickValue])
+
+  const cancelEditing = useCallback(() => {
+    skipBlurCommitRef.current = true
+    setEditing(false)
+    setDraft('')
+    pickValue(editBaselineRef.current)
+  }, [pickValue])
+
   const onWheelRowClick = useCallback(
     (e: React.MouseEvent) => {
+      if (editing) return
       if (suppressClickRef.current) {
         suppressClickRef.current = false
         e.preventDefault()
@@ -284,9 +345,21 @@ export function WheelColumn({ label, min, max, value, onChange, onLiveChange }: 
       if (!t) return
       const raw = t.getAttribute('data-wheel-row')
       if (raw == null) return
+      const rawIdx = t.getAttribute('data-wheel-index')
+      const idx = rawIdx != null ? Number(rawIdx) : NaN
+      const el = ref.current
+      if (el && Number.isFinite(idx)) {
+        const centerIdx = Math.round(el.scrollTop / ITEM_H)
+        if (idx === centerIdx) {
+          editBaselineRef.current = indexToValue(centerIdx)
+          setDraft(String(indexToValue(centerIdx)).padStart(2, '0'))
+          setEditing(true)
+          return
+        }
+      }
       pickValue(Number(raw))
     },
-    [pickValue]
+    [pickValue, editing, indexToValue]
   )
 
   return (
@@ -301,10 +374,10 @@ export function WheelColumn({ label, min, max, value, onChange, onLiveChange }: 
         <div
           ref={ref}
           role="listbox"
-          tabIndex={0}
+          tabIndex={editing ? -1 : 0}
           className={`relative z-10 w-[4.25rem] overflow-y-auto scroll-auto overscroll-contain touch-pan-y ${hideScrollbar} ${
             dragging ? 'snap-none' : 'snap-y snap-mandatory'
-          } ${dragging ? 'cursor-grabbing' : 'cursor-grab'}`}
+          } ${dragging ? 'cursor-grabbing' : 'cursor-grab'} ${editing ? 'pointer-events-none' : ''}`}
           style={{
             height: WHEEL_VIEW_H,
             scrollPaddingTop: PAD,
@@ -319,9 +392,59 @@ export function WheelColumn({ label, min, max, value, onChange, onLiveChange }: 
         >
           {Array.from({ length: totalItems }, (_, i) => {
             const v = indexToValue(i)
-            return <WheelRow key={i} v={v} selected={live === v} />
+            return <WheelRow key={i} idx={i} v={v} selected={live === v} />
           })}
         </div>
+        {editing ? (
+          <>
+            <div
+              className="absolute inset-0 z-20 touch-none"
+              aria-hidden
+              onMouseDown={(e) => {
+                if (e.target === e.currentTarget) editInputRef.current?.blur()
+              }}
+              onTouchEnd={(e) => {
+                if (e.target === e.currentTarget) editInputRef.current?.blur()
+              }}
+            />
+            <div
+              className="absolute inset-x-0 top-1/2 z-30 flex -translate-y-1/2 items-stretch justify-stretch rounded-md bg-slate-50/90"
+              style={{ height: ITEM_H }}
+            >
+              <input
+                ref={editInputRef}
+                type="text"
+                inputMode="numeric"
+                autoComplete="off"
+                aria-label={label ? `${label}（数字输入）` : '数字输入'}
+                title="输入后失焦或按 Enter 确认，Esc 取消"
+                className="box-border min-h-0 min-w-0 w-full flex-1 rounded-md border-[0.5px] border-slate-400/55 bg-white px-0 text-center text-2xl font-semibold tabular-nums text-slate-900 outline-none focus-visible:ring-1 focus-visible:ring-slate-400/60"
+                value={draft}
+                onChange={(e) => {
+                  const next = e.target.value.replace(/\D/g, '').slice(0, 2)
+                  setDraft(next)
+                  applyDraftNumberLive(next)
+                }}
+                onKeyDown={(e) => {
+                  if (e.key === 'Escape') {
+                    e.preventDefault()
+                    cancelEditing()
+                  } else if (e.key === 'Enter') {
+                    e.preventDefault()
+                    editInputRef.current?.blur()
+                  }
+                }}
+                onBlur={() => {
+                  if (skipBlurCommitRef.current) {
+                    skipBlurCommitRef.current = false
+                    return
+                  }
+                  commitEditing()
+                }}
+              />
+            </div>
+          </>
+        ) : null}
       </div>
     </div>
   )

@@ -27,6 +27,7 @@ export {
   SYSTEM_DESKTOP_POPUP_THEME_ID,
   BUILTIN_MAIN_POPUP_FALLBACK_BODY,
   BUILTIN_REST_POPUP_FALLBACK_BODY,
+  REST_POPUP_PREVIEW_TIME_TEXT,
   mergeSystemBuiltinPopupThemes,
   getDefaultPopupThemeIdForTarget,
   cloneDefaultPopupThemePreservingIdentity,

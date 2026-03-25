@@ -6,6 +6,8 @@ contextBridge.exposeInMainWorld('electronAPI', {
   getSettingsFilePath: () => ipcRenderer.invoke('getSettingsFilePath'),
   setSettings: (settings) => ipcRenderer.invoke('setSettings', settings),
   showMainWindow: () => ipcRenderer.invoke('showMainWindow'),
+  focusMainWebContents: () => ipcRenderer.invoke('focusMainWebContents'),
+  openThemeEditorFullscreenPreview: (theme) => ipcRenderer.invoke('openThemeEditorFullscreenPreview', theme),
   getReminderCountdowns: () => ipcRenderer.invoke('getReminderCountdowns'),
   getPrimaryDisplaySize: () => ipcRenderer.invoke('getPrimaryDisplaySize'),
   resetReminderProgress: (key, payload) => ipcRenderer.invoke('resetReminderProgress', key, payload),

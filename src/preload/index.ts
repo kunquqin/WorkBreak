@@ -11,6 +11,8 @@ contextBridge.exposeInMainWorld('electronAPI', {
       { success: true; data: AppSettings } | { success: false; error: string }
     >,
   showMainWindow: () => ipcRenderer.invoke('showMainWindow'),
+  focusMainWebContents: () => ipcRenderer.invoke('focusMainWebContents'),
+  openThemeEditorFullscreenPreview: (theme) => ipcRenderer.invoke('openThemeEditorFullscreenPreview', theme),
   getPrimaryDisplaySize: () =>
     ipcRenderer.invoke('getPrimaryDisplaySize') as Promise<{ width: number; height: number }>,
   resolvePreviewImageUrl: (imagePath: string) =>

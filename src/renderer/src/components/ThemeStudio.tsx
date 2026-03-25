@@ -8,6 +8,7 @@ import {
   type CSSProperties,
   type KeyboardEvent,
   type MouseEvent as ReactMouseEvent,
+  type PointerEvent as ReactPointerEvent,
   type RefObject,
 } from 'react'
 import { createPortal } from 'react-dom'
@@ -25,7 +26,15 @@ import {
 import { restrictToWindowEdges } from '@dnd-kit/modifiers'
 import { SortableContext, arrayMove, rectSortingStrategy, useSortable } from '@dnd-kit/sortable'
 import type { Transform } from '@dnd-kit/utilities'
-import { collectPopupThemeImagePathsForPreview } from '../utils/popupThemePreview'
+import {
+  collectPopupThemeImagePathsForPreview,
+  collectThemeStudioThumbnailImagePaths,
+  rendererSafePreviewImageUrl,
+} from '../utils/popupThemePreview'
+import {
+  ThemeFullscreenPreviewIconButton,
+  ThemeFullscreenPreviewToolbarButton,
+} from './ThemeFullscreenPreviewControl'
 import {
   cloneDefaultPopupThemePreservingIdentity,
   SYSTEM_DESKTOP_POPUP_THEME_ID,
@@ -40,6 +49,17 @@ import { clonePopupThemeForFork, popupThemeContentEquals } from '../../../shared
 import { addImageDecorationLayer, mergeContentThemePatchIntoBindingTextLayer } from '../../../shared/popupThemeLayers'
 import { ensureThemeLayers } from '../../../shared/settings'
 import { usePopupThemeEditHistory, type PopupThemeEditUpdateMeta } from '../hooks/usePopupThemeEditHistory'
+
+/** 列表缩略图槽位：主题未指定或纯黑底时的浅灰（slate-200），避免未加载时大块纯黑 */
+const THEME_STUDIO_THUMB_SLOT_FALLBACK_BG = '#e2e8f0'
+
+function themeStudioThumbSlotBaseBg(theme: Pick<PopupTheme, 'backgroundColor'>): string {
+  const c = theme.backgroundColor?.trim()
+  if (!c) return THEME_STUDIO_THUMB_SLOT_FALLBACK_BG
+  const n = c.replace(/\s/g, '').toLowerCase()
+  if (n === '#000' || n === '#000000') return THEME_STUDIO_THUMB_SLOT_FALLBACK_BG
+  return c
+}
 
 /** 与设置页大类排序一致：可变高网格项禁用 scale 形变，仅平移 */
 function sortableTranslateOnly(t: Transform | null): string | undefined {
@@ -58,21 +78,21 @@ function themeStudioListCardFooterClasses(target: PopupThemeTarget): {
 } {
   if (target === 'main') {
     return {
-      footerTone: 'border-emerald-200 bg-emerald-50',
-      footerHoverTone: 'group-hover:border-emerald-300 group-hover:bg-emerald-100',
+      footerTone: 'border-emerald-300 bg-emerald-100',
+      footerHoverTone: 'group-hover:border-emerald-400 group-hover:bg-emerald-200',
       subTone: 'text-emerald-900',
     }
   }
   if (target === 'desktop') {
     return {
-      footerTone: 'border-violet-200 bg-violet-50',
-      footerHoverTone: 'group-hover:border-violet-300 group-hover:bg-violet-100',
+      footerTone: 'border-violet-300 bg-violet-100',
+      footerHoverTone: 'group-hover:border-violet-400 group-hover:bg-violet-200',
       subTone: 'text-violet-900',
     }
   }
   return {
-    footerTone: 'border-blue-200 bg-blue-50',
-    footerHoverTone: 'group-hover:border-blue-300 group-hover:bg-blue-100',
+    footerTone: 'border-blue-300 bg-blue-100',
+    footerHoverTone: 'group-hover:border-blue-400 group-hover:bg-blue-200',
     subTone: 'text-blue-900',
   }
 }
@@ -271,6 +291,12 @@ function StudioListOverflowMenu({
   )
 }
 
+/** 捕获阶段聚焦，避免 Electron/父级 stopPropagation 叠加导致首击进不了输入框 */
+function focusInputOnPointerDownCapture(e: ReactPointerEvent<HTMLInputElement>) {
+  if (e.button !== 0) return
+  e.currentTarget.focus({ preventScroll: true })
+}
+
 function themeDraftDirty(baseline: PopupTheme, draft: PopupTheme): boolean {
   if ((baseline.name ?? '').trim() !== (draft.name ?? '').trim()) return true
   return !popupThemeContentEquals(baseline, draft)
@@ -283,12 +309,15 @@ export type ThemeStudioEditWorkspaceProps = {
   previewViewportWidth: number
   previewImageUrlMap: Record<string, string>
   popupPreviewAspect: '16:9' | '4:3'
+  /** 有则显示在预览区顶栏、全屏按钮左侧 */
+  onPopupPreviewAspectChange?: (aspect: '16:9' | '4:3') => void
   onUpdateTheme: (themeId: string, patch: Partial<PopupTheme>) => void
   replaceThemeFull: (theme: PopupTheme) => void
   selectedElements: TextElementKey[]
   onSelectElements: (keys: TextElementKey[]) => void
   onPickImageFile: () => void | Promise<void>
   onPickImageFolder: () => void | Promise<void>
+  editHistoryResetSignal?: number
 }
 
 export function ThemeStudioEditWorkspace({
@@ -297,6 +326,7 @@ export function ThemeStudioEditWorkspace({
   previewViewportWidth,
   previewImageUrlMap,
   popupPreviewAspect,
+  onPopupPreviewAspectChange,
   onUpdateTheme,
   replaceThemeFull,
   selectedElements,
@@ -384,6 +414,38 @@ export function ThemeStudioEditWorkspace({
               selectedStructuralLayerId={selectedStructuralLayerId}
               previewWidthMode="fill"
               outerChrome="none"
+              toolbarCenter={
+                onPopupPreviewAspectChange ? (
+                  <div className="flex items-center gap-2">
+                    <span className="hidden text-xs text-slate-500 sm:inline">预览比例</span>
+                    <div className="inline-flex shrink-0 rounded-md border border-slate-300 bg-white p-0.5">
+                      <button
+                        type="button"
+                        onClick={() => onPopupPreviewAspectChange('16:9')}
+                        className={`rounded px-2 py-1 text-xs ${
+                          popupPreviewAspect === '16:9'
+                            ? 'bg-slate-800 text-white'
+                            : 'text-slate-600 hover:bg-slate-50'
+                        }`}
+                      >
+                        16:9
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => onPopupPreviewAspectChange('4:3')}
+                        className={`rounded px-2 py-1 text-xs ${
+                          popupPreviewAspect === '4:3'
+                            ? 'bg-slate-800 text-white'
+                            : 'text-slate-600 hover:bg-slate-50'
+                        }`}
+                      >
+                        4:3
+                      </button>
+                    </div>
+                  </div>
+                ) : undefined
+              }
+              toolbarTrailing={<ThemeFullscreenPreviewToolbarButton theme={theme} />}
             />
           </div>
         </div>
@@ -425,19 +487,25 @@ export type ThemeStudioThumbnailProps = {
   previewImageUrlMap: Record<string, string>
   previewViewportWidth: number
   popupPreviewAspect: '16:9' | '4:3'
+  /**
+   * dnd-kit DragOverlay 会挂第二份缩略图：列表里已解码过，跳过呼吸/渐显与重复 Image 预加载，避免拖拽时再演一遍动画。
+   */
+  skipRevealSequence?: boolean
 }
 
 const noopThemeUpdate = (_id: string, _patch: Partial<PopupTheme>) => {}
 const noopSelectElements = (_keys: TextElementKey[]) => {}
 
-function ThemeStudioThumbnail({
+export function ThemeStudioThumbnail({
   theme,
   previewImageUrlMap,
   previewViewportWidth,
   popupPreviewAspect,
+  skipRevealSequence = false,
 }: ThemeStudioThumbnailProps) {
   const slotRef = useRef<HTMLDivElement>(null)
   const [slotRect, setSlotRect] = useState({ w: 0, h: 0 })
+  const [previewRevealed, setPreviewRevealed] = useState(skipRevealSequence)
 
   const vw = Math.max(1, Math.round(previewViewportWidth))
   const vh = Math.max(
@@ -461,6 +529,43 @@ function ThemeStudioThumbnail({
     return () => ro.disconnect()
   }, [])
 
+  const thumbUrlSig = useMemo(() => {
+    return collectThemeStudioThumbnailImagePaths(theme)
+      .map((p) => rendererSafePreviewImageUrl(p, previewImageUrlMap))
+      .join('\x1e')
+  }, [theme, previewImageUrlMap])
+
+  useEffect(() => {
+    if (skipRevealSequence) return
+    if (slotRect.w <= 0) return
+    let cancelled = false
+    setPreviewRevealed(false)
+    const paths = collectThemeStudioThumbnailImagePaths(theme)
+    const urls = paths
+      .map((p) => rendererSafePreviewImageUrl(p, previewImageUrlMap))
+      .filter((u) => Boolean(u))
+    const waitDecode = urls.map(
+      (u) =>
+        new Promise<void>((resolve) => {
+          const im = new Image()
+          im.onload = () => resolve()
+          im.onerror = () => resolve()
+          im.src = u
+        }),
+    )
+    Promise.all(waitDecode).then(() => {
+      if (cancelled) return
+      requestAnimationFrame(() => {
+        requestAnimationFrame(() => {
+          if (!cancelled) setPreviewRevealed(true)
+        })
+      })
+    })
+    return () => {
+      cancelled = true
+    }
+  }, [theme.id, thumbUrlSig, slotRect.w, skipRevealSequence])
+
   /**
    * 槽位用实测宽高做 cover 缩放，并略放大（1.02）盖住亚像素缝；顶对齐避免裁掉预览顶部文案区。
    */
@@ -469,7 +574,11 @@ function ThemeStudioThumbnail({
       ? Math.max(slotRect.w / vw, slotRect.h / vh) * 1.02
       : 1
 
-  const slotBg = theme.backgroundColor?.trim() || '#000000'
+  const slotBg = themeStudioThumbSlotBaseBg(theme)
+  /** 渐显 1s 与呼吸层同步淡出，避免「先卸呼吸 → 露纯色底 → 再显图」的闪一下 */
+  const revealTransition = skipRevealSequence ? 'none' : 'opacity 1s ease-out'
+  const contentOpacity = skipRevealSequence ? 1 : previewRevealed ? 1 : 0
+  const washOpacity = skipRevealSequence ? 0 : previewRevealed ? 0 : 1
 
   return (
     <div
@@ -481,29 +590,46 @@ function ThemeStudioThumbnail({
       }}
     >
       {slotRect.w > 0 && (
-        <div
-          className="absolute left-1/2 top-0 [backface-visibility:hidden]"
-          style={{
-            width: vw,
-            height: vh,
-            transform: `translate3d(-50%, 0, 0) scale(${coverScale})`,
-            transformOrigin: 'top center',
-            willChange: 'transform',
-          }}
-        >
-          <ThemePreviewEditor
-            theme={theme}
-            readOnly
-            showToolbar={false}
-            fixedPreviewPixelSize={{ width: vw, height: vh }}
-            onUpdateTheme={noopThemeUpdate}
-            previewViewportWidth={previewViewportWidth}
-            previewImageUrlMap={previewImageUrlMap}
-            popupPreviewAspect={popupPreviewAspect}
-            selectedElements={[]}
-            onSelectElements={noopSelectElements}
-          />
-        </div>
+        <>
+          <div
+            className="absolute left-1/2 top-0 z-[1] [backface-visibility:hidden]"
+            style={{
+              width: vw,
+              height: vh,
+              transform: `translate3d(-50%, 0, 0) scale(${coverScale})`,
+              transformOrigin: 'top center',
+              willChange: skipRevealSequence ? 'transform' : 'transform, opacity',
+              opacity: contentOpacity,
+              transition: revealTransition,
+            }}
+          >
+            <ThemePreviewEditor
+              theme={theme}
+              readOnly
+              showToolbar={false}
+              fixedPreviewPixelSize={{ width: vw, height: vh }}
+              onUpdateTheme={noopThemeUpdate}
+              previewViewportWidth={previewViewportWidth}
+              previewImageUrlMap={previewImageUrlMap}
+              popupPreviewAspect={popupPreviewAspect}
+              selectedElements={[]}
+              onSelectElements={noopSelectElements}
+              readOnlyCanvasFallbackBg={THEME_STUDIO_THUMB_SLOT_FALLBACK_BG}
+            />
+          </div>
+          {!skipRevealSequence ? (
+            <div
+              className="pointer-events-none absolute inset-0 z-[2]"
+              style={{
+                opacity: washOpacity,
+                transition: revealTransition,
+              }}
+              aria-hidden
+            >
+              <div className="theme-studio-thumb-breathe-wash absolute inset-0" />
+            </div>
+          ) : null}
+        </>
       )}
     </div>
   )
@@ -514,6 +640,8 @@ type SortableThemeStudioCardProps = {
   previewImageUrlMap: Record<string, string>
   previewViewportWidth: number
   popupPreviewAspect: '16:9' | '4:3'
+  /** 主题工坊列表滚动容器，供缩略图懒挂载 IntersectionObserver 使用 */
+  listScrollRoot: HTMLDivElement | null
   onOpenEdit: (themeId: string) => void
   onCommitThemeName: (themeId: string, name: string) => void
   onDuplicateTheme: (themeId: string) => void
@@ -538,14 +666,6 @@ function ThemeStudioDragOverlayCard({
   previewViewportWidth: number
   popupPreviewAspect: '16:9' | '4:3'
 }) {
-  const [zoomed, setZoomed] = useState(false)
-  useLayoutEffect(() => {
-    const id = requestAnimationFrame(() => {
-      requestAnimationFrame(() => setZoomed(true))
-    })
-    return () => cancelAnimationFrame(id)
-  }, [])
-
   const { footerTone, subTone } = themeStudioListCardFooterClasses(t.target)
   const subLabel =
     t.target === 'main' ? '结束壁纸' : t.target === 'desktop' ? '桌面壁纸' : '休息壁纸'
@@ -553,11 +673,7 @@ function ThemeStudioDragOverlayCard({
   return (
     <div className="pointer-events-none box-border flex h-full min-h-0 w-full overflow-visible">
       <div
-        className={`box-border flex h-full min-h-0 w-full max-w-full origin-center flex-col overflow-visible rounded-xl border-0 bg-white text-left will-change-transform transition-[transform,box-shadow] duration-300 ease-[cubic-bezier(0.22,1,0.36,1)] ${
-          zoomed
-            ? 'scale-[1.08] shadow-[0_20px_50px_-14px_rgba(15,23,42,0.16)]'
-            : 'scale-100 shadow-none'
-        }`}
+        className="box-border flex h-full min-h-0 w-full max-w-full origin-center scale-[1.08] transform flex-col overflow-visible rounded-xl border-0 bg-white text-left shadow-[0_20px_50px_-14px_rgba(15,23,42,0.16)] will-change-transform"
       >
         <div className="min-h-0 w-full shrink-0 overflow-hidden rounded-t-xl">
           <ThemeStudioThumbnail
@@ -565,9 +681,10 @@ function ThemeStudioDragOverlayCard({
             previewImageUrlMap={previewImageUrlMap}
             previewViewportWidth={previewViewportWidth}
             popupPreviewAspect={popupPreviewAspect}
+            skipRevealSequence
           />
         </div>
-        <div className={`flex min-h-0 flex-1 flex-col rounded-b-xl border-t p-2.5 ${footerTone}`}>
+        <div className={`flex min-h-0 flex-1 flex-col rounded-b-xl p-2.5 ${footerTone}`}>
           <p className="truncate text-sm font-bold text-slate-900">{t.name || t.id}</p>
           <p className={`mt-0.5 text-[11px] font-medium ${subTone}`}>{subLabel}</p>
         </div>
@@ -581,6 +698,7 @@ function SortableThemeStudioCard({
   previewImageUrlMap,
   previewViewportWidth,
   popupPreviewAspect,
+  listScrollRoot,
   onOpenEdit,
   onCommitThemeName,
   onDuplicateTheme,
@@ -629,7 +747,11 @@ function SortableThemeStudioCard({
   const renameInputRef = useRef<HTMLInputElement>(null)
   const skipRenameBlurRef = useRef(false)
 
+  /** 三点菜单与桌面「设为壁纸」共用：热区为整张卡；菜单展开或改名中保持显示 */
   const titleMenuChromeVisible = studioThumbHeaderHot || studioMenuOpen || titleRenaming
+  /** 桌面壁纸按钮：未在播时与菜单同显隐；在播时始终显示「关闭」 */
+  const desktopWallpaperBtnVisible =
+    isDesktopLiveThis || titleMenuChromeVisible || deskBusyId === t.id
 
   const open = () => onOpenEdit(t.id)
   const onThumbKey = (e: KeyboardEvent) => {
@@ -696,19 +818,57 @@ function SortableThemeStudioCard({
     }
   }
 
+  const isDesktopListCard = t.target === 'desktop'
+  const thumbObserveRef = useRef<HTMLDivElement>(null)
+  const [thumbPreviewMounted, setThumbPreviewMounted] = useState(false)
+  useEffect(() => {
+    if (thumbPreviewMounted) return
+    if (!listScrollRoot) return
+    const el = thumbObserveRef.current
+    if (!el) return
+    const io = new IntersectionObserver(
+      (entries) => {
+        for (const e of entries) {
+          if (e.isIntersecting) {
+            setThumbPreviewMounted(true)
+            io.disconnect()
+            return
+          }
+        }
+      },
+      {
+        root: listScrollRoot,
+        rootMargin: '160px 0px 280px 0px',
+        threshold: 0,
+      },
+    )
+    io.observe(el)
+    return () => io.disconnect()
+  }, [thumbPreviewMounted, listScrollRoot, t.id])
+
+  const cardHotHandlers = {
+    onMouseEnter: () => setStudioThumbHeaderHot(true),
+    onMouseLeave: () => {
+      requestAnimationFrame(() => {
+        if (!studioMenuOpenRef.current) setStudioThumbHeaderHot(false)
+      })
+    },
+  } as const
+
   return (
     <div ref={setNodeRef} style={dragStyle} className="w-full min-h-0 self-start">
-      <div className="group flex w-full flex-col overflow-visible rounded-xl border-0 bg-white text-left shadow-none transition-shadow duration-200 ease-out hover:shadow-[0_10px_36px_-12px_rgba(15,23,42,0.11)] [backface-visibility:hidden]">
+      <div
+        className="group flex w-full flex-col overflow-visible rounded-xl border-0 bg-white text-left shadow-none transition-shadow duration-200 ease-out hover:shadow-[0_10px_36px_-12px_rgba(15,23,42,0.11)] [backface-visibility:hidden]"
+        {...(isDesktopListCard ? cardHotHandlers : {})}
+      >
         <div
           className="flex min-h-0 w-full flex-col overflow-visible"
-          onMouseEnter={() => setStudioThumbHeaderHot(true)}
-          onMouseLeave={() => {
-            requestAnimationFrame(() => {
-              if (!studioMenuOpenRef.current) setStudioThumbHeaderHot(false)
-            })
-          }}
+          {...(!isDesktopListCard ? cardHotHandlers : {})}
         >
-          <div className="relative w-full shrink-0 overflow-hidden rounded-t-xl">
+          <div
+            ref={thumbObserveRef}
+            className="group/thumbslot relative w-full shrink-0 overflow-hidden rounded-t-xl"
+          >
             <div
               {...listeners}
               {...attributes}
@@ -719,16 +879,38 @@ function SortableThemeStudioCard({
               onKeyDown={onThumbKey}
               className="w-full cursor-grab touch-none outline-none active:cursor-grabbing focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-slate-400"
             >
-              <ThemeStudioThumbnail
-                theme={t}
-                previewImageUrlMap={previewImageUrlMap}
-                previewViewportWidth={previewViewportWidth}
-                popupPreviewAspect={popupPreviewAspect}
-              />
+              {thumbPreviewMounted ? (
+                <ThemeStudioThumbnail
+                  theme={t}
+                  previewImageUrlMap={previewImageUrlMap}
+                  previewViewportWidth={previewViewportWidth}
+                  popupPreviewAspect={popupPreviewAspect}
+                />
+              ) : (
+                <div
+                  className="relative w-full"
+                  style={{
+                    aspectRatio: popupPreviewAspect === '16:9' ? '16 / 9' : '4 / 3',
+                    backgroundColor: themeStudioThumbSlotBaseBg(t),
+                  }}
+                >
+                  <div
+                    className="theme-studio-thumb-breathe-wash pointer-events-none absolute inset-0"
+                    aria-hidden
+                  />
+                </div>
+              )}
             </div>
+            <ThemeFullscreenPreviewIconButton
+              theme={t}
+              stopCardPointer
+              title="全屏预览"
+              className="pointer-events-none absolute right-1 top-1 z-20 inline-flex h-6 w-6 items-center justify-center rounded-md bg-black/50 text-white opacity-0 transition-opacity duration-150 hover:bg-black/60 group-hover/thumbslot:pointer-events-auto group-hover/thumbslot:opacity-100 focus-visible:pointer-events-auto focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-white/60 focus-visible:opacity-100"
+              iconClassName="h-3 w-3"
+            />
           </div>
           <div
-            className={`shrink-0 border-t px-2.5 pb-0 pt-2.5 transition-colors duration-200 ${footerTone} ${footerHoverTone}`}
+            className={`shrink-0 px-2.5 pb-0 pt-2.5 transition-colors duration-200 ${footerTone} ${footerHoverTone}`}
           >
             <div className="min-w-0 flex-1">
               <div className="flex min-w-0 items-center gap-0.5">
@@ -799,7 +981,11 @@ function SortableThemeStudioCard({
                     void onToggleDesktopWallpaper(t)
                   }}
                   disabled={deskBusyId === t.id}
-                  className={`shrink-0 whitespace-nowrap rounded border px-1.5 py-0.5 text-[10px] font-semibold transition-colors disabled:cursor-wait disabled:opacity-50 ${
+                  className={`shrink-0 whitespace-nowrap rounded border px-1.5 py-0.5 text-[10px] font-semibold transition-[color,background-color,opacity,border-color] duration-150 disabled:cursor-wait disabled:opacity-50 ${
+                    desktopWallpaperBtnVisible
+                      ? 'pointer-events-auto opacity-100'
+                      : 'pointer-events-none opacity-0'
+                  } ${
                     isDesktopLiveThis
                       ? 'border-red-200 bg-red-50 text-red-800 hover:bg-red-100'
                       : 'border-violet-200 bg-white text-violet-800 hover:bg-violet-50'
@@ -840,6 +1026,7 @@ export function ThemeStudioListView({
   onRemoveTheme,
   onReorderThemes,
 }: ThemeStudioListViewProps) {
+  const [studioListScrollEl, setStudioListScrollEl] = useState<HTMLDivElement | null>(null)
   const [filter, setFilter] = useState<'all' | 'main' | 'rest' | 'desktop'>('all')
   const [deskLive, setDeskLive] = useState<{ active: boolean; themeId: string | null }>({
     active: false,
@@ -963,7 +1150,10 @@ export function ThemeStudioListView({
         {chip('main', '结束壁纸')}
         {chip('desktop', '桌面壁纸')}
       </div>
-      <div className="min-h-0 flex-1 overflow-x-hidden overflow-y-auto overscroll-contain p-3">
+      <div
+        ref={setStudioListScrollEl}
+        className="min-h-0 flex-1 overflow-x-hidden overflow-y-auto overscroll-contain p-3"
+      >
         <DndContext
           sensors={sensors}
           collisionDetection={closestCenter}
@@ -981,6 +1171,7 @@ export function ThemeStudioListView({
                   previewImageUrlMap={previewImageUrlMap}
                   previewViewportWidth={previewViewportWidth}
                   popupPreviewAspect={popupPreviewAspect}
+                  listScrollRoot={studioListScrollEl}
                   onOpenEdit={onOpenEdit}
                   onCommitThemeName={onCommitThemeName}
                   onDuplicateTheme={onDuplicateTheme}
@@ -1065,6 +1256,7 @@ export function ThemeStudioEditView({
             type="text"
             value={theme.name}
             onChange={(e) => onUpdateTheme(theme.id, { name: e.target.value })}
+            onPointerDownCapture={focusInputOnPointerDownCapture}
             className="min-w-[10rem] max-w-md flex-1 rounded border border-slate-300 px-2 py-1 text-sm"
             placeholder="主题名称"
           />
@@ -1269,6 +1461,7 @@ export function ThemeStudioFloatingEditor({
   const bindingAutoSelectRef = useRef(new Set<string>())
   useLayoutEffect(() => {
     if (!themeId) return
+    if (!draft || draft.id !== themeId) return
     if (bindingAutoSelectRef.current.has(themeId)) return
     const cur = getSelectedElements(themeId)
     const withoutCountdown = cur.filter((k) => k !== 'countdown')
@@ -1277,9 +1470,15 @@ export function ThemeStudioFloatingEditor({
       bindingAutoSelectRef.current.add(themeId)
       return
     }
-    setSelectedElements(themeId, ['content'])
+    setSelectedElements(themeId, [draft.target === 'desktop' ? 'time' : 'content'])
     bindingAutoSelectRef.current.add(themeId)
-  }, [themeId, getSelectedElements, setSelectedElements])
+  }, [themeId, draft, getSelectedElements, setSelectedElements])
+
+  useLayoutEffect(() => {
+    if (!draft || draft.id !== themeId) return
+    if (typeof document !== 'undefined' && document.hasFocus()) return
+    void window.electronAPI?.focusMainWebContents?.()
+  }, [draft?.id, themeId])
 
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
@@ -1442,47 +1641,50 @@ export function ThemeStudioFloatingEditor({
         >
           {headerBannerLabel}
         </div>
-        <div className="relative z-[60] isolate flex shrink-0 flex-wrap items-center justify-between gap-2 border-b border-slate-200 bg-slate-50 px-3 py-2">
-          <div className="flex min-w-0 flex-wrap items-center gap-2">
+        <div className="relative z-[60] isolate flex min-w-0 shrink-0 items-center gap-2 border-b border-slate-200 bg-slate-50 px-3 py-2">
+          <div className="flex min-w-0 shrink-0 flex-wrap items-center gap-2">
             <span className="text-xs font-medium text-slate-600">主题名称</span>
             <input
               type="text"
               value={draft.name}
               autoFocus={isNewDraft}
               onChange={(e) => updateDraft(draft.id, { name: e.target.value })}
+              onPointerDownCapture={focusInputOnPointerDownCapture}
               className="min-w-[8rem] max-w-[14rem] flex-1 rounded border border-slate-300 bg-white px-2 py-1 text-sm"
               placeholder="主题名称"
             />
-            {onPopupPreviewAspectChange && (
-              <>
-                <span className="hidden text-xs text-slate-500 sm:inline">预览比例</span>
-                <div className="inline-flex shrink-0 rounded-md border border-slate-300 bg-white p-0.5">
-                  <button
-                    type="button"
-                    onClick={() => onPopupPreviewAspectChange('16:9')}
-                    className={`rounded px-2 py-1 text-xs ${popupPreviewAspect === '16:9' ? 'bg-slate-800 text-white' : 'text-slate-600 hover:bg-slate-50'}`}
-                  >
-                    16:9
-                  </button>
-                  <button
-                    type="button"
-                    onClick={() => onPopupPreviewAspectChange('4:3')}
-                    className={`rounded px-2 py-1 text-xs ${popupPreviewAspect === '4:3' ? 'bg-slate-800 text-white' : 'text-slate-600 hover:bg-slate-50'}`}
-                  >
-                    4:3
-                  </button>
-                </div>
-              </>
-            )}
           </div>
-          <div className="flex flex-wrap items-center gap-2">
-            <button
-              type="button"
-              onClick={handleRestoreDefault}
-              className="shrink-0 rounded-md border border-amber-200 bg-amber-50 px-3 py-1.5 text-xs font-medium text-amber-900 hover:bg-amber-100"
-            >
-              恢复默认
-            </button>
+          <div className="flex min-h-0 min-w-0 flex-1 justify-center px-1">
+            <div className="inline-flex flex-wrap items-center justify-center gap-2">
+              <button
+                type="button"
+                onClick={handleRestoreDefault}
+                className="shrink-0 rounded-md border border-amber-200 bg-amber-50 px-3 py-1.5 text-xs font-medium text-amber-900 hover:bg-amber-100"
+              >
+                恢复默认
+              </button>
+              {draft.target === 'desktop' && (
+                <button
+                  type="button"
+                  onClick={() => void handleToggleDesktopWallpaperFloating()}
+                  disabled={applyingWallpaper}
+                  title={
+                    floatingIsDesktopLive
+                      ? '关闭动态桌面壁纸窗口并恢复桌面'
+                      : '将当前编辑效果设为主显示器动态桌面壁纸（Windows）'
+                  }
+                  className={`shrink-0 rounded-md border px-3 py-1.5 text-xs font-medium disabled:cursor-wait disabled:opacity-60 ${
+                    floatingIsDesktopLive
+                      ? 'border-red-200 bg-red-50 text-red-800 hover:bg-red-100'
+                      : 'border-violet-300 bg-violet-50 text-violet-900 hover:bg-violet-100'
+                  }`}
+                >
+                  {applyingWallpaper ? '处理中…' : floatingIsDesktopLive ? '关闭桌面壁纸' : '设为桌面壁纸'}
+                </button>
+              )}
+            </div>
+          </div>
+          <div className="flex shrink-0 flex-wrap items-center justify-end gap-2">
             <button
               type="button"
               onClick={tryCloseStable}
@@ -1490,25 +1692,6 @@ export function ThemeStudioFloatingEditor({
             >
               取消
             </button>
-            {draft.target === 'desktop' && (
-              <button
-                type="button"
-                onClick={() => void handleToggleDesktopWallpaperFloating()}
-                disabled={applyingWallpaper}
-                title={
-                  floatingIsDesktopLive
-                    ? '关闭动态桌面壁纸窗口并恢复桌面'
-                    : '将当前编辑效果设为主显示器动态桌面壁纸（Windows）'
-                }
-                className={`shrink-0 rounded-md border px-3 py-1.5 text-xs font-medium disabled:cursor-wait disabled:opacity-60 ${
-                  floatingIsDesktopLive
-                    ? 'border-red-200 bg-red-50 text-red-800 hover:bg-red-100'
-                    : 'border-violet-300 bg-violet-50 text-violet-900 hover:bg-violet-100'
-                }`}
-              >
-                {applyingWallpaper ? '处理中…' : floatingIsDesktopLive ? '关闭桌面壁纸' : '设为桌面壁纸'}
-              </button>
-            )}
             <button
               type="button"
               onClick={handleSave}
@@ -1545,6 +1728,7 @@ export function ThemeStudioFloatingEditor({
             previewViewportWidth={previewViewportWidth}
             previewImageUrlMap={mergedFloatingPreviewMap}
             popupPreviewAspect={popupPreviewAspect}
+            onPopupPreviewAspectChange={onPopupPreviewAspectChange}
             onUpdateTheme={updateDraft}
             replaceThemeFull={replaceDraftFull}
             editHistoryResetSignal={editHistoryResetSignal}

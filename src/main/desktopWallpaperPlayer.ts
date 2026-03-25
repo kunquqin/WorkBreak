@@ -1,4 +1,4 @@
-import { BrowserWindow, screen, app } from 'electron'
+import { BrowserWindow, screen, app, type BrowserWindowConstructorOptions } from 'electron'
 import { execFile, spawn } from 'node:child_process'
 import { appendFileSync, writeFileSync, unlinkSync, existsSync, mkdirSync } from 'node:fs'
 import { tmpdir } from 'node:os'
@@ -567,6 +567,9 @@ export async function startDesktopLiveWallpaper(
   const displays = sortedDisplaysForWallpaper()
   const wins: BrowserWindow[] = []
 
+  const win32Edge: Pick<BrowserWindowConstructorOptions, 'thickFrame' | 'hasShadow'> =
+    process.platform === 'win32' ? { thickFrame: false, hasShadow: false } : {}
+
   const createWin = (b: Electron.Rectangle) =>
     new BrowserWindow({
       x: Math.round(b.x),
@@ -583,8 +586,11 @@ export async function startDesktopLiveWallpaper(
       fullscreenable: false,
       focusable: false,
       hasShadow: false,
+      /** Win11 默认可圆角；铺满屏时四角会露系统桌面，动态壁纸需直角贴齐。 */
+      roundedCorners: false,
       transparent: false,
       backgroundColor: '#000000',
+      ...win32Edge,
       webPreferences: {
         nodeIntegration: false,
         contextIsolation: true,

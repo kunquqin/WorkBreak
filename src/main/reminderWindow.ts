@@ -1,4 +1,4 @@
-import { app, BrowserWindow, screen } from 'electron'
+import { app, BrowserWindow, screen, type BrowserWindowConstructorOptions } from 'electron'
 import { copyFileSync, existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs'
 import { extname, join } from 'node:path'
 import type {
@@ -10,7 +10,11 @@ import type {
   TextTransform,
 } from '../shared/settings'
 import { MAIN_REST_LAYOUT_DEFAULTS } from '../shared/settings'
-import { ensureThemeLayers, POPUP_BACKGROUND_IMAGE_BLUR_MAX_PX } from '../shared/settings'
+import {
+  ensureThemeLayers,
+  POPUP_BACKGROUND_IMAGE_BLUR_MAX_PX,
+  resolveBackgroundImagePanForCss,
+} from '../shared/settings'
 import {
   DESKTOP_DEFAULT_TIME_DATE_TRANSFORMS,
   type ImageThemeLayer,
@@ -28,6 +32,15 @@ import {
 } from '../shared/popupVerticalText'
 import { buildPopupOverlayBackgroundCss } from '../shared/popupOverlayGradient'
 
+/**
+ * Windows 无边框铺满屏：默认可带 WS_THICKFRAME 阴影，角上易露桌面/系统色条；
+ * 关 thickFrame + shadow 与 HTML 直角贴齐（roundedCorners 在部分版本仅标 darwin，仍保留）。
+ */
+function win32FramelessEdgeToEdgeOpts(): Pick<BrowserWindowConstructorOptions, 'thickFrame' | 'hasShadow'> {
+  if (process.platform !== 'win32') return {}
+  return { thickFrame: false, hasShadow: false }
+}
+
 export interface ReminderPopupOptions {
   title: string
   body: string
@@ -42,6 +55,19 @@ export interface ReminderPopupOptions {
    * 桌面壁纸导出页：在 HTML 内注入脚本，使时间与日期每秒与系统同步（标准设壁纸 API 仍为单帧位图）。
    */
   liveDesktopWallpaper?: boolean
+  /**
+   * 休息段结束时刻（epoch ms）。仅 `theme.target === 'rest'` 时由提醒调度传入：
+   * 绑定时间层显示剩余 mm:ss、按秒递减，与最后 `min(5,restSec)` 秒黑底倒计时衔接。
+   */
+  restPhaseEndAtMs?: number
+}
+
+/** 休息弹窗绑定时间层：剩余总秒数 → mm:ss（与预览占位一致） */
+export function formatRemainSecondsAsMmSs(totalSec: number): string {
+  const sec = Math.max(0, Math.floor(totalSec))
+  const m = Math.floor(sec / 60)
+  const r = sec % 60
+  return `${String(m).padStart(2, '0')}:${String(r).padStart(2, '0')}`
 }
 
 function resolveThemeBodyText(theme: PopupTheme | undefined, fallbackBody: string): string {
@@ -145,6 +171,26 @@ function clampBackgroundImageBlurPx(theme: PopupTheme | undefined): number {
   return Math.max(0, Math.min(POPUP_BACKGROUND_IMAGE_BLUR_MAX_PX, n))
 }
 
+function isDefaultBackgroundImageTransform(theme: PopupTheme | undefined): boolean {
+  const { txPct, tyPct, rotation, scale } = resolveBackgroundImagePanForCss(
+    theme ?? { backgroundImageTransform: undefined, backgroundImageXYKind: undefined },
+  )
+  return (
+    Math.abs(txPct) < 1e-6 &&
+    Math.abs(tyPct) < 1e-6 &&
+    rotation === 0 &&
+    Math.abs(scale - 1) < 1e-9
+  )
+}
+
+/** translate(x%,y%) 平移 + 固定 cover 居中锚点 + 旋转缩放，与预览一致 */
+function backgroundImageTransformCss(theme: PopupTheme | undefined): string {
+  const { txPct, tyPct, rotation, scale } = resolveBackgroundImagePanForCss(
+    theme ?? { backgroundImageTransform: undefined, backgroundImageXYKind: undefined },
+  )
+  return `background-position:center;background-size:cover;background-repeat:no-repeat;transform:translate(${txPct}%,${tyPct}%) rotate(${rotation}deg) scale(${scale});transform-origin:center center;`
+}
+
 /** 模糊后裁边补偿：内层比视口放大，减轻边缘露底 */
 function backgroundBlurOutsetPx(blur: number): number {
   if (blur <= 0) return 0
@@ -196,10 +242,11 @@ function buildFolderBackgroundSlideshowFromRels(
   const urlsJson = JSON.stringify(rels)
   const pos = position
   const blurFilter = blur > 0 ? `filter:blur(${blur}px);` : ''
+  const tf = backgroundImageTransformCss(theme)
   const innerGeom =
     blur > 0
-      ? `position:absolute;left:-${ex}px;top:-${ex}px;width:calc(100% + ${ex * 2}px);height:calc(100% + ${ex * 2}px);background-size:cover;background-position:center;background-repeat:no-repeat;${blurFilter}`
-      : 'position:absolute;inset:0;background-size:cover;background-position:center;background-repeat:no-repeat;'
+      ? `position:absolute;left:-${ex}px;top:-${ex}px;width:calc(100% + ${ex * 2}px);height:calc(100% + ${ex * 2}px);background-size:cover;background-repeat:no-repeat;${blurFilter}${tf}`
+      : `position:absolute;inset:0;background-size:cover;background-repeat:no-repeat;${tf}`
   const slide = (id: string, op: number) => {
     const outer = `position:absolute;inset:0;opacity:${op};transition:opacity ${fadeMs}ms ease-in-out;overflow:hidden;pointer-events:none;background-color:${bgc}`
     return `<div id="${id}" class="wb-bg-fs-slide" style="${escapeInlineStyleForHtmlAttribute(outer)}"><div class="wb-bg-fs-inner" style="${escapeInlineStyleForHtmlAttribute(innerGeom)}"></div></div>`
@@ -227,6 +274,9 @@ function getBackgroundStyle(theme: PopupTheme | undefined): string {
       if (blur > 0) {
         return `background-color: ${theme.backgroundColor || '#000000'};`
       }
+      if (!isDefaultBackgroundImageTransform(theme)) {
+        return `background-color: ${theme.backgroundColor || '#000000'};`
+      }
       return `background-image: url("${escapeCssUrl(dataUrl)}"); background-size: cover; background-position: center; background-repeat: no-repeat; background-color: ${theme.backgroundColor || '#000000'};`
     }
   }
@@ -248,7 +298,26 @@ function legacyBlurredBackgroundLayerHtml(theme: PopupTheme | undefined): string
   const ex = backgroundBlurOutsetPx(blur)
   const url = escapeCssUrl(dataUrl)
   const outer = `position:fixed;inset:0;z-index:0;pointer-events:none;overflow:hidden;background-color:${bgc}`
-  const inner = `position:absolute;left:-${ex}px;top:-${ex}px;width:calc(100% + ${ex * 2}px);height:calc(100% + ${ex * 2}px);background-image:url("${url}");background-size:cover;background-position:center;background-repeat:no-repeat;filter:blur(${blur}px)`
+  const tf = backgroundImageTransformCss(theme)
+  const inner = `position:absolute;left:-${ex}px;top:-${ex}px;width:calc(100% + ${ex * 2}px);height:calc(100% + ${ex * 2}px);background-image:url("${url}");background-size:cover;background-repeat:no-repeat;filter:blur(${blur}px);${tf}`
+  return `<div style="${escapeInlineStyleForHtmlAttribute(outer)}"><div style="${escapeInlineStyleForHtmlAttribute(inner)}"></div></div>`
+}
+
+/** Legacy：无模糊单图且 x/y/旋转/缩放非默认时，不用 body 背景图而改用固定层（body 仅底色） */
+function legacyPlainImageTransformLayerHtml(theme: PopupTheme | undefined): string {
+  if (!theme || theme.backgroundType !== 'image') return ''
+  if (countExistingFolderImageFiles(theme) >= 2) return ''
+  if (clampBackgroundImageBlurPx(theme) > 0) return ''
+  if (isDefaultBackgroundImageTransform(theme)) return ''
+  const p = resolveBackgroundImageFilePath(theme)
+  if (!p) return ''
+  const dataUrl = readLocalImageAsDataUrl(p)
+  if (!dataUrl) return ''
+  const bgc = theme.backgroundColor || '#000000'
+  const url = escapeCssUrl(dataUrl)
+  const tf = backgroundImageTransformCss(theme)
+  const outer = `position:fixed;inset:0;z-index:0;pointer-events:none;overflow:hidden;background-color:${bgc}`
+  const inner = `position:absolute;inset:0;background-image:url("${url}");background-size:cover;background-repeat:no-repeat;${tf}`
   return `<div style="${escapeInlineStyleForHtmlAttribute(outer)}"><div style="${escapeInlineStyleForHtmlAttribute(inner)}"></div></div>`
 }
 
@@ -585,7 +654,7 @@ const REMINDER_CLOSE_HTML_SCRIPT = `
 
 /** 无主题或旧逻辑回退：背景在 body，遮罩 + 双文字层 */
 export function buildReminderHtmlLegacy(options: ReminderPopupOptions, htmlDir?: string): string {
-  const { title, body, timeStr, theme } = options
+  const { title, body, timeStr, theme, restPhaseEndAtMs } = options
   const titleEsc = escapeHtml(title)
   const bodyEsc = escapeHtml(resolveThemeBodyText(theme, body))
   const timeEsc = escapeHtml(timeStr)
@@ -624,7 +693,13 @@ export function buildReminderHtmlLegacy(options: ReminderPopupOptions, htmlDir?:
   const contentVert = theme ? isThemeLayerVertical(theme, 'content') : false
   const timeVert = theme ? isThemeLayerVertical(theme, 'time') : false
   const bodyHtml = theme ? wrapThemeTextVerticalInner(theme, 'content', false, bodyEsc) : bodyEsc
-  const timeHtml = theme ? wrapThemeTextVerticalInner(theme, 'time', true, timeEsc) : timeEsc
+  const useRestRemain =
+    Boolean(theme) &&
+    theme!.target === 'rest' &&
+    typeof restPhaseEndAtMs === 'number' &&
+    restPhaseEndAtMs > 0
+  const timeInner = useRestRemain ? `<span id="wb-rest-remain">${timeEsc}</span>` : timeEsc
+  const timeHtml = theme ? wrapThemeTextVerticalInner(theme, 'time', true, timeInner) : timeEsc
 
   return `<!DOCTYPE html>
 <html lang="zh-CN">
@@ -633,7 +708,7 @@ export function buildReminderHtmlLegacy(options: ReminderPopupOptions, htmlDir?:
   <title>${titleEsc}</title>
   <style>
     * { box-sizing: border-box; margin: 0; padding: 0; }
-    html, body { width: 100%; height: 100%; min-height: 100%; margin: 0; color: #fff; font-family: system-ui, sans-serif; overflow: hidden; ${bgStyle} }
+    html, body { width: 100%; height: 100%; min-height: 100%; margin: 0; color: #fff; font-family: system-ui, sans-serif; overflow: hidden; border-radius: 0; ${bgStyle} }
     .overlay { position: fixed; inset: 0; z-index: 1; background: ${overlayGradientCss(theme)}; opacity: ${overlayEnabled ? 1 : 0}; pointer-events: none; }
     .content { position: relative; z-index: 2; width: 100%; height: 100%; }
     .line1 { ${contentPos} box-sizing: border-box; padding: ${BINDING_TEXT_PADDING_PX}px; display:flex; flex-direction:column; justify-content:${contentVA}; font-family: ${contentFontFamilyCss}; font-size: ${contentFont}px; color: ${contentColor}; ${tyContent} font-weight: ${contentWeight}; font-style: ${contentItalic}; text-decoration: ${contentUnderline}; ${textBoxLayoutCss(theme?.contentTransform, 'content', contentVert)} ${layerTextEffectsCss(theme, 'content')} }
@@ -646,12 +721,14 @@ export function buildReminderHtmlLegacy(options: ReminderPopupOptions, htmlDir?:
     const rels = copyFolderImagesForBackgroundSlideshow(theme, htmlDir)
     return rels ? buildFolderBackgroundSlideshowFromRels(theme, rels, 0, 'fixed') : ''
   })() : ''}
+  ${legacyPlainImageTransformLayerHtml(theme)}
   ${legacyBlurredBackgroundLayerHtml(theme)}
   <div class="overlay"></div>
   <div class="content">
     <div class="line1">${bodyHtml}</div>
     <div class="line2">${timeHtml}</div>
   </div>
+  ${useRestRemain ? buildRestRemainCountdownScript(restPhaseEndAtMs!) : ''}
   ${REMINDER_CLOSE_HTML_SCRIPT}
 </body>
 </html>`
@@ -663,6 +740,12 @@ function buildDesktopLiveClockScript(theme: PopupTheme): string {
   return `<script>(function(){var L=${loc};var timeOpts={hour:"2-digit",minute:"2-digit",second:"2-digit",hour12:false};var dateOpts={year:"numeric",month:"2-digit",day:"2-digit",weekday:"short"};function paint(){var n=new Date();var t=document.getElementById("wb-live-time");if(t)t.textContent=n.toLocaleTimeString(L,timeOpts);var d=document.getElementById("wb-live-date");if(d)d.textContent=n.toLocaleDateString(L,dateOpts)}function tick(){paint();var ms=Date.now()%1000;var dly=ms===0?1000:(1000-ms);setTimeout(tick,dly)}tick();})();</script>`
 }
 
+/** 休息段剩余时间：按下一整秒排程，与黑底最后几秒倒计时对齐到同一秒的 floor 语义 */
+function buildRestRemainCountdownScript(phaseEndAtMs: number): string {
+  const end = Math.floor(phaseEndAtMs)
+  return `<script>(function(){var E=${end};function fmt(s){s=Math.max(0,Math.floor(s));var m=Math.floor(s/60);var r=s%60;return(m<10?"0":"")+m+":"+(r<10?"0":"")+r;}function paint(){var t=document.getElementById("wb-rest-remain");if(!t)return;var sec=Math.max(0,Math.floor((E-Date.now())/1000));t.textContent=fmt(sec);}function tick(){paint();var ms=Date.now()%1000;var dly=ms===0?1000:(1000-ms);setTimeout(tick,dly)}tick();})();</script>`
+}
+
 function renderLayerFragment(
   theme: PopupTheme,
   L: PopupThemeLayer,
@@ -671,6 +754,7 @@ function renderLayerFragment(
   dateEsc: string,
   htmlDir: string,
   liveDesktop: boolean,
+  restPhaseEndAtMs?: number,
 ): string {
   if (!L.visible) return ''
   switch (L.kind) {
@@ -689,11 +773,13 @@ function renderLayerFragment(
             const blur = clampBackgroundImageBlurPx(theme)
             if (blur > 0) {
               const ex = backgroundBlurOutsetPx(blur)
+              const tf = backgroundImageTransformCss(theme)
               const outer = `position:absolute;inset:0;z-index:${z};pointer-events:none;overflow:hidden;background-color:${bgc}`
-              const inner = `position:absolute;left:-${ex}px;top:-${ex}px;width:calc(100% + ${ex * 2}px);height:calc(100% + ${ex * 2}px);background-image:url('./${urlEsc}');background-size:cover;background-position:center;background-repeat:no-repeat;filter:blur(${blur}px)`
+              const inner = `position:absolute;left:-${ex}px;top:-${ex}px;width:calc(100% + ${ex * 2}px);height:calc(100% + ${ex * 2}px);background-image:url('./${urlEsc}');background-size:cover;background-repeat:no-repeat;filter:blur(${blur}px);${tf}`
               return `<div style="${escapeInlineStyleForHtmlAttribute(outer)}"><div style="${escapeInlineStyleForHtmlAttribute(inner)}"></div></div>`
             }
-            return `<div style="${escapeInlineStyleForHtmlAttribute(`position:absolute;inset:0;z-index:${z};pointer-events:none;background-image:url('./${urlEsc}');background-size:cover;background-position:center;background-repeat:no-repeat;background-color:${bgc};`)}"></div>`
+            const tf = backgroundImageTransformCss(theme)
+            return `<div style="${escapeInlineStyleForHtmlAttribute(`position:absolute;inset:0;z-index:${z};pointer-events:none;background-image:url('./${urlEsc}');background-size:cover;background-repeat:no-repeat;background-color:${bgc};${tf}`)}"></div>`
           }
         }
       }
@@ -707,8 +793,7 @@ function renderLayerFragment(
     case 'text': {
       const tl = L as TextThemeLayer
       if (tl.bindsReminderBody) {
-        if (liveDesktop) return ''
-        /** 文本内容不再从提醒项注入，统一以主题编辑内容为准。 */
+        /** 文本内容不再从提醒项注入，统一以主题编辑内容为准（含桌面动态壁纸）。 */
         const srcEsc = escapeHtml((tl.text ?? '').trim())
         /** 与 ThemePreviewEditor.renderTextLayerForKey(content) 一致：排版以主题根字段为准，保证时间样式等与预览一致。 */
         const fs = safeFontPx(theme.contentFontSize, 180, 16)
@@ -766,7 +851,16 @@ function renderLayerFragment(
       const tj = flexJustifyForTextAlign(theme?.timeTextAlign ?? theme?.textAlign ?? 'center')
       const tv = flexAlignForTextVerticalAlign(verticalAlignForThemeLayer(theme, 'time'))
       const tVert = isThemeLayerVertical(theme, 'time')
-      const timeCore = liveDesktop ? `<span id="wb-live-time">${timeEsc}</span>` : timeEsc
+      const useRestRemain =
+        theme.target === 'rest' &&
+        typeof restPhaseEndAtMs === 'number' &&
+        restPhaseEndAtMs > 0 &&
+        !liveDesktop
+      const timeCore = liveDesktop
+        ? `<span id="wb-live-time">${timeEsc}</span>`
+        : useRestRemain
+          ? `<span id="wb-rest-remain">${timeEsc}</span>`
+          : timeEsc
       const innerT = wrapThemeTextVerticalInner(theme, 'time', true, timeCore)
       const stTime = `${timePos} z-index:${z}; pointer-events:none; box-sizing:border-box; padding:${BINDING_TEXT_PADDING_PX}px ${BINDING_SHORT_LAYER_PAD_INLINE_PX}px; display:flex; align-items:${tv}; justify-content:${tj}; font-family:${timeFontFamilyCss}; font-size:${timeFont}px; color:${timeColor}; ${tyTime} font-weight:${timeWeight}; font-style:${timeItalic}; text-decoration:${timeUnderline}; ${textBoxLayoutCss(theme.timeTransform, 'time', tVert)} ${layerTextEffectsCss(theme, 'time')}`
       return `<div style="${escapeInlineStyleForHtmlAttribute(stTime)}">${innerT}</div>`
@@ -819,7 +913,7 @@ function renderLayerFragment(
 }
 
 function buildReminderHtmlWithLayers(options: ReminderPopupOptions, theme: PopupTheme, htmlDir: string): string {
-  const { title, timeStr, liveDesktopWallpaper } = options
+  const { title, timeStr, liveDesktopWallpaper, restPhaseEndAtMs } = options
   const liveDesktop = Boolean(liveDesktopWallpaper)
   const titleEsc = escapeHtml(title)
   const timeEsc = escapeHtml(timeStr)
@@ -828,10 +922,19 @@ function buildReminderHtmlWithLayers(options: ReminderPopupOptions, theme: Popup
   const layers = theme.layers ?? []
   const parts: string[] = []
   for (let i = 0; i < layers.length; i++) {
-    parts.push(renderLayerFragment(theme, layers[i]!, i, timeEsc, dateEsc, htmlDir, liveDesktop))
+    parts.push(renderLayerFragment(theme, layers[i]!, i, timeEsc, dateEsc, htmlDir, liveDesktop, restPhaseEndAtMs))
   }
   const stageInner = parts.join('\n')
-  const liveScript = liveDesktop ? buildDesktopLiveClockScript(theme) : ''
+  const useRestRemain =
+    theme.target === 'rest' &&
+    typeof restPhaseEndAtMs === 'number' &&
+    restPhaseEndAtMs > 0 &&
+    !liveDesktop
+  const liveScript = liveDesktop
+    ? buildDesktopLiveClockScript(theme)
+    : useRestRemain
+      ? buildRestRemainCountdownScript(restPhaseEndAtMs)
+      : ''
   return `<!DOCTYPE html>
 <html lang="zh-CN">
 <head>
@@ -839,8 +942,8 @@ function buildReminderHtmlWithLayers(options: ReminderPopupOptions, theme: Popup
   <title>${titleEsc}</title>
   <style>
     * { box-sizing: border-box; margin: 0; padding: 0; }
-    html, body { width: 100%; height: 100%; min-height: 100%; margin: 0; color: #fff; font-family: system-ui, sans-serif; overflow: hidden; background: #000000; }
-    .stage { position: fixed; inset: 0; width: 100%; height: 100%; overflow: hidden; }
+    html, body { width: 100%; height: 100%; min-height: 100%; margin: 0; color: #fff; font-family: system-ui, sans-serif; overflow: hidden; background: #000000; border-radius: 0; }
+    .stage { position: fixed; inset: 0; width: 100%; height: 100%; overflow: hidden; border-radius: 0; }
     ${REMINDER_CLOSE_CSS}
   </style>
 </head>
@@ -902,6 +1005,9 @@ function ensurePopupWindow(): BrowserWindow {
     skipTaskbar: true,
     fullscreenable: true,
     show: false,
+    roundedCorners: false,
+    backgroundColor: '#000000',
+    ...win32FramelessEdgeToEdgeOpts(),
     webPreferences: { nodeIntegration: false, contextIsolation: true, zoomFactor: 1 },
   })
   win.on('closed', () => {
@@ -955,6 +1061,76 @@ export function closeReminderPopupIfAny() {
   }
 }
 
+/** 与 `reminderPopupWindow` 分离，避免主题工坊全屏预览与到点提醒抢同一单例窗口 */
+let themeEditorPreviewWindow: BrowserWindow | null = null
+
+export function closeThemeEditorFullscreenPreview() {
+  const w = themeEditorPreviewWindow
+  themeEditorPreviewWindow = null
+  if (w && !w.isDestroyed()) w.close()
+}
+
+/**
+ * 主题编辑：用与到点提醒相同的 HTML（含右上角关叉、mousemove 显示 / 静止隐藏、Esc 关闭）全屏铺满主显示器。
+ */
+export async function showThemeEditorFullscreenPreview(options: ReminderPopupOptions): Promise<
+  { success: true } | { success: false; error: string }
+> {
+  closeThemeEditorFullscreenPreview()
+  const htmlDir = getPopupTempDir()
+  const html = buildReminderHtml(options, htmlDir)
+  const fallbackHtml = buildReminderHtmlLegacy(
+    {
+      ...options,
+      theme: options.theme ? ensureThemeLayers(options.theme) : undefined,
+    },
+    htmlDir,
+  )
+  const htmlPath = writePopupHtmlToTempFile('theme-editor-preview.html', html)
+  const fallbackPath = writePopupHtmlToTempFile('theme-editor-preview-fallback.html', fallbackHtml)
+
+  const primary = screen.getPrimaryDisplay()
+  const { x, y, width, height } = primary.bounds
+  const win = new BrowserWindow({
+    x,
+    y,
+    width,
+    height,
+    frame: false,
+    resizable: false,
+    alwaysOnTop: true,
+    skipTaskbar: true,
+    fullscreenable: true,
+    show: false,
+    roundedCorners: false,
+    backgroundColor: '#000000',
+    ...win32FramelessEdgeToEdgeOpts(),
+    webPreferences: { nodeIntegration: false, contextIsolation: true, zoomFactor: 1 },
+  })
+  themeEditorPreviewWindow = win
+  win.on('closed', () => {
+    if (themeEditorPreviewWindow === win) themeEditorPreviewWindow = null
+  })
+  try {
+    try {
+      await win.loadFile(htmlPath)
+    } catch {
+      if (!win.isDestroyed()) await win.loadFile(fallbackPath)
+    }
+    if (!win.isDestroyed()) {
+      win.show()
+      win.focus()
+      win.setAlwaysOnTop(true, 'screen-saver')
+    }
+    return { success: true }
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err)
+    if (!win.isDestroyed()) win.close()
+    if (themeEditorPreviewWindow === win) themeEditorPreviewWindow = null
+    return { success: false, error: message }
+  }
+}
+
 /* ─── 休息即将结束：倒计时弹窗 ─── */
 
 /** 休息段最后 N 秒：与休息主题硬切，固定黑底白字，不读主题壁纸/遮罩/排版 */
@@ -968,7 +1144,7 @@ function buildRestEndCountdownHtml(countdownSec: number): string {
   <title>休息即将结束</title>
   <style>
     * { box-sizing: border-box; margin: 0; padding: 0; }
-    html, body { width: 100%; height: 100%; color: #fff; font-family: system-ui, "Segoe UI", sans-serif; overflow: hidden; background: #000000; }
+    html, body { width: 100%; height: 100%; color: #fff; font-family: system-ui, "Segoe UI", sans-serif; overflow: hidden; background: #000000; border-radius: 0; }
     .stack {
       position: absolute; left: 50%; top: 50%; transform: translate(-50%, -50%);
       z-index: 1; display: flex; flex-direction: column; align-items: center; justify-content: center;

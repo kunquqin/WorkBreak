@@ -20,7 +20,15 @@ import {
   syncIntervalTimersAfterSettingsChange,
 } from './reminders'
 import { clearSystemFontListCache, getSystemFontFamilies } from './systemFonts'
-import type { PopupTheme } from '../shared/settings'
+import {
+  BUILTIN_MAIN_POPUP_FALLBACK_BODY,
+  REST_POPUP_PREVIEW_TIME_TEXT,
+  type PopupTheme,
+} from '../shared/settings'
+import {
+  closeThemeEditorFullscreenPreview,
+  showThemeEditorFullscreenPreview,
+} from './reminderWindow'
 import {
   startDesktopLiveWallpaper,
   stopDesktopLiveWallpaper,
@@ -30,6 +38,27 @@ import {
 } from './desktopWallpaperPlayer'
 
 let mainWindow: BrowserWindow | null = null
+
+/**
+ * 托盘仅 show、或 Windows 上前台与 WebContents 未对齐时，首记指针常只激活窗口、不落到控件上；
+ * 显式聚焦页面后，主题名称等输入框可一次点中。
+ */
+function ensureMainWindowFocusedForInput() {
+  const win = mainWindow
+  if (!win || win.isDestroyed()) return
+  win.show()
+  win.focus()
+  try {
+    win.webContents.focus()
+  } catch {
+    /* ignore */
+  }
+  try {
+    win.focusOnWebView()
+  } catch {
+    /* ignore */
+  }
+}
 
 /** 动态壁纸异步应用：新一次「设为壁纸」或「关闭」会使进行中的完成回调失效，避免乱序通知 */
 let desktopWallpaperApplyNonce = 0
@@ -203,6 +232,7 @@ function createWindow() {
 }
 
 ;(globalThis as unknown as { workbreakQuit?: () => void }).workbreakQuit = () => {
+  closeThemeEditorFullscreenPreview()
   stopDesktopLiveWallpaper()
   destroyTray()
   mainWindow = null
@@ -215,10 +245,7 @@ if (!gotLock) {
   app.quit()
 } else {
   app.on('second-instance', () => {
-    if (mainWindow) {
-      mainWindow.show()
-      mainWindow.focus()
-    }
+    ensureMainWindowFocusedForInput()
   })
 }
 
@@ -239,7 +266,7 @@ app.on('window-all-closed', () => {
 
 app.on('activate', () => {
   if (mainWindow === null) createWindow()
-  else mainWindow.show()
+  else ensureMainWindowFocusedForInput()
 })
 
 ipcMain.handle('getSettings', () => getSettings())
@@ -261,7 +288,28 @@ ipcMain.handle('setSettings', (_e, settings: Partial<AppSettings>) => {
     return { success: false as const, error: message }
   }
 })
-ipcMain.handle('showMainWindow', () => mainWindow?.show())
+ipcMain.handle('showMainWindow', () => {
+  ensureMainWindowFocusedForInput()
+})
+ipcMain.handle('focusMainWebContents', () => {
+  ensureMainWindowFocusedForInput()
+})
+ipcMain.handle('openThemeEditorFullscreenPreview', (_e, theme: PopupTheme) => {
+  const now = new Date()
+  const liveClock = `${String(now.getHours()).padStart(2, '0')}:${String(now.getMinutes()).padStart(2, '0')}`
+  const timeStr =
+    theme.target === 'rest'
+      ? (theme.previewTimeText ?? '').trim() || REST_POPUP_PREVIEW_TIME_TEXT
+      : (theme.previewTimeText ?? '').trim() || liveClock
+  const title = (theme.name ?? '').trim() || '壁纸预览'
+  return showThemeEditorFullscreenPreview({
+    title,
+    body: BUILTIN_MAIN_POPUP_FALLBACK_BODY,
+    timeStr,
+    theme,
+    liveDesktopWallpaper: theme.target === 'desktop',
+  })
+})
 ipcMain.handle('getReminderCountdowns', () => getReminderCountdowns())
 ipcMain.handle('getPrimaryDisplaySize', () => {
   const d = screen.getPrimaryDisplay()

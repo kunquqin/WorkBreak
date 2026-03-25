@@ -12,6 +12,12 @@ declare global {
         { success: true; data: AppSettings } | { success: false; error: string }
       >
       showMainWindow: () => void
+      /** 主窗口已显示但页面未跟前台时补偿聚焦，避免首击无法进入输入框 */
+      focusMainWebContents: () => void
+      /** 主题工坊/编辑：与到点弹窗相同 HTML 的全屏预览 */
+      openThemeEditorFullscreenPreview: (
+        theme: PopupTheme,
+      ) => Promise<{ success: true } | { success: false; error: string }>
       getPrimaryDisplaySize: () => Promise<{ width: number; height: number }>
       getReminderCountdowns: () => Promise<CountdownItem[]>
       resetReminderProgress: (key: string, payload?: import('./types').ResetIntervalPayload) => Promise<void>

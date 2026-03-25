@@ -13,6 +13,7 @@ import type {
 } from './settings'
 import { MAIN_REST_LAYOUT_DEFAULTS } from './settings'
 import { clampUnitOpacity } from './popupTextEffects'
+import { clampPopupThemeLetterSpacing, clampPopupThemeLineHeight } from './popupThemeTypographyClamp'
 import { normalizePopupTextOrientationMode, normalizePopupTextWritingMode } from './popupVerticalText'
 
 function sanitizeLayerTextEffects(raw: unknown): PopupLayerTextEffects | undefined {
@@ -290,10 +291,10 @@ function sanitizeLayer(raw: unknown, theme: PopupTheme): PopupThemeLayer | null 
         ? o.textVerticalAlign
         : baseBody?.textVerticalAlign
     const letterSpacing = Number.isFinite(Number(o.letterSpacing))
-      ? Math.max(-2, Math.min(20, Number(o.letterSpacing)))
+      ? clampPopupThemeLetterSpacing(Number(o.letterSpacing))
       : baseBody?.letterSpacing
     const lineHeight = Number.isFinite(Number(o.lineHeight))
-      ? Math.max(0.8, Math.min(3, Number(o.lineHeight)))
+      ? clampPopupThemeLineHeight(Number(o.lineHeight))
       : baseBody?.lineHeight
     const fontFamilyPreset =
       typeof o.fontFamilyPreset === 'string' ? o.fontFamilyPreset : baseBody?.fontFamilyPreset
@@ -375,8 +376,10 @@ function sanitizeLayer(raw: unknown, theme: PopupTheme): PopupThemeLayer | null 
         o.textVerticalAlign === 'top' || o.textVerticalAlign === 'middle' || o.textVerticalAlign === 'bottom'
           ? o.textVerticalAlign
           : undefined,
-      letterSpacing: Number.isFinite(Number(o.letterSpacing)) ? Math.max(-2, Math.min(20, Number(o.letterSpacing))) : undefined,
-      lineHeight: Number.isFinite(Number(o.lineHeight)) ? Math.max(0.8, Math.min(3, Number(o.lineHeight))) : undefined,
+      letterSpacing: Number.isFinite(Number(o.letterSpacing))
+        ? clampPopupThemeLetterSpacing(Number(o.letterSpacing))
+        : undefined,
+      lineHeight: Number.isFinite(Number(o.lineHeight)) ? clampPopupThemeLineHeight(Number(o.lineHeight)) : undefined,
       fontFamilyPreset: typeof o.fontFamilyPreset === 'string' ? o.fontFamilyPreset : undefined,
       fontFamilySystem: typeof o.fontFamilySystem === 'string' ? o.fontFamilySystem : undefined,
       ...(te ? { textEffects: te } : {}),
@@ -654,23 +657,14 @@ export function removeThemeLayer(theme: PopupTheme, layerId: string): Partial<Po
 }
 
 /**
- * 桌面壁纸编辑：去掉绑定主文案层，保证有日期绑定层；清空 previewContentText。
- * 用于切换到 `target: desktop` 或新建桌面主题。
+ * 应用桌面动态壁纸前：仅保证存在日期绑定层。
+ * 保留用户添加的绑定主文案与装饰文本（不再移除主文案层、不清空 previewContentText）。
  */
 export function stripBindingContentAndEnsureDateForDesktop(theme: PopupTheme): Partial<PopupTheme> {
-  let patch: Partial<PopupTheme> = { previewContentText: '' }
-  let cur: PopupTheme = { ...theme }
-  const rm = removeThemeLayer(cur, POPUP_LAYER_BINDING_CONTENT_ID)
-  if (rm?.layers) {
-    patch = { ...patch, ...rm }
-    cur = { ...cur, layers: rm.layers }
-  }
-  const hasDate = (cur.layers ?? []).some((l) => l.kind === 'bindingDate')
-  if (!hasDate) {
-    const addD = addDateLayer(cur)
-    if (addD) patch = { ...patch, ...addD }
-  }
-  return patch
+  const hasDate = (theme.layers ?? []).some((l) => l.kind === 'bindingDate')
+  if (hasDate) return {}
+  const addD = addDateLayer(theme)
+  return addD ?? {}
 }
 
 /**

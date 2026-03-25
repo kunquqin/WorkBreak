@@ -1,4 +1,12 @@
-import React, { useRef, useCallback, useMemo, useLayoutEffect, useState, useEffect } from 'react'
+import React, {
+  useRef,
+  useCallback,
+  useMemo,
+  useLayoutEffect,
+  useState,
+  useEffect,
+  type ReactNode,
+} from 'react'
 import { flushSync } from 'react-dom'
 import Moveable from 'react-moveable'
 import type { PopupTheme, TextTransform } from '../types'
@@ -9,6 +17,8 @@ import {
   ensureThemeLayers,
   MAIN_REST_LAYOUT_DEFAULTS,
   POPUP_BACKGROUND_IMAGE_BLUR_MAX_PX,
+  resolveBackgroundImagePanForCss,
+  REST_POPUP_PREVIEW_TIME_TEXT,
 } from '../../../shared/settings'
 import { buildPopupOverlayBackgroundCss } from '../../../shared/popupOverlayGradient'
 import type { ImageThemeLayer, TextThemeLayer } from '../../../shared/popupThemeLayers'
@@ -33,6 +43,12 @@ import {
 import type { PopupThemeEditUpdateMeta } from '../hooks/usePopupThemeEditHistory'
 
 export type TextElementKey = 'content' | 'time' | 'date' | 'countdown'
+
+/**
+ * 只读缩略图（主题工坊列表等）下桌面「时间/日期」绑定层锚点：固定本地正午，
+ * 与可编辑预览共用同一套 `toLocaleTimeString` / `formatPopupThemeDateString`，避免占位变窄变宽；不启定时器。
+ */
+const DESKTOP_THUMBNAIL_CLOCK_FROZEN_AT = new Date(2020, 5, 15, 12, 0, 0, 0)
 
 /** 参数区优先编辑文字：预览双击时交给面板聚焦对应输入框 */
 export type PanelTextFocusRequest =
@@ -73,6 +89,15 @@ interface ThemePreviewEditorProps {
   /** false：不显示说明条与多选对齐工具栏，仅黑底画幅（嵌入卡片顶图等） */
   showToolbar?: boolean
   /**
+   * 与对齐/打组工具栏同一行、渲染在中间（如预览比例）。仅 `showToolbar !== false` 时显示；
+   * 与 `toolbarTrailing` 同时存在时采用左对齐区 / 居中 / 右尾区三列布局。
+   */
+  toolbarCenter?: ReactNode
+  /**
+   * 与对齐/打组工具栏同一行、渲染在右侧（如全屏预览）。仅 `showToolbar !== false` 时显示。
+   */
+  toolbarTrailing?: ReactNode
+  /**
    * 与全屏弹窗相同的逻辑像素画幅（宽×高）。用于主题工坊缩略图：外层再 CSS scale 压入窄槽，换行与真实弹窗一致。
    */
   fixedPreviewPixelSize?: { width: number; height: number }
@@ -97,6 +122,10 @@ interface ThemePreviewEditorProps {
   panelFirstTextEditing?: boolean
   /** 与 `panelFirstTextEditing` 配套：双击绑定层/装饰文本时请求面板聚焦 */
   onRequestPanelTextFocus?: (req: PanelTextFocusRequest) => void
+  /**
+   * readOnly + fixedPreviewPixelSize（主题工坊列表缩略图）：主题未指定底色时不用纯黑，改用该浅底以减轻「未加载」黑块感。
+   */
+  readOnlyCanvasFallbackBg?: string
 }
 
 /** Moveable 打组轨道平移多为 translate(xpx,ypx)，偶发 translate3d */
@@ -187,6 +216,44 @@ function fixedCornerFromScaleDirection(direction: number[]): ScaleFixedCorner {
   if (dx === -1 && dy === 1) return 'tr'
   if (dx === 1 && dy === 1) return 'tl'
   return 'tl'
+}
+
+/** 多选缩放钉扎：用当前选中项轴对齐外包矩形（容器坐标），与 Moveable 组框一致 */
+function getAxisAlignedUnionBoxInContainer(els: HTMLElement[], cr: DOMRect): {
+  left: number
+  top: number
+  right: number
+  bottom: number
+} {
+  let left = Infinity
+  let top = Infinity
+  let right = -Infinity
+  let bottom = -Infinity
+  for (const el of els) {
+    const r = el.getBoundingClientRect()
+    left = Math.min(left, r.left - cr.left)
+    top = Math.min(top, r.top - cr.top)
+    right = Math.max(right, r.right - cr.left)
+    bottom = Math.max(bottom, r.bottom - cr.top)
+  }
+  if (!Number.isFinite(left)) return { left: 0, top: 0, right: 0, bottom: 0 }
+  return { left, top, right, bottom }
+}
+
+function unionBoxCorner(
+  u: { left: number; top: number; right: number; bottom: number },
+  corner: ScaleFixedCorner,
+): { x: number; y: number } {
+  switch (corner) {
+    case 'tl':
+      return { x: u.left, y: u.top }
+    case 'tr':
+      return { x: u.right, y: u.top }
+    case 'br':
+      return { x: u.right, y: u.bottom }
+    case 'bl':
+      return { x: u.left, y: u.bottom }
+  }
 }
 
 /** Moveable 拖动缩放过程中可能输出 scale(sx,sy) 且 sx≠sy，字会被「压扁/拉宽」；松手后若只取单轴易误判，故在每一帧强制为等比 scale */
@@ -422,7 +489,16 @@ function combineUprightForKey(theme: PopupTheme, key: TextElementKey): boolean {
   return theme.countdownCombineUprightDigits !== false
 }
 
-/** 文件夹壁纸：与真弹窗一致的双层交叉淡化（仅预览可编辑态轮播；readOnly 由父级不传多 url） */
+function previewBackgroundImageTransformStyle(theme: PopupTheme): React.CSSProperties {
+  const { txPct, tyPct, rotation, scale } = resolveBackgroundImagePanForCss(theme)
+  return {
+    backgroundPosition: 'center',
+    transform: `translate(${txPct}%, ${tyPct}%) rotate(${rotation}deg) scale(${scale})`,
+    transformOrigin: 'center center',
+  }
+}
+
+/** 文件夹壁纸：与真弹窗一致的双层交叉淡化（仅可编辑预览；只读缩略图走首张静态图） */
 function FolderBgCrossfade({
   layerId,
   zIndex,
@@ -432,6 +508,7 @@ function FolderBgCrossfade({
   randomMode,
   bgColor,
   blur,
+  bgTransformStyle,
 }: {
   layerId: string
   zIndex: number
@@ -441,6 +518,7 @@ function FolderBgCrossfade({
   randomMode: boolean
   bgColor: string
   blur: number
+  bgTransformStyle: React.CSSProperties
 }) {
   const holdMs = Math.max(300, Math.round(intervalSec * 1000))
   const fadeMs = Math.max(100, Math.round(crossfadeSec * 1000))
@@ -504,9 +582,9 @@ function FolderBgCrossfade({
             height: `calc(100% + ${blurOut * 2}px)`,
             backgroundImage: `url("${url}")`,
             backgroundSize: 'cover',
-            backgroundPosition: 'center',
             backgroundRepeat: 'no-repeat',
             filter: `blur(${blur}px)`,
+            ...bgTransformStyle,
           }}
         />
       </div>
@@ -516,8 +594,8 @@ function FolderBgCrossfade({
         style={{
           backgroundImage: `url("${url}")`,
           backgroundSize: 'cover',
-          backgroundPosition: 'center',
           backgroundRepeat: 'no-repeat',
+          ...bgTransformStyle,
         }}
       />
     )
@@ -575,9 +653,16 @@ export function ThemePreviewEditor({
   selectedStructuralLayerId = null,
   panelFirstTextEditing = false,
   onRequestPanelTextFocus,
+  readOnlyCanvasFallbackBg,
+  toolbarCenter,
+  toolbarTrailing,
 }: ThemePreviewEditorProps) {
   /** 未传回调时仍允许画布内联编辑，避免误开 panelFirst 导致无法改字 */
   const useInlineTextEditing = !readOnly && !(panelFirstTextEditing && Boolean(onRequestPanelTextFocus))
+  const previewDefaultBg =
+    readOnly && fixedPreviewPixelSize && readOnlyCanvasFallbackBg
+      ? theme.backgroundColor?.trim() || readOnlyCanvasFallbackBg
+      : theme.backgroundColor?.trim() || '#000000'
   const containerRef = useRef<HTMLDivElement>(null)
   const decoRefs = useRef<Record<string, HTMLDivElement | null>>({})
   const contentRef = useRef<HTMLDivElement>(null)
@@ -726,9 +811,10 @@ export function ThemePreviewEditor({
   )
   const countdownFontPx = Math.max(1, Math.min(8000, Math.round(theme.countdownFontSize ?? 180)))
 
-  /** 日期预览：定时刷新以便跨日与「仅星期」等仍随真实日期变；桌面目标按整秒边界排程，避免与任务栏时钟差一拍 */
+  /** 日期预览：可编辑模式下定时刷新；只读缩略图不注册定时器（见 readOnly 分支） */
   const [datePreviewTick, setDatePreviewTick] = useState(0)
   useEffect(() => {
+    if (readOnly) return undefined
     if (theme.target === 'desktop') {
       let cancelled = false
       let tid: ReturnType<typeof window.setTimeout> | undefined
@@ -747,7 +833,7 @@ export function ThemePreviewEditor({
     }
     const id = window.setInterval(() => setDatePreviewTick((n) => n + 1), 30000)
     return () => clearInterval(id)
-  }, [theme.target])
+  }, [theme.target, readOnly])
 
   /** 切换休息/结束/桌面等导致图层与 DOM 重建时，退出编辑态，避免 contentEditable 挂在已卸载节点上 */
   useEffect(() => {
@@ -921,19 +1007,27 @@ export function ThemePreviewEditor({
       if (key === 'time') {
         if (theme.target === 'desktop') {
           const loc = (theme.dateLocale ?? '').trim() || 'zh-CN'
-          return new Date().toLocaleTimeString(loc, {
+          const at = readOnly ? DESKTOP_THUMBNAIL_CLOCK_FROZEN_AT : new Date()
+          return at.toLocaleTimeString(loc, {
             hour: '2-digit',
             minute: '2-digit',
             second: '2-digit',
             hour12: false,
           })
         }
+        if (theme.target === 'rest') {
+          if (theme.previewTimeText?.trim()) return theme.previewTimeText.trim()
+          if (pl != null && pl !== '') return pl
+          return REST_POPUP_PREVIEW_TIME_TEXT
+        }
         if (theme.previewTimeText?.trim()) return theme.previewTimeText.trim()
         if (pl != null && pl !== '') return pl
         return fallback
       }
       if (key === 'date') {
-        return formatPopupThemeDateString(theme, new Date(), 'preview') || fallback
+        const at =
+          theme.target === 'desktop' && readOnly ? DESKTOP_THUMBNAIL_CLOCK_FROZEN_AT : new Date()
+        return formatPopupThemeDateString(theme, at, 'preview') || fallback
       }
       if (theme.previewCountdownText?.trim()) return theme.previewCountdownText.trim()
       if (pl != null && pl !== '') return pl
@@ -957,6 +1051,7 @@ export function ThemePreviewEditor({
       theme.dateWeekdayFormat,
       datePreviewTick,
       theme.target,
+      readOnly,
     ],
   )
 
@@ -2900,7 +2995,7 @@ export function ThemePreviewEditor({
       return
     }
     const t = e.target as HTMLElement
-    const onBg = t.dataset?.layer === 'bg'
+    const onBg = Boolean(t.closest('[data-layer="bg"]'))
     if (e.target === containerRef.current || onBg) {
       const ek = editingTextKeyRef.current
       if (ek) {
@@ -2931,7 +3026,7 @@ export function ThemePreviewEditor({
   const handleContainerMouseDown = useCallback((e: React.MouseEvent) => {
     if (readOnly) return
     const hit = e.target as HTMLElement
-    if (hit !== containerRef.current && hit.dataset?.layer !== 'bg') return
+    if (hit !== containerRef.current && !hit.closest('[data-layer="bg"]')) return
     const ek = editingTextKeyRef.current
     if (ek) {
       const node = getTargetRef(ek)?.current
@@ -3380,7 +3475,7 @@ export function ThemePreviewEditor({
       editSessionRef.current = editingTextKey
       const defaults: Record<TextElementKey, string> = {
         content: '文本',
-        time: '12:00',
+        time: theme.target === 'rest' ? REST_POPUP_PREVIEW_TIME_TEXT : '12:00',
         date: '2025年3月23日',
         countdown: '5',
       }
@@ -3397,7 +3492,7 @@ export function ThemePreviewEditor({
       sel?.removeAllRanges()
       sel?.addRange(range)
     })
-  }, [editingTextKey, getTargetRef, getDisplayText])
+  }, [editingTextKey, getTargetRef, getDisplayText, theme.target])
 
   const decoEditSessionRef = useRef<string | null>(null)
   useLayoutEffect(() => {
@@ -3531,7 +3626,15 @@ export function ThemePreviewEditor({
     const ref = getTargetRef(key)
     if (!ref) return null
     const label =
-      key === 'content' ? '文本' : key === 'time' ? '12:00' : key === 'date' ? '2025年3月23日' : '5:00'
+      key === 'content'
+        ? '文本'
+        : key === 'time'
+          ? theme.target === 'rest'
+            ? REST_POPUP_PREVIEW_TIME_TEXT
+            : '12:00'
+          : key === 'date'
+            ? '2025年3月23日'
+            : '5:00'
     const fontSize =
       key === 'content'
         ? contentFontPx
@@ -3876,33 +3979,45 @@ export function ThemePreviewEditor({
   const previewBoxClass = fixedPreviewPixelSize
     ? 'relative overflow-hidden rounded-none border-0 bg-transparent'
     : previewWidthMode === 'fill'
-      ? 'relative w-full max-w-full overflow-hidden rounded border border-slate-300 bg-black'
+      ? 'relative w-full max-w-full overflow-hidden rounded-none border border-slate-300 bg-black'
       : showToolbar
-        ? 'relative mx-auto w-full max-w-[920px] overflow-hidden rounded border border-slate-300 bg-black'
-        : 'relative w-full max-w-full overflow-hidden rounded border border-slate-300 bg-black'
+        ? 'relative mx-auto w-full max-w-[920px] overflow-hidden rounded-none border border-slate-300 bg-black'
+        : 'relative w-full max-w-full overflow-hidden rounded-none border border-slate-300 bg-black'
 
   return (
     <div className={outerWrapClass}>
       {showToolbar && (
         <>
-          <div className="mb-1.5 flex items-center gap-0.5 px-1">
-            {alignButtons.map(({ mode, icon, title }) => (
-              <button key={mode} type="button" title={title} disabled={!multiSelected} onClick={() => handleAlign(mode)}
-                className={`rounded p-1 transition-colors ${multiSelected ? 'text-slate-600 hover:bg-indigo-50 hover:text-indigo-700' : 'text-slate-300 cursor-default'}`}>
-                {icon}
-              </button>
-            ))}
-            {multiSelected && (
-              <>
-                <div className="mx-1.5 h-4 w-px bg-slate-200" />
-                <button type="button" onClick={() => setGroupMode(v => !v)}
-                  title={groupMode ? '打组：围绕整体中心变换' : '解组：围绕各自中心变换'}
-                  className={`flex items-center gap-1 rounded px-1.5 py-0.5 text-[10px] font-medium transition-colors ${groupMode ? 'bg-indigo-50 text-indigo-600 hover:bg-indigo-100' : 'bg-slate-50 text-slate-400 hover:bg-slate-100 hover:text-slate-500'}`}>
-                  {groupMode ? GROUP_ICON : UNGROUP_ICON}
-                  {groupMode ? '打组' : '解组'}
+          <div className="mb-1.5 flex min-w-0 items-center gap-1 px-1">
+            <div className="flex min-w-0 flex-1 flex-wrap items-center gap-0.5">
+              {alignButtons.map(({ mode, icon, title }) => (
+                <button key={mode} type="button" title={title} disabled={!multiSelected} onClick={() => handleAlign(mode)}
+                  className={`rounded p-1 transition-colors ${multiSelected ? 'text-slate-600 hover:bg-indigo-50 hover:text-indigo-700' : 'text-slate-300 cursor-default'}`}>
+                  {icon}
                 </button>
-                <span className="ml-1 text-[10px] text-indigo-500">已选 {selectedElements.length} 个</span>
+              ))}
+              {multiSelected && (
+                <>
+                  <div className="mx-1.5 h-4 w-px bg-slate-200" />
+                  <button type="button" onClick={() => setGroupMode(v => !v)}
+                    title={groupMode ? '打组：围绕整体中心变换' : '解组：围绕各自中心变换'}
+                    className={`flex items-center gap-1 rounded px-1.5 py-0.5 text-[10px] font-medium transition-colors ${groupMode ? 'bg-indigo-50 text-indigo-600 hover:bg-indigo-100' : 'bg-slate-50 text-slate-400 hover:bg-slate-100 hover:text-slate-500'}`}>
+                    {groupMode ? GROUP_ICON : UNGROUP_ICON}
+                    {groupMode ? '打组' : '解组'}
+                  </button>
+                  <span className="ml-1 text-[10px] text-indigo-500">已选 {selectedElements.length} 个</span>
+                </>
+              )}
+            </div>
+            {toolbarCenter != null ? (
+              <>
+                <div className="flex shrink-0 items-center justify-center px-2">{toolbarCenter}</div>
+                <div className="flex min-w-0 flex-1 justify-end">
+                  {toolbarTrailing ? <div className="flex shrink-0 items-center">{toolbarTrailing}</div> : null}
+                </div>
               </>
+            ) : (
+              toolbarTrailing ? <div className="flex shrink-0 items-center">{toolbarTrailing}</div> : null
             )}
           </div>
         </>
@@ -3917,7 +4032,7 @@ export function ThemePreviewEditor({
             ? {
                 width: fixedPreviewPixelSize.width,
                 height: fixedPreviewPixelSize.height,
-                backgroundColor: theme.backgroundColor?.trim() || '#000000',
+                backgroundColor: previewDefaultBg,
               }
             : { aspectRatio: popupPreviewAspect === '16:9' ? '16 / 9' : '4 / 3' }
         }
@@ -3933,7 +4048,7 @@ export function ThemePreviewEditor({
                 Number.isFinite(blurRaw) ? Math.max(0, Math.min(POPUP_BACKGROUND_IMAGE_BLUR_MAX_PX, blurRaw)) : 0
               const blurOut = bgBlur > 0 ? Math.min(200, Math.ceil(bgBlur * 2.5)) : 0
               if (
-                (!readOnly || theme.target === 'desktop') &&
+                !readOnly &&
                 theme.imageSourceType === 'folder' &&
                 folderPreviewUrls.length >= 2
               ) {
@@ -3946,19 +4061,21 @@ export function ThemePreviewEditor({
                     intervalSec={theme.imageFolderIntervalSec ?? 30}
                     crossfadeSec={theme.imageFolderCrossfadeSec ?? 2}
                     randomMode={theme.imageFolderPlayMode === 'random'}
-                    bgColor={theme.backgroundColor || '#000000'}
+                    bgColor={previewDefaultBg}
                     blur={bgBlur}
+                    bgTransformStyle={previewBackgroundImageTransformStyle(theme)}
                   />
                 )
               }
               if (hasBgImage && bgImageUrl) {
+                const bgTf = previewBackgroundImageTransformStyle(theme)
                 if (bgBlur > 0) {
                   return (
                     <div
                       key={L.id}
                       className="absolute inset-0 overflow-hidden"
                       data-layer="bg"
-                      style={{ zIndex: zi, backgroundColor: theme.backgroundColor || '#000000' }}
+                      style={{ zIndex: zi, backgroundColor: previewDefaultBg }}
                     >
                       <div
                         className="absolute"
@@ -3969,9 +4086,9 @@ export function ThemePreviewEditor({
                           height: `calc(100% + ${blurOut * 2}px)`,
                           backgroundImage: `url("${bgImageUrl}")`,
                           backgroundSize: 'cover',
-                          backgroundPosition: 'center',
                           backgroundRepeat: 'no-repeat',
                           filter: `blur(${bgBlur}px)`,
+                          ...bgTf,
                         }}
                       />
                     </div>
@@ -3980,13 +4097,20 @@ export function ThemePreviewEditor({
                 return (
                   <div
                     key={L.id}
-                    className="absolute inset-0"
+                    className="absolute inset-0 overflow-hidden"
                     data-layer="bg"
-                    style={{
-                      zIndex: zi,
-                      background: `url("${bgImageUrl}") center / cover no-repeat, ${theme.backgroundColor || '#000000'}`,
-                    }}
-                  />
+                    style={{ zIndex: zi, backgroundColor: previewDefaultBg }}
+                  >
+                    <div
+                      className="absolute inset-0"
+                      style={{
+                        backgroundImage: `url("${bgImageUrl}")`,
+                        backgroundSize: 'cover',
+                        backgroundRepeat: 'no-repeat',
+                        ...bgTf,
+                      }}
+                    />
+                  </div>
                 )
               }
               return (
@@ -3996,7 +4120,7 @@ export function ThemePreviewEditor({
                   data-layer="bg"
                   style={{
                     zIndex: zi,
-                    background: theme.backgroundColor || '#000000',
+                    background: previewDefaultBg,
                   }}
                 />
               )
@@ -4593,19 +4717,98 @@ export function ThemePreviewEditor({
               setTransformSyncLocked(false)
             }}
 
-            onScaleGroupStart={() => {
+            onScaleGroupStart={(e) => {
               transformSyncLockedRef.current = true
               resetMoveableVisualPipeline()
               setTransformSyncLocked(true)
               takeSnapshots()
-              scalePinBoxRef.current = null
+              const cont = containerRef.current
+              const targetsRaw = e.targets
+              const tgs =
+                Array.isArray(targetsRaw) && targetsRaw.length > 0
+                  ? (targetsRaw as HTMLElement[]).filter((x): x is HTMLElement => x instanceof HTMLElement)
+                  : []
+              if (!cont || !groupMode || tgs.length < 2) {
+                scalePinBoxRef.current = null
+                scaleDirectionForPinRef.current = null
+                return
+              }
+              const cr = cont.getBoundingClientRect()
+              scaleDirectionForPinRef.current =
+                Array.isArray(e.direction) && e.direction.length >= 2 ? [e.direction[0], e.direction[1]] : [1, 1]
+              const union = getAxisAlignedUnionBoxInContainer(tgs, cr)
+              const ctrlHeld =
+                !!e.inputEvent &&
+                typeof e.inputEvent === 'object' &&
+                'ctrlKey' in e.inputEvent &&
+                Boolean((e.inputEvent as MouseEvent | PointerEvent).ctrlKey)
+              if (ctrlHeld) {
+                scalePinBoxRef.current = {
+                  mode: 'center',
+                  cx: (union.left + union.right) / 2,
+                  cy: (union.top + union.bottom) / 2,
+                }
+              } else {
+                const corner = fixedCornerFromScaleDirection(scaleDirectionForPinRef.current)
+                const pos = unionBoxCorner(union, corner)
+                scalePinBoxRef.current = { mode: 'corner', corner, pinX: pos.x, pinY: pos.y }
+              }
             }}
-            onScaleGroup={({ events }) => {
+            onScaleGroup={({ events, inputEvent }) => {
               if (groupMode) {
-                applyMoveableFrame(events.map(ev => ({
+                const frames0 = events.map(ev => ({
                   target: ev.target,
                   transform: forceUniformScaleInFullTransform(pickMoveableCssTransform(ev)),
-                })))
+                }))
+                applyMoveableFrame(frames0)
+                const cont = containerRef.current
+                if (!cont || events.length === 0) return
+                let pin = scalePinBoxRef.current
+                if (!pin) return
+                const cr = cont.getBoundingClientRect()
+                const els = events.map(ev => ev.target).filter((x): x is HTMLElement => x instanceof HTMLElement)
+                const union = getAxisAlignedUnionBoxInContainer(els, cr)
+                const ctrlHeld =
+                  !!inputEvent &&
+                  typeof inputEvent === 'object' &&
+                  'ctrlKey' in inputEvent &&
+                  Boolean((inputEvent as MouseEvent | PointerEvent).ctrlKey)
+                const wantMode = ctrlHeld ? 'center' : 'corner'
+                if (pin.mode !== wantMode) {
+                  if (wantMode === 'center') {
+                    scalePinBoxRef.current = {
+                      mode: 'center',
+                      cx: (union.left + union.right) / 2,
+                      cy: (union.top + union.bottom) / 2,
+                    }
+                  } else {
+                    const dir = scaleDirectionForPinRef.current ?? [1, 1]
+                    const corner = fixedCornerFromScaleDirection(dir)
+                    const pos = unionBoxCorner(union, corner)
+                    scalePinBoxRef.current = { mode: 'corner', corner, pinX: pos.x, pinY: pos.y }
+                  }
+                  pin = scalePinBoxRef.current
+                }
+                let dlx = 0
+                let dty = 0
+                if (pin.mode === 'corner') {
+                  const cur = unionBoxCorner(union, pin.corner)
+                  dlx = pin.pinX - cur.x
+                  dty = pin.pinY - cur.y
+                } else {
+                  const cx = (union.left + union.right) / 2
+                  const cy = (union.top + union.bottom) / 2
+                  dlx = pin.cx - cx
+                  dty = pin.cy - cy
+                }
+                if (Math.abs(dlx) > 0.02 || Math.abs(dty) > 0.02) {
+                  const frames = els.map((el) => {
+                    const p = parseTransformValues(el.style.transform)
+                    const raw = buildTransform(p.translateX + dlx, p.translateY + dty, p.rotation, p.scale)
+                    return { target: el, transform: raw }
+                  })
+                  applyMoveableFrame(frames)
+                }
               } else {
                 const firstK = keyOfEl(events[0]?.target)
                 const firstSnap = firstK ? snapshotsRef.current.get(firstK) : null
@@ -4624,6 +4827,8 @@ export function ThemePreviewEditor({
               }
             }}
             onScaleGroupEnd={({ events }) => {
+              scalePinBoxRef.current = null
+              scaleDirectionForPinRef.current = null
               flushMoveableVisual('sync')
               events.forEach(ev => finalizeScaleBakesFontSize(ev.target))
               transformSyncLockedRef.current = false

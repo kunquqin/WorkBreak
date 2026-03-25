@@ -8,7 +8,7 @@ import {
   BUILTIN_MAIN_POPUP_FALLBACK_BODY,
   BUILTIN_REST_POPUP_FALLBACK_BODY,
 } from '../shared/settings'
-import { showReminderPopup, showRestEndCountdownPopup } from './reminderWindow'
+import { showReminderPopup, showRestEndCountdownPopup, formatRemainSecondsAsMmSs } from './reminderWindow'
 import { buildSplitSchedule } from '../shared/splitSchedule'
 
 const REMINDER_LOG = true
@@ -109,15 +109,20 @@ function resolvePopupThemeById(themeId: string | undefined, target: 'main' | 're
   return all.find((t) => t.target === target)
 }
 
-function showReminder(title: string, body: string, theme?: PopupTheme) {
+function showReminder(title: string, body: string, theme?: PopupTheme, restPhaseEndAtMs?: number) {
   const now = new Date()
-  const timeStr = `${String(now.getHours()).padStart(2, '0')}:${String(now.getMinutes()).padStart(2, '0')}`
-  reminderLog('弹窗', { title, bodyPreview: (body || '').slice(0, 40), timeStr })
+  const useRestRemain =
+    theme?.target === 'rest' && typeof restPhaseEndAtMs === 'number' && restPhaseEndAtMs > 0
+  const timeStr = useRestRemain
+    ? formatRemainSecondsAsMmSs((restPhaseEndAtMs - Date.now()) / 1000)
+    : `${String(now.getHours()).padStart(2, '0')}:${String(now.getMinutes()).padStart(2, '0')}`
+  reminderLog('弹窗', { title, bodyPreview: (body || '').slice(0, 40), timeStr, restPhaseEndAtMs })
   showReminderPopup({
     title,
     body,
     timeStr,
     ...(theme ? { theme } : {}),
+    ...(useRestRemain ? { restPhaseEndAtMs } : {}),
   })
 }
 
@@ -360,6 +365,7 @@ function runFixedTimeCheck() {
                 cat.name,
                 item.restContent ?? BUILTIN_REST_POPUP_FALLBACK_BODY,
                 resolvePopupThemeById(item.restPopupThemeId, 'rest'),
+                restEndAt,
               )
             latest.firedBreakIndexes.add(i)
           }
@@ -499,13 +505,14 @@ function scheduleNextPhase(key: string) {
       // 本段工作结束，进入休息（若休息>0）
       if (st.restDurationMs > 0) {
         reminderLog('间隔·休息段弹窗', { key, phaseIndex: st.phaseIndex })
+        st.phase = 'rest'
+        st.phaseStartTime = now
         showReminder(
           st.categoryName,
           st.restContent || BUILTIN_REST_POPUP_FALLBACK_BODY,
           resolvePopupThemeById(st.restPopupThemeId, 'rest'),
+          st.phaseStartTime + st.restDurationMs,
         )
-        st.phase = 'rest'
-        st.phaseStartTime = now
         const t = setTimeout(() => scheduleNextPhase(key), st.restDurationMs)
         intervalTimeouts.set(key, t)
         scheduleRestEndCountdown(key, st.restDurationMs)

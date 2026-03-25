@@ -50,6 +50,32 @@ export function collectPopupThemeImagePathsForPreview(theme: PopupTheme): string
   return [...s]
 }
 
+/**
+ * 主题工坊列表缩略图需等待解码的图片路径（文件夹背景仅首张，与 readOnly 预览一致；仅可见装饰图）。
+ */
+export function collectThemeStudioThumbnailImagePaths(theme: PopupTheme): string[] {
+  const out = new Set<string>()
+  if (theme.backgroundType === 'image') {
+    if (theme.imageSourceType !== 'folder') {
+      const p = (theme.imagePath ?? '').trim()
+      if (p) out.add(p)
+    } else {
+      for (const f of theme.imageFolderFiles ?? []) {
+        if (typeof f === 'string' && f.trim()) {
+          out.add(f.trim())
+          break
+        }
+      }
+    }
+  }
+  for (const L of theme.layers ?? []) {
+    if (L.kind !== 'image' || !L.visible) continue
+    const p = ((L as ImageThemeLayer).imagePath ?? '').trim()
+    if (p) out.add(p)
+  }
+  return [...out]
+}
+
 export function rendererSafePreviewImageUrl(imageKey: string, urlByPath: Record<string, string>): string {
   const key = (imageKey ?? '').trim()
   if (!key) return ''

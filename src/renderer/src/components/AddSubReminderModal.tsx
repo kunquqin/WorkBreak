@@ -4,8 +4,11 @@ import {
   BUILTIN_MAIN_POPUP_FALLBACK_BODY,
   BUILTIN_REST_POPUP_FALLBACK_BODY,
   getDefaultPopupThemeIdForTarget,
+  REST_POPUP_PREVIEW_TIME_TEXT,
 } from '../types'
 import { ThemePreviewEditor, type TextElementKey } from './ThemePreviewEditor'
+import { PopupThemeSelectWithHoverPreview } from './PopupThemeSelectWithHoverPreview'
+import { ThemeFullscreenPreviewToolbarButton } from './ThemeFullscreenPreviewControl'
 import { WheelColumn, parseTimeHHmm, formatHHmm, WHEEL_VIEW_H } from './TimePickerModal'
 import { StaticSplitPreviewSegment, StaticSinglePreviewBar } from './SegmentProgressBars'
 import { PresetTextField } from './PresetTextField'
@@ -236,6 +239,9 @@ export function AddSubReminderModal({
   const [miniMainSelectedDecoLayerId, setMiniMainSelectedDecoLayerId] = useState<string | null>(null)
   const [miniRestSelectedDecoLayerId, setMiniRestSelectedDecoLayerId] = useState<string | null>(null)
 
+  const hoverPreviewVpW = themeEditorContext?.previewViewportWidth ?? 1920
+  const hoverPreviewAspect = themeEditorContext?.popupPreviewAspect ?? '16:9'
+
   useEffect(() => {
     if (!open) {
       baselinePayloadJsonRef.current = ''
@@ -364,13 +370,24 @@ export function AddSubReminderModal({
   /**
    * 仅在校验「当前选中的主题 id 是否仍存在于列表」时回退默认。
    * 勿在编辑态把用户在下拉框里选中的 id 强行改回 sourceItem，否则预览会一直显示旧主题、与下拉选择不一致。
+   *
+   * 注意：首帧 state 仍为 '' 时 hydrate effect 尚未提交，若此处把 '' 当「无效 id」会误设成默认并覆盖下一轮 hydrate 写入的真实 id，
+   * 导致确认保存后子项壁纸永远落盘为系统默认。
    */
   useEffect(() => {
     if (!open) return
-    if (!mainThemeOptions.some((t) => t.id === mainPopupThemeId)) {
+    if (
+      mainThemeOptions.length > 0 &&
+      mainPopupThemeId &&
+      !mainThemeOptions.some((t) => t.id === mainPopupThemeId)
+    ) {
       setMainPopupThemeId(defaultMainThemeId)
     }
-    if (!restThemeOptions.some((t) => t.id === restPopupThemeId)) {
+    if (
+      restThemeOptions.length > 0 &&
+      restPopupThemeId &&
+      !restThemeOptions.some((t) => t.id === restPopupThemeId)
+    ) {
       setRestPopupThemeId(defaultRestThemeId)
     }
   }, [
@@ -458,20 +475,6 @@ export function AddSubReminderModal({
     if (mode === 'fixed') return formatHHmm(endHPreview, endMPreview)
     const endDate = new Date(nowMs + intervalTotalMs)
     return formatHHmm(endDate.getHours(), endDate.getMinutes())
-  })()
-
-  const restPreviewTimeStr = (() => {
-    if (splitN <= 1 || splitPlan.segments.length === 0) return '12:00'
-    const firstWorkMs = splitPlan.segments[0]?.durationMs ?? 0
-    if (mode === 'fixed') {
-      const baseMs = useNowAsStart
-        ? nowMs
-        : new Date(new Date().setHours(startHPreview, startMPreview, 0, 0)).getTime()
-      const t = new Date(baseMs + firstWorkMs)
-      return formatHHmm(t.getHours(), t.getMinutes())
-    }
-    const t = new Date(nowMs + firstWorkMs)
-    return formatHHmm(t.getHours(), t.getMinutes())
   })()
 
   useEffect(() => {
@@ -985,25 +988,22 @@ export function AddSubReminderModal({
                   <div className="border-t border-blue-400" />
                   <div className="space-y-3 p-3">
                     <div className="flex flex-wrap items-center gap-2">
-                      <span className="text-sm text-slate-500 shrink-0">壁纸</span>
-                      <select
+                      <span className="text-sm text-slate-500 shrink-0">选择壁纸</span>
+                      <PopupThemeSelectWithHoverPreview
+                        options={restThemeOptions}
                         value={restPopupThemeId}
-                        onChange={(e) => {
-                          setRestPopupThemeId(e.target.value)
-                        }}
-                        className="min-w-0 flex-1 rounded border border-slate-300 px-2 py-1.5 text-sm"
-                      >
-                        {restThemeOptions.map((t) => (
-                          <option key={t.id} value={t.id}>{t.name}</option>
-                        ))}
-                      </select>
+                        onChange={setRestPopupThemeId}
+                        previewImageUrlMap={previewImageUrlMap}
+                        previewViewportWidth={hoverPreviewVpW}
+                        popupPreviewAspect={hoverPreviewAspect}
+                      />
                       {themeEditorContext && onOpenThemeStudioEdit && embeddedThemeStudioContext && (
                         <button
                           type="button"
                           onClick={() => requestOpenThemeEditor('rest')}
                           className="shrink-0 rounded border border-slate-300 px-2 py-1 text-xs text-slate-600 hover:bg-slate-50"
                         >
-                          编辑主题
+                          编辑
                         </button>
                       )}
                     </div>
@@ -1013,9 +1013,6 @@ export function AddSubReminderModal({
                         if (!thLive) return null
                         return (
                           <div className="space-y-2">
-                            <p className="text-[10px] leading-snug text-slate-400">
-                              双击预览中的文本可直接修改当前主题文案，样式与拖拽同样写入主题库。详细排版请点「编辑主题」进入主题工坊。
-                            </p>
                             <ThemePreviewEditor
                               theme={thLive}
                               onUpdateTheme={(id, p) => themeEditorContext.updatePopupTheme(id, p)}
@@ -1028,13 +1025,14 @@ export function AddSubReminderModal({
                               onSelectDecorationLayer={setMiniRestSelectedDecoLayerId}
                               previewLabels={{
                                 content: popupRestTextFromTheme(thLive),
-                                time: restPreviewTimeStr,
+                                time: thLive.previewTimeText?.trim() || REST_POPUP_PREVIEW_TIME_TEXT,
                               }}
                               onLiveTextCommit={(key, text) => {
                                 if (key === 'content') {
                                   themeEditorContext.updatePopupTheme(thLive.id, { previewContentText: text })
                                 }
                               }}
+                              toolbarTrailing={<ThemeFullscreenPreviewToolbarButton theme={thLive} />}
                             />
                           </div>
                         )
@@ -1057,25 +1055,22 @@ export function AddSubReminderModal({
                 <div className="border-t border-green-400" />
                 <div className="space-y-3 p-3">
                   <div className="flex flex-wrap items-center gap-2">
-                    <span className="text-sm text-slate-500 shrink-0">壁纸</span>
-                    <select
+                    <span className="text-sm text-slate-500 shrink-0">选择壁纸</span>
+                    <PopupThemeSelectWithHoverPreview
+                      options={mainThemeOptions}
                       value={mainPopupThemeId}
-                      onChange={(e) => {
-                        setMainPopupThemeId(e.target.value)
-                      }}
-                      className="min-w-0 flex-1 rounded border border-slate-300 px-2 py-1.5 text-sm"
-                    >
-                      {mainThemeOptions.map((t) => (
-                        <option key={t.id} value={t.id}>{t.name}</option>
-                      ))}
-                    </select>
+                      onChange={setMainPopupThemeId}
+                      previewImageUrlMap={previewImageUrlMap}
+                      previewViewportWidth={hoverPreviewVpW}
+                      popupPreviewAspect={hoverPreviewAspect}
+                    />
                     {themeEditorContext && onOpenThemeStudioEdit && embeddedThemeStudioContext && (
                       <button
                         type="button"
                         onClick={() => requestOpenThemeEditor('main')}
                         className="shrink-0 rounded border border-slate-300 px-2 py-1 text-xs text-slate-600 hover:bg-slate-50"
                       >
-                        编辑主题
+                        编辑
                       </button>
                     )}
                   </div>
@@ -1085,9 +1080,6 @@ export function AddSubReminderModal({
                       if (!thLive) return null
                       return (
                         <div className="space-y-2">
-                          <p className="text-[10px] leading-snug text-slate-400">
-                            默认即为黑底白字主题，可直接改样式；双击预览中的文本改字，拖拽与样式均写入当前主题库。详细排版请点「编辑主题」进入主题工坊。
-                          </p>
                           <ThemePreviewEditor
                             theme={thLive}
                             onUpdateTheme={(id, p) => themeEditorContext.updatePopupTheme(id, p)}
@@ -1107,6 +1099,7 @@ export function AddSubReminderModal({
                                 themeEditorContext.updatePopupTheme(thLive.id, { previewContentText: text })
                               }
                             }}
+                            toolbarTrailing={<ThemeFullscreenPreviewToolbarButton theme={thLive} />}
                           />
                         </div>
                       )

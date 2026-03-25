@@ -1,5 +1,13 @@
-import React, { useState, useEffect, useLayoutEffect, useRef, useMemo, useCallback, type MouseEvent as ReactMouseEvent } from 'react'
-import { createPortal } from 'react-dom'
+import React, {
+  useState,
+  useEffect,
+  useLayoutEffect,
+  useRef,
+  useMemo,
+  useCallback,
+  type MouseEvent as ReactMouseEvent,
+} from 'react'
+import { createPortal, flushSync } from 'react-dom'
 import {
   DndContext,
   type DragEndEvent,
@@ -38,6 +46,7 @@ import {
   SYSTEM_MAIN_POPUP_THEME_ID,
   SYSTEM_REST_POPUP_THEME_ID,
   SYSTEM_DESKTOP_POPUP_THEME_ID,
+  REST_POPUP_PREVIEW_TIME_TEXT,
 } from '../types'
 import {
   AddSubReminderModal,
@@ -59,6 +68,7 @@ import {
 } from '../utils/stopwatchUtils'
 import { type TextElementKey } from '../components/ThemePreviewEditor'
 import { ThemeStudioListView, ThemeStudioFloatingEditor, type ThemeStudioFloatingSource } from '../components/ThemeStudio'
+import { PopupThemeSelectWithHoverPreview } from '../components/PopupThemeSelectWithHoverPreview'
 import { buildSplitSchedule } from '../../../shared/splitSchedule'
 import { collectPopupThemeImagePathsForPreview } from '../utils/popupThemePreview'
 import {
@@ -82,6 +92,65 @@ const defaultSettings: AppSettings = {
 /** 列表筛选：全部 / 仅闹钟大类 / 仅倒计时大类 */
 type CategoryListFilter = 'all' | 'alarm' | 'countdown' | 'stopwatch'
 type PopupPreviewAspect = '16:9' | '4:3'
+
+/** 与下方主内容的状态更新隔离，避免主题工坊缩略图 / 预览图 map 刷新时整块重渲让顶栏看起来「卡在中间态」 */
+const SettingsReminderTabRow = React.memo(function SettingsReminderTabRow({
+  categoryListFilter,
+  themeStudioOpen,
+  onCategory,
+  onStudio,
+}: {
+  categoryListFilter: CategoryListFilter
+  themeStudioOpen: boolean
+  onCategory: (f: CategoryListFilter) => void
+  onStudio: () => void
+}) {
+  return (
+    <div className="box-border flex w-full min-w-0 flex-wrap items-center justify-between gap-3 rounded-lg border border-slate-200 bg-white p-3 shadow-sm">
+      <div className="flex flex-wrap gap-2" role="tablist" aria-label="提醒类型筛选">
+        {(
+          [
+            { id: 'all' as const, label: '全部' },
+            { id: 'alarm' as const, label: '闹钟' },
+            { id: 'countdown' as const, label: '倒计时' },
+            { id: 'stopwatch' as const, label: '秒表' },
+          ] as const
+        ).map(({ id, label }) => {
+          const active = !themeStudioOpen && categoryListFilter === id
+          return (
+            <button
+              key={id}
+              type="button"
+              role="tab"
+              aria-selected={active}
+              onClick={() => onCategory(id)}
+              className={`rounded-md px-4 py-2 text-sm font-medium ${
+                active
+                  ? 'bg-slate-800 text-white shadow-sm'
+                  : 'border border-transparent bg-slate-50 text-slate-700 hover:bg-slate-100'
+              }`}
+            >
+              {label}
+            </button>
+          )
+        })}
+      </div>
+      <button
+        type="button"
+        role="tab"
+        aria-selected={themeStudioOpen}
+        onClick={onStudio}
+        className={`shrink-0 rounded-md px-3 py-2 text-sm font-medium ${
+          themeStudioOpen
+            ? 'bg-slate-800 text-white shadow-sm'
+            : 'border border-slate-300 bg-white text-slate-800 shadow-sm hover:bg-slate-50'
+        }`}
+      >
+        主题工坊
+      </button>
+    </div>
+  )
+})
 
 /**
  * dnd-kit sortable 在「布局动画」时会用 useDerivedTransform 加 scaleX/scaleY（旧包围盒/新包围盒），
@@ -339,6 +408,9 @@ type SubReminderRowProps = {
     restPopupThemeId?: string
   } | null
   onConsumePopupThemeRemotePatch: () => void
+  previewImageUrlMap: Record<string, string>
+  previewViewportWidth: number
+  popupPreviewAspect: PopupPreviewAspect
 }
 
 /** 秒表子项：状态仅在各自组件内，避免全局 Map 键冲突导致多表互相清空 */
@@ -977,6 +1049,9 @@ function SubReminderRow({
   subReminderThemeEditor,
   popupThemeRemotePatch,
   onConsumePopupThemeRemotePatch,
+  previewImageUrlMap,
+  previewViewportWidth,
+  popupPreviewAspect,
 }: SubReminderRowProps) {
   const countdownKey = `${categoryId}_${item.id}`
   const cd = countdowns.find((c) => c.key === countdownKey)
@@ -1290,28 +1365,30 @@ function SubReminderRow({
           {((item.splitCount ?? 1) > 1) && (
             <label className="flex items-center gap-2 text-xs text-slate-500">
               <span className="shrink-0">休息壁纸</span>
-              <select
+              <PopupThemeSelectWithHoverPreview
+                size="sm"
+                options={restThemeOptions}
                 value={item.restPopupThemeId ?? getDefaultPopupThemeIdForTarget(popupThemes, 'rest')}
-                onChange={(e) => updateItem(categoryIndex, itemIndex, { restPopupThemeId: e.target.value })}
-                className="min-w-0 flex-1 rounded border border-slate-300 bg-white px-2 py-1 text-xs text-slate-700"
-              >
-                {restThemeOptions.map((theme) => (
-                  <option key={theme.id} value={theme.id}>{theme.name}</option>
-                ))}
-              </select>
+                onChange={(id) => updateItem(categoryIndex, itemIndex, { restPopupThemeId: id })}
+                previewImageUrlMap={previewImageUrlMap}
+                previewViewportWidth={previewViewportWidth}
+                popupPreviewAspect={popupPreviewAspect}
+                aria-label="选择休息壁纸"
+              />
             </label>
           )}
           <label className="flex items-center gap-2 text-xs text-slate-500">
             <span className="shrink-0">结束壁纸</span>
-            <select
+            <PopupThemeSelectWithHoverPreview
+              size="sm"
+              options={mainThemeOptions}
               value={item.mainPopupThemeId ?? getDefaultPopupThemeIdForTarget(popupThemes, 'main')}
-              onChange={(e) => updateItem(categoryIndex, itemIndex, { mainPopupThemeId: e.target.value })}
-              className="min-w-0 flex-1 rounded border border-slate-300 bg-white px-2 py-1 text-xs text-slate-700"
-            >
-              {mainThemeOptions.map((theme) => (
-                <option key={theme.id} value={theme.id}>{theme.name}</option>
-              ))}
-            </select>
+              onChange={(id) => updateItem(categoryIndex, itemIndex, { mainPopupThemeId: id })}
+              previewImageUrlMap={previewImageUrlMap}
+              previewViewportWidth={previewViewportWidth}
+              popupPreviewAspect={popupPreviewAspect}
+              aria-label="选择结束壁纸"
+            />
           </label>
         </div>
       )}
@@ -1766,6 +1843,9 @@ type CategoryCardProps = {
     restPopupThemeId?: string
   } | null
   onConsumePopupThemeRemotePatch: () => void
+  previewImageUrlMap: Record<string, string>
+  previewViewportWidth: number
+  popupPreviewAspect: PopupPreviewAspect
 }
 
 function CategoryCard(props: CategoryCardProps) {
@@ -1804,6 +1884,9 @@ function CategoryCard(props: CategoryCardProps) {
     subReminderThemeEditor,
     popupThemeRemotePatch,
     onConsumePopupThemeRemotePatch,
+    previewImageUrlMap,
+    previewViewportWidth,
+    popupPreviewAspect,
   } = props
   const {
     attributes: catSortAttrs,
@@ -2023,6 +2106,9 @@ function CategoryCard(props: CategoryCardProps) {
                     subReminderThemeEditor={subReminderThemeEditor}
                     popupThemeRemotePatch={popupThemeRemotePatch}
                     onConsumePopupThemeRemotePatch={onConsumePopupThemeRemotePatch}
+                    previewImageUrlMap={previewImageUrlMap}
+                    previewViewportWidth={previewViewportWidth}
+                    popupPreviewAspect={popupPreviewAspect}
                   />
                 ))}
               </div>
@@ -2086,9 +2172,7 @@ export function Settings() {
   const [settings, setSettingsState] = useState<AppSettings>(defaultSettings)
   const [saveStatus, setSaveStatus] = useState<'idle' | 'saving' | 'ok' | 'error'>('idle')
   const [saveError, setSaveError] = useState<string>('')
-  const [settingsPath, setSettingsPath] = useState<string>('')
   const [loading, setLoading] = useState(true)
-  const [lastSaveClick, setLastSaveClick] = useState<string>('从未')
   const [repeatDropdown, setRepeatDropdown] = useState<{ categoryIndex: number; itemIndex: number } | null>(null)
   const [countdowns, setCountdowns] = useState<CountdownItem[]>([])
   const [showResetConfirm, setShowResetConfirm] = useState(false)
@@ -2105,6 +2189,8 @@ export function Settings() {
   const [primaryDisplaySize, setPrimaryDisplaySize] = useState<{ width: number; height: number } | null>(null)
   type ThemeStudioNav = null | { view: 'list' }
   const [themeStudioNav, setThemeStudioNav] = useState<ThemeStudioNav>(null)
+  /** 与导航分开提交：避免首帧同步挂载整页 ThemeStudioListView 阻塞绘制，导致顶部分页按钮看似「等缩略图后才变」 */
+  const [themeStudioListMounted, setThemeStudioListMounted] = useState(false)
   const [floatingThemeEdit, setFloatingThemeEdit] = useState<
     null | { themeId: string; source: ThemeStudioFloatingSource; isNewDraft?: boolean }
   >(null)
@@ -2138,8 +2224,11 @@ export function Settings() {
     return settings.reminderCategories.filter((c) => c.categoryKind === categoryListFilter)
   }, [settings.reminderCategories, categoryListFilter])
 
-  const applyCategoryListFilter = (f: CategoryListFilter) => {
-    setThemeStudioNav(null)
+  const applyCategoryListFilter = useCallback((f: CategoryListFilter) => {
+    flushSync(() => {
+      setThemeStudioNav(null)
+      setThemeStudioListMounted(false)
+    })
     setCategoryListFilter(f)
     const cats = reminderCategoriesRef.current
     setRepeatDropdown(null)
@@ -2162,7 +2251,33 @@ export function Settings() {
       if (f !== 'all' && c.categoryKind !== f) return null
       return e
     })
-  }
+  }, [])
+
+  useEffect(() => {
+    if (!themeStudioNav) {
+      setThemeStudioListMounted(false)
+      return
+    }
+    setThemeStudioListMounted(false)
+    let cancelled = false
+    const r1 = requestAnimationFrame(() => {
+      requestAnimationFrame(() => {
+        if (!cancelled) setThemeStudioListMounted(true)
+      })
+    })
+    return () => {
+      cancelled = true
+      cancelAnimationFrame(r1)
+    }
+  }, [themeStudioNav])
+
+  const openThemeStudioList = useCallback(() => {
+    flushSync(() => {
+      setThemeStudioNav({ view: 'list' })
+      setThemeStudioListMounted(false)
+    })
+  }, [])
+
   const autoSaveGen = useRef(0)
   const skipNextAutoSave = useRef(true)
   /** 落盘成功后 setState 会换新引用，避免再次触发自动保存 effect 形成死循环 */
@@ -2197,7 +2312,6 @@ export function Settings() {
       console.error('[WorkBreak] getSettings 失败', e)
       setLoading(false)
     })
-    api.getSettingsFilePath().then(setSettingsPath).catch(() => setSettingsPath('(获取失败)'))
     api.getPrimaryDisplaySize?.().then(setPrimaryDisplaySize).catch(() => setPrimaryDisplaySize(null))
   }, [])
 
@@ -2805,6 +2919,7 @@ export function Settings() {
       ...(target === 'rest' || target === 'desktop'
         ? { countdownTransform: { x: 50, y: 78, rotation: 0, scale: 1, textBoxHeightPct: 20 } }
         : {}),
+      ...(target === 'rest' ? { previewTimeText: REST_POPUP_PREVIEW_TIME_TEXT } : {}),
     }
     if (target === 'desktop') {
       Object.assign(newTheme, buildNewDesktopThemePatch(newTheme))
@@ -2925,7 +3040,6 @@ export function Settings() {
   const setRestContentPresets = (presets: string[]) => updatePresetPools({ restContent: presets })
 
   const save = async () => {
-    setLastSaveClick(new Date().toLocaleTimeString('zh-CN'))
     const api = getApi()
     if (!api) {
       setSaveError('未检测到 Electron API。请用「启动开发环境.bat」打开应用窗口。')
@@ -2989,64 +3103,22 @@ export function Settings() {
   return (
     <div className="min-h-screen bg-slate-50 text-slate-800">
       <header className="bg-white border-b border-slate-200 px-6 py-4">
-        <h1 className="text-xl font-semibold">WorkBreak 设置</h1>
-        <p className="text-sm text-slate-500 mt-0.5">可配置的多种提醒类型</p>
+        <h1 className="text-xl font-semibold">WorkBreak</h1>
         {!isElectron && (
           <div className="mt-2 p-3 bg-amber-100 border border-amber-400 rounded text-amber-800 text-sm">
             <p className="font-medium">当前是浏览器页面，保存无效。</p>
             <p className="mt-1">请用「启动开发环境.bat」打开应用窗口后再保存。</p>
           </div>
         )}
-        <div className="mt-3 p-3 bg-slate-100 rounded text-xs space-y-1">
-          <p><strong>调试</strong> electronAPI: {isElectron ? '已连接' : '未连接'} | 上次保存: {lastSaveClick} | 状态: {saveStatus}</p>
-          {settingsPath && <p>设置文件: {settingsPath}</p>}
-        </div>
       </header>
 
       <main className="mx-auto flex min-h-0 w-full max-w-[1600px] flex-col space-y-6 px-4 py-4 sm:px-6 sm:py-6">
-        <div className="box-border flex w-full min-w-0 flex-wrap items-center justify-between gap-3 rounded-lg border border-slate-200 bg-white p-3 shadow-sm">
-          <div className="flex flex-wrap gap-2" role="tablist" aria-label="提醒类型筛选">
-            {(
-              [
-                { id: 'all' as const, label: '全部' },
-                { id: 'alarm' as const, label: '闹钟' },
-                { id: 'countdown' as const, label: '倒计时' },
-                { id: 'stopwatch' as const, label: '秒表' },
-              ] as const
-            ).map(({ id, label }) => {
-              const active = !themeStudioNav && categoryListFilter === id
-              return (
-                <button
-                  key={id}
-                  type="button"
-                  role="tab"
-                  aria-selected={active}
-                  onClick={() => applyCategoryListFilter(id)}
-                  className={`rounded-md px-4 py-2 text-sm font-medium transition-colors ${
-                    active
-                      ? 'bg-slate-800 text-white shadow-sm'
-                      : 'border border-transparent bg-slate-50 text-slate-700 hover:bg-slate-100'
-                  }`}
-                >
-                  {label}
-                </button>
-              )
-            })}
-          </div>
-          <button
-            type="button"
-            role="tab"
-            aria-selected={!!themeStudioNav}
-            onClick={() => setThemeStudioNav({ view: 'list' })}
-            className={`shrink-0 rounded-md px-3 py-2 text-sm font-medium transition-colors ${
-              themeStudioNav
-                ? 'bg-slate-800 text-white shadow-sm'
-                : 'border border-slate-300 bg-white text-slate-800 shadow-sm hover:bg-slate-50'
-            }`}
-          >
-            主题工坊
-          </button>
-        </div>
+        <SettingsReminderTabRow
+          categoryListFilter={categoryListFilter}
+          themeStudioOpen={Boolean(themeStudioNav)}
+          onCategory={applyCategoryListFilter}
+          onStudio={openThemeStudioList}
+        />
 
         {themeStudioNav ? (
           <div className="box-border flex min-h-[calc(100vh-280px)] w-full min-w-0 flex-1 flex-col rounded-xl border border-slate-200 bg-white p-4 shadow-sm">
@@ -3085,25 +3157,33 @@ export function Settings() {
                 </button>
               </div>
             </div>
-            <ThemeStudioListView
-              themes={popupThemes}
-              previewImageUrlMap={previewImageUrlMap}
-              previewViewportWidth={previewViewportWidthStudio}
-              popupPreviewAspect={popupPreviewAspect}
-              onOpenEdit={(id) => setFloatingThemeEdit({ themeId: id, source: { kind: 'studio-list' } })}
-              onCommitThemeName={(themeId, name) => updatePopupTheme(themeId, { name })}
-              onDuplicateTheme={(themeId) => {
-                const th = popupThemes.find((x) => x.id === themeId)
-                if (!th) return
-                appendPopupTheme(clonePopupThemeForFork(th, '（副本）'))
-              }}
-              onRemoveTheme={(themeId) => {
-                if (!window.confirm('确定删除该壁纸？使用中的子项将自动切换到同类型的其他壁纸。')) return
-                setFloatingThemeEdit((prev) => (prev?.themeId === themeId ? null : prev))
-                removePopupTheme(themeId)
-              }}
-              onReorderThemes={setPopupThemes}
-            />
+            {themeStudioListMounted ? (
+              <ThemeStudioListView
+                themes={popupThemes}
+                previewImageUrlMap={previewImageUrlMap}
+                previewViewportWidth={previewViewportWidthStudio}
+                popupPreviewAspect={popupPreviewAspect}
+                onOpenEdit={(id) => setFloatingThemeEdit({ themeId: id, source: { kind: 'studio-list' } })}
+                onCommitThemeName={(themeId, name) => updatePopupTheme(themeId, { name })}
+                onDuplicateTheme={(themeId) => {
+                  const th = popupThemes.find((x) => x.id === themeId)
+                  if (!th) return
+                  appendPopupTheme(clonePopupThemeForFork(th, '（副本）'))
+                }}
+                onRemoveTheme={(themeId) => {
+                  if (!window.confirm('确定删除该壁纸？使用中的子项将自动切换到同类型的其他壁纸。')) return
+                  setFloatingThemeEdit((prev) => (prev?.themeId === themeId ? null : prev))
+                  removePopupTheme(themeId)
+                }}
+                onReorderThemes={setPopupThemes}
+              />
+            ) : (
+              <div
+                className="flex min-h-[min(480px,calc(100vh-360px))] flex-1 flex-col rounded-lg border border-dashed border-slate-100 bg-slate-50/30"
+                aria-busy="true"
+                aria-label="加载主题列表"
+              />
+            )}
           </div>
         ) : (
         <div className="box-border flex min-h-0 w-full min-w-0 flex-1 flex-col gap-6">
@@ -3193,7 +3273,7 @@ export function Settings() {
                 restContentPresets={restContentPresets}
                 subTitlePresets={subTitlePresets}
                 popupThemes={popupThemes}
-                onOpenThemeStudioList={() => setThemeStudioNav({ view: 'list' })}
+                onOpenThemeStudioList={openThemeStudioList}
                 onOpenThemeStudioEdit={openThemeStudioEditFromSubitem}
                 getCategoryTitlePresets={getCategoryTitlePresets}
                 onCategoryTitlePresetsChange={setCategoryTitlePresets}
@@ -3212,6 +3292,9 @@ export function Settings() {
                 subReminderThemeEditor={subReminderThemeEditor}
                 popupThemeRemotePatch={popupThemeRemotePatch}
                 onConsumePopupThemeRemotePatch={() => setPopupThemeRemotePatch(null)}
+                previewImageUrlMap={previewImageUrlMap}
+                previewViewportWidth={previewViewportWidthStudio}
+                popupPreviewAspect={popupPreviewAspect}
               />
               )
             })}
@@ -3224,9 +3307,6 @@ export function Settings() {
 
         {!themeStudioNav && (
         <div className="space-y-3">
-          <p className="text-xs text-slate-500 leading-relaxed">
-            有修改后约 0.4 秒内会在后台<strong className="text-slate-600">自动写入</strong>本地文件（静默，不闪状态）。下方「立即保存」用于马上落盘；旁边的<strong className="text-slate-600">「已保存」</strong>仅在该按钮成功时出现。
-          </p>
           <div className="flex items-center gap-3 flex-wrap">
             <button
               onClick={save}
@@ -3247,7 +3327,6 @@ export function Settings() {
             {saveStatus === 'error' && <span className="text-sm font-medium text-red-600">保存失败</span>}
           </div>
           {saveError && <p className="text-sm text-red-600 bg-red-50 px-3 py-2 rounded">错误：{saveError}</p>}
-          {settingsPath && <p className="text-xs text-slate-500">设置文件：<code className="bg-slate-100 px-1 rounded">{settingsPath}</code></p>}
         </div>
         )}
       </main>

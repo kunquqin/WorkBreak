@@ -4,6 +4,31 @@
 
 ## 0.1 文字参数区布局重构（本轮）
 
+- **主题工坊浮动编辑**：第二行仅主题名 + 居中「恢复默认/设为桌面壁纸」+ 右侧取消/保存等；**预览比例** 在 **ThemePreviewEditor** 顶栏 **行内居中**（`toolbarCenter`），全屏预览仍 **最右侧**（`toolbarTrailing`）。
+
+- **主题工坊缩略图性能（本次）**：`ThemePreviewEditor` **`readOnly`** 时不注册 `datePreviewTick`；桌面缩略图时间/日期锚定 `DESKTOP_THUMBNAIL_CLOCK_FROZEN_AT`（本地 2020-06-15 12:00），与编辑态相同 locale 格式化；`readOnly` 下文件夹背景不挂 `FolderBgCrossfade`，只用首张图。`npm run build` 已通过。
+
+- **主题工坊列表切换（本次）**：`IntersectionObserver` 懒挂载缩略图；`themeStudioListMounted` 双 rAF 延后 **`ThemeStudioListView`**。顶栏抽 **`SettingsReminderTabRow` + `React.memo`**（仅随 `categoryListFilter` / `themeStudioOpen` 变），**`flushSync`** 提交关工作室 / 开列表；分页按钮去掉 **`transition-colors`** 免「半选中」错觉。缩略图：**呼吸层叠在预览之上**，与内容 **同步 1s `opacity` 交叉淡化**（避免卸呼吸闪露浅灰）；呼吸加 **brightness** + 更高洗净。`npm run build` 已通过。
+
+- **主题工坊拖拽缩略图（本次）**：**`DragOverlay`** 内 **`ThemeStudioThumbnail`** 增加 **`skipRevealSequence`**：不跑呼吸/渐显与重复 `Image` 预加载（列表已解码）；浮层去掉双 rAF 弹出缩放，改为 **静态 `scale-[1.08]`**，减轻起拖卡顿。`npm run build` 已通过。
+
+- **弹窗主题 · 字间距/行高上限（本次）**：原 **-2～20 px** / **0.8～3** 对全屏大字壁纸偏紧；抽 **`shared/popupThemeTypographyClamp.ts`**（**-10～200 px**、**0.5～8**），`PopupThemeEditorPanel` 滑杆与 **`main/settings` normalize、`popupThemeLayers` 图层解码** 共用，避免 UI 拉满被落盘裁回。`npm run build` 已通过。
+
+- **子项壁纸下拉 · hover 缩略图（本次）**：新增 **`PopupThemeSelectWithHoverPreview`**（自定义列表 + `document.body` 浮层 + **`ThemeStudioThumbnail` `skipRevealSequence`**），替换 **`AddSubReminderModal`** 与子项行内 **休息/结束壁纸** 原生 `<select>`；浮层在指针右下侧并钳制视口。`ThemeStudioThumbnail` 改为 **export**。`npm run build` 已通过。
+
+- **休息弹窗时间层：本段剩余 mm:ss 走表 + 与黑底 5→0 衔接（本次）**：`reminders.showReminder` 对休息主题传入 `restPhaseEndAtMs`；`reminderWindow` 注入 `#wb-rest-remain` 与按整秒排程脚本（与动态桌面时钟同款 tick），显示 `floor((结束时刻-now)/1000)` 格式化为 mm:ss；固定时间拆分休息与间隔倒计时均传入段末时间戳。预览/默认占位：`REST_POPUP_PREVIEW_TIME_TEXT = '00:30'`（`defaultRestTheme`、新建休息壁纸、`mergeSystemBuiltinPopupThemes` 补丁系统休息 id、`ThemePreviewEditor` / 子项休息预览 / 全屏预览 IPC）；结束壁纸仍 HH:mm。`npm run build` 已通过。
+
+- **全屏无框窗去圆角 + 预览直角（本次）**：Windows 11 下 Electron 无框窗默认 `roundedCorners` 会在铺满屏时四角露系统桌面。已为 **动态桌面 `desktopWallpaperPlayer`**、**静态壁纸导出隐藏窗 `desktopWallpaper`**、**提醒全屏窗 `reminderWindow.ensurePopupWindow`** 设 **`roundedCorners: false`**。**`ThemePreviewEditor`** 预览盒 Tailwind 由 **`rounded` 改为 `rounded-none`**，与真全屏观感一致。`npm run build` 已通过。
+
+- **Win32 左上角微缝续修（本次）**：`buildRestEndCountdownHtml` 的 `html, body` 补 **`border-radius:0`**；**`desktopWallpaperPlayer`** 多屏窗与 **`desktopWallpaper`** 静态导出隐藏窗在 **Windows** 对齐 **`thickFrame:false` + `hasShadow:false`**（与 `reminderWindow.win32FramelessEdgeToEdgeOpts` 一致），并补 **`backgroundColor:'#000000'`、`transparent:false`、`focusable:false`** 等，减轻 DWM 角部露底；`reminderWindow` 改用 **`BrowserWindowConstructorOptions` 类型导入**。`npm run build` 已通过。
+
+- **主题背景图：变换 + 样式效果分区（本次）**：`PopupTheme.backgroundImageTransform`（复用 `TextTransform` 形状；x/y 为 `background-position` 百分比，旋转/缩放为整层 `transform`）。参数区在「文件路径」与「模糊」之间增加 **变换**（滑杆+数字，同文字变换）、**样式效果** 小标题 + `PanelDivider` 分隔；预览 `ThemePreviewEditor` 与 `reminderWindow` 单图/文件夹轮播/legacy 无模糊层一致应用。
+- **背景图 X/Y 改为平移 %（续）**：原 `background-position` 在 cover 下几乎看不出位移；现改为 `background-position:center` + `translate(tx%,ty%)`，水平/垂直滑杆 -50～50（相对画幅宽高，0=居中）。新增 `backgroundImageXYKind: 'translateCenter'`；旧数据无该字段时仍按 0–100 锚点折合平移。
+
+- **闹钟子项时间滚轮：单击居中数字支持键盘输入（本次）**：`TimePickerModal` 的 `WheelColumn` 在点击**当前_viewport 居中**那一行时进入输入层（遮罩阻断底层滚动）；输入数字实时对齐滚轮与 `onLiveChange`；失焦、点遮罩空白、Enter 用 `pickValue` 确认写回 `onChange`；Esc 回滚到进入编辑前的值并避免 blur 二次提交。
+
+- **子项编辑：休息/结束壁纸保存后回显成系统默认（修复）**：`AddSubReminderModal` 中校验「主题 id 是否在列表中」的 effect 与 hydrate 同帧执行时，读到仍为初始值 `''` 的 state，误判为无效并把 id 改成系统默认，确认写入后子项落盘即为默认。**修复**：仅当对应 target 的选项列表非空**且**当前 id 非空时才做「不在列表则回退默认」；空 id 交由 hydrate 写入，避免覆盖。
+
 - **动态桌面 WorkerW 性能 + 图标层回归修复（本次）**：仍用 **`userData/wb-desk-wallpaper-v1.dll`** 缓存 `WbDesk`。**Attach** 阶段恢复 **120ms + 280ms** sleep（过短易枚举错 WorkerW → 图标被挡）；首次附着失败则 **450ms 后重试一次**。附着成功后 **`resize`/`move` 550ms 防抖** Sync（避免 Chromium 显示后错位；比旧版短防抖少起 PowerShell），并保留 **400ms + 1200ms** 两次定时补同步 + **`display-metrics-changed`**。`npm run build` 已通过。
 - **桌面壁纸预览：时间/日期默认（本次）**：新建桌面主题用统一常量 **`DESKTOP_DEFAULT_TIME_DATE_TRANSFORMS`**（`shared/popupThemeLayers.ts`）：时间 **X50 Y46** 字号 **120**、日期 **X50 Y55** 字号 **45**（旋转 0、缩放 1）；**`buildNewDesktopThemePatch`** 落盘；**`ThemePreviewEditor`** / **`PopupThemeEditorPanel`** / **`reminderWindow`** 在 **`target==='desktop'`** 时对缺省变换与字号一致回退。`npm run build` 已通过。
 - **主题工坊 · 桌面壁纸类型（本次）**：`PopupThemeTarget` 增加 **`desktop`**（`shared/settings.ts` + `main/settings.ts` normalize 三值，避免落盘被压成 `main`）。主题工坊列表筛选 **桌面壁纸**（浅紫 chip / 卡片底条），浮动编辑顶栏在 **工坊入口** 增加第三 Tab **桌面壁纸**（子项入口仍仅休息/结束）。**「+ 创建壁纸」** 按当前筛选创建对应 `target`（筛选「全部」时默认 **结束**）。**「设为桌面壁纸」** 在 `draft.target === 'desktop'` 时显示于「取消」右侧，**IPC `applyDesktopWallpaper`** 传当前草稿 JSON；**`main/desktopWallpaper.ts`**：文件夹背景导出 **固定首张**；隐藏 **`BrowserWindow`** 铺满 **主显示器 `bounds`**，`buildReminderHtml` + 失败回 **`buildReminderHtmlLegacy`**，`capturePage` → **`userData/wallpaper-export/desktop-wallpaper-*.png`**；**仅 Windows** 用 PowerShell 调 **`SystemParametersInfo`（SPI_SETDESKWALLPAPER）** 设壁纸，非 Windows 返回明确错误文案。`reminderWindow` 导出 **`buildReminderHtml` / `buildReminderHtmlLegacy` / `getPopupTempDir` / `writePopupHtmlToTempFile`** 供导出复用。`ThemePreviewEditor` / `PopupThemeEditorPanel` / `popupThemeLayers` 对 **desktop** 与 **rest** 对齐倒计时层与恢复绑定文案语义。`npm run build` 已通过。

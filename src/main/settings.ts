@@ -1,7 +1,18 @@
 import { app } from 'electron'
 import { readFileSync, writeFileSync, existsSync, mkdirSync } from 'node:fs'
 import { join, dirname } from 'node:path'
-import type { AppSettings, CategoryKind, ReminderCategory, SubReminder, PresetPools, PopupLayerTextEffects, PopupTheme, AppEntitlements, TextTransform } from '../shared/settings'
+import type {
+  AppSettings,
+  BackgroundImageXYKind,
+  CategoryKind,
+  ReminderCategory,
+  SubReminder,
+  PresetPools,
+  PopupLayerTextEffects,
+  PopupTheme,
+  AppEntitlements,
+  TextTransform,
+} from '../shared/settings'
 import { isPopupFontFamilyPresetId, sanitizeSystemFontFamilyName } from '../shared/popupThemeFonts'
 import {
   getDefaultPresetPools,
@@ -18,6 +29,7 @@ import {
   normalizePopupTextOrientationMode,
   normalizePopupTextWritingMode,
 } from '../shared/popupVerticalText'
+import { clampPopupThemeLetterSpacing, clampPopupThemeLineHeight } from '../shared/popupThemeTypographyClamp'
 
 export type { AppSettings, ReminderCategory, SubReminder } from '../shared/settings'
 
@@ -349,6 +361,44 @@ function normalizeTextTransform(raw: unknown): TextTransform | undefined {
   return out
 }
 
+function normalizeBackgroundImageTransform(
+  raw: unknown,
+  xyKind: BackgroundImageXYKind | undefined,
+): TextTransform | undefined {
+  if (!raw || typeof raw !== 'object') return undefined
+  const o = raw as Record<string, unknown>
+  const rotNum = Number(o.rotation)
+  const scNum = Number(o.scale)
+  const rotation = Number.isFinite(rotNum) ? rotNum % 360 : 0
+  const scale = Number.isFinite(scNum) ? Math.max(0.1, Math.min(5, scNum)) : 1
+
+  if (xyKind === 'translateCenter') {
+    const xNum = Number(o.x)
+    const yNum = Number(o.y)
+    const x = Number.isFinite(xNum) ? Math.max(-50, Math.min(50, xNum)) : 0
+    const y = Number.isFinite(yNum) ? Math.max(-50, Math.min(50, yNum)) : 0
+    if (x === 0 && y === 0 && rotation === 0 && Math.abs(scale - 1) < 1e-9) return undefined
+    return { x, y, rotation, scale }
+  }
+
+  const t = normalizeTextTransform({
+    x: o.x !== undefined && o.x !== null ? o.x : 50,
+    y: o.y !== undefined && o.y !== null ? o.y : 50,
+    rotation: o.rotation,
+    scale: o.scale,
+  })
+  if (!t) return undefined
+  if (
+    t.x === 50 &&
+    t.y === 50 &&
+    t.rotation === 0 &&
+    Math.abs(t.scale - 1) < 1e-9
+  ) {
+    return undefined
+  }
+  return { x: t.x, y: t.y, rotation: t.rotation, scale: t.scale }
+}
+
 function normalizePopupThemes(raw: unknown): PopupTheme[] {
   if (!Array.isArray(raw)) return mergeSystemBuiltinPopupThemes([])
   if (raw.length === 0) return mergeSystemBuiltinPopupThemes([])
@@ -381,6 +431,16 @@ function normalizePopupThemes(raw: unknown): PopupTheme[] {
       const backgroundImageBlurPx = Number.isFinite(backgroundImageBlurPxNum)
         ? Math.max(0, Math.min(POPUP_BACKGROUND_IMAGE_BLUR_MAX_PX, Math.round(backgroundImageBlurPxNum)))
         : 0
+      const backgroundImageXYKind: BackgroundImageXYKind | undefined =
+        o.backgroundImageXYKind === 'translateCenter' ? 'translateCenter' : undefined
+      const backgroundImageTransform = normalizeBackgroundImageTransform(
+        o.backgroundImageTransform,
+        backgroundImageXYKind,
+      )
+      const effectiveBackgroundImageXYKind: BackgroundImageXYKind | undefined =
+        backgroundImageTransform && backgroundImageXYKind === 'translateCenter'
+          ? 'translateCenter'
+          : undefined
       const overlayEnabled = typeof o.overlayEnabled === 'boolean' ? o.overlayEnabled : false
       const overlayColor = typeof o.overlayColor === 'string' && o.overlayColor ? o.overlayColor : '#000000'
       const overlayOpacityNum = Number(o.overlayOpacity)
@@ -490,11 +550,11 @@ function normalizePopupThemes(raw: unknown): PopupTheme[] {
       const countdownTextVerticalAlign = verticalAlignOrUndef(o.countdownTextVerticalAlign)
       const letter = (v: unknown) => {
         const n = Number(v)
-        return Number.isFinite(n) ? Math.max(-2, Math.min(20, n)) : undefined
+        return Number.isFinite(n) ? clampPopupThemeLetterSpacing(n) : undefined
       }
       const lh = (v: unknown) => {
         const n = Number(v)
-        return Number.isFinite(n) ? Math.max(0.8, Math.min(3, n)) : undefined
+        return Number.isFinite(n) ? clampPopupThemeLineHeight(n) : undefined
       }
       const contentLetterSpacing = letter(o.contentLetterSpacing)
       const timeLetterSpacing = letter(o.timeLetterSpacing)
@@ -590,6 +650,8 @@ function normalizePopupThemes(raw: unknown): PopupTheme[] {
         imageFolderIntervalSec,
         ...(imageFolderCrossfadeSec !== 2 ? { imageFolderCrossfadeSec } : {}),
         ...(backgroundImageBlurPx > 0 ? { backgroundImageBlurPx } : {}),
+        ...(backgroundImageTransform ? { backgroundImageTransform } : {}),
+        ...(effectiveBackgroundImageXYKind ? { backgroundImageXYKind: effectiveBackgroundImageXYKind } : {}),
         overlayEnabled,
         overlayColor,
         overlayOpacity,

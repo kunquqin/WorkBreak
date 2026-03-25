@@ -40,3 +40,29 @@ html {
   border-radius: 0.25rem;
 }
 
+/* 主题工坊缩略图：呼吸偏强（周期短 + 洗净叠加更高；仍叠在浅灰槽底上，不是整屏死白） */
+@keyframes theme-studio-thumb-breathe-wash {
+  0%,
+  100% {
+    opacity: 0.15;
+  }
+  50% {
+    opacity: 1;
+  }
+}
+@keyframes theme-studio-thumb-breathe-glow {
+  0%,
+  100% {
+    filter: brightness(1);
+  }
+  50% {
+    filter: brightness(1.14);
+  }
+}
+.theme-studio-thumb-breathe-wash {
+  animation:
+    theme-studio-thumb-breathe-wash 1.15s ease-in-out infinite,
+    theme-studio-thumb-breathe-glow 1.15s ease-in-out infinite;
+  background: rgba(255, 255, 255, 0.62);
+}
+

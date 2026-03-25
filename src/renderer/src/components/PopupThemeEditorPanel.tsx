@@ -1,4 +1,14 @@
-import { useRef, useEffect, useLayoutEffect, useState, useCallback, useMemo, type RefObject } from 'react'
+import {
+  useRef,
+  useEffect,
+  useLayoutEffect,
+  useState,
+  useCallback,
+  useMemo,
+  createContext,
+  useContext,
+  type RefObject,
+} from 'react'
 import { ThemePreviewEditor, type PanelTextFocusRequest, type TextElementKey } from './ThemePreviewEditor'
 import type { PopupLayerTextEffects, PopupTheme, TextTransform } from '../types'
 import { usePopupThemeEditHistory, type PopupThemeEditUpdateMeta } from '../hooks/usePopupThemeEditHistory'
@@ -23,10 +33,19 @@ import {
   MAIN_REST_LAYOUT_DEFAULTS,
   POPUP_BACKGROUND_IMAGE_BLUR_MAX_PX,
   POPUP_FOLDER_CROSSFADE_MAX_SEC,
+  resolveBackgroundImagePanForCss,
   type PopupTextOrientationMode,
   type PopupTextWritingMode,
 } from '../../../shared/settings'
 import type { ImageThemeLayer, TextThemeLayer } from '../../../shared/popupThemeLayers'
+import {
+  POPUP_THEME_LETTER_SPACING_MAX,
+  POPUP_THEME_LETTER_SPACING_MIN,
+  POPUP_THEME_LINE_HEIGHT_MAX,
+  POPUP_THEME_LINE_HEIGHT_MIN,
+  clampPopupThemeLetterSpacing,
+  clampPopupThemeLineHeight,
+} from '../../../shared/popupThemeTypographyClamp'
 import {
   DESKTOP_DEFAULT_TIME_DATE_TRANSFORMS,
   POPUP_LAYER_BACKGROUND_ID,
@@ -98,12 +117,62 @@ function panelThemeTransformField(sel: TextElementKey): 'contentTransform' | 'ti
   return 'countdownTransform'
 }
 
-function PanelBlockTitle({ children }: { children: React.ReactNode }) {
-  return <h4 className="text-sm font-semibold text-slate-800">{children}</h4>
+type PanelCollapseApi = { isOpen: (id: string) => boolean; toggle: (id: string) => void }
+
+const PanelCollapseContext = createContext<PanelCollapseApi | null>(null)
+
+function usePanelCollapse(): PanelCollapseApi {
+  const ctx = useContext(PanelCollapseContext)
+  return (
+    ctx ?? {
+      isOpen: () => true,
+      toggle: () => {},
+    }
+  )
 }
 
-function PanelSectionTitle({ children }: { children: React.ReactNode }) {
-  return <h5 className="text-sm font-semibold text-slate-800">{children}</h5>
+function PanelCollapsibleContent({ id, children }: { id: string; children: React.ReactNode }) {
+  const { isOpen } = usePanelCollapse()
+  if (!isOpen(id)) return null
+  return <>{children}</>
+}
+
+const panelTitleChevronClass = 'shrink-0 w-5 text-center text-xs leading-none text-slate-500 tabular-nums'
+
+function PanelBlockTitle({ id, children }: { id: string; children: React.ReactNode }) {
+  const { isOpen, toggle } = usePanelCollapse()
+  const open = isOpen(id)
+  return (
+    <button
+      type="button"
+      className="flex w-full items-center justify-between gap-2 rounded py-0.5 text-left hover:bg-slate-50/90"
+      onClick={() => toggle(id)}
+      aria-expanded={open}
+    >
+      <span className="min-w-0 flex-1 text-xs font-semibold text-slate-800">{children}</span>
+      <span className={panelTitleChevronClass} aria-hidden>
+        {open ? '▾' : '▸'}
+      </span>
+    </button>
+  )
+}
+
+function PanelSectionTitle({ id, children }: { id: string; children: React.ReactNode }) {
+  const { isOpen, toggle } = usePanelCollapse()
+  const open = isOpen(id)
+  return (
+    <button
+      type="button"
+      className="flex w-full items-center justify-between gap-2 rounded py-0.5 text-left hover:bg-slate-50/90"
+      onClick={() => toggle(id)}
+      aria-expanded={open}
+    >
+      <span className="min-w-0 flex-1 text-xs font-semibold text-slate-800">{children}</span>
+      <span className={panelTitleChevronClass} aria-hidden>
+        {open ? '▾' : '▸'}
+      </span>
+    </button>
+  )
 }
 
 function PanelDivider() {
@@ -118,6 +187,8 @@ const panelSubLabelClass = 'text-xs text-slate-600 shrink-0 leading-tight'
 const panelTextOpacityRowGridClass = 'grid grid-cols-[60px_minmax(0,1fr)_72px] items-center gap-2'
 /** 左侧参数名与滑杆行第一列同宽（排向、对齐等） */
 const panelLabeledRowGridClass = 'grid grid-cols-[60px_minmax(0,1fr)] items-center gap-2'
+/** 字重下拉：仅占内容宽度 + 少许内边距，不撑满整列 */
+const panelFontWeightSelectClass = 'w-fit max-w-full shrink-0 rounded border border-slate-300 px-2 py-1 text-sm'
 
 type SliderNumberRowProps = {
   label: string
@@ -411,6 +482,7 @@ function PopupThemeEditorPanelCore({
   const undoScopeRef: RefObject<HTMLElement | null> = editorSurfaceRef ?? layoutContainerRef
   const [layersCollapsed, setLayersCollapsed] = useState(false)
   const [propertiesCollapsed, setPropertiesCollapsed] = useState(false)
+  const [panelSectionCollapsed, setPanelSectionCollapsed] = useState<Record<string, boolean>>({})
   const [layersPanelHeight, setLayersPanelHeight] = useState(220)
   const splitDragRef = useRef<{ startY: number; startH: number } | null>(null)
 
@@ -437,6 +509,18 @@ function PopupThemeEditorPanelCore({
     [layersPanelHeight],
   )
   const { undo, redo } = historyBundle
+
+  const panelCollapseApi = useMemo<PanelCollapseApi>(
+    () => ({
+      isOpen: (id: string) => panelSectionCollapsed[id] !== true,
+      toggle: (id: string) =>
+        setPanelSectionCollapsed((m) => ({
+          ...m,
+          [id]: !m[id],
+        })),
+    }),
+    [panelSectionCollapsed],
+  )
 
   /** 方案 A：预览内文字只读，双击预览请求聚焦右侧参数区对应输入框 */
   const handleRequestPanelTextFocus = useCallback(
@@ -760,6 +844,7 @@ function PopupThemeEditorPanelCore({
             ref={propertiesScrollRef}
             className="min-h-0 flex-1 space-y-3 overflow-y-auto overscroll-contain px-3 py-2"
           >
+            <PanelCollapseContext.Provider value={panelCollapseApi}>
       {(effectivePanelFilter === 'all' || effectivePanelFilter === 'text') &&
         decoLayer &&
         decoLayer.kind === 'text' &&
@@ -779,9 +864,10 @@ function PopupThemeEditorPanelCore({
           const decoWm = td.writingMode ?? 'horizontal-tb'
           return (
             <div className="space-y-2">
-            <PanelBlockTitle>文字</PanelBlockTitle>
+            <PanelBlockTitle id="deco-main">文字</PanelBlockTitle>
+            <PanelCollapsibleContent id="deco-main">
             <label className="block space-y-1 text-xs text-slate-600">
-              <textarea
+                <textarea
                 ref={(el) => {
                   if (el) decoTextareaRefs.current[td.id] = el
                   else delete decoTextareaRefs.current[td.id]
@@ -880,16 +966,18 @@ function PopupThemeEditorPanelCore({
                 />
               </div>
             </div>
+            </PanelCollapsibleContent>
             <PanelDivider />
             <div className="space-y-2">
-              <PanelSectionTitle>样式效果</PanelSectionTitle>
+              <PanelSectionTitle id="deco-fx">样式效果</PanelSectionTitle>
+              <PanelCollapsibleContent id="deco-fx">
               <div className={panelLabeledRowGridClass}>
                 <span className="text-xs text-slate-600 shrink-0 leading-tight">字重</span>
                 <div className="flex min-w-0 flex-wrap items-center gap-2">
                   <select
                     value={td.fontWeight ?? 500}
                     onChange={(e) => pushDeco({ fontWeight: Number(e.target.value) })}
-                    className="min-w-0 flex-1 rounded border border-slate-300 px-2 py-1 text-sm"
+                    className={panelFontWeightSelectClass}
                   >
                     {[100, 200, 300, 400, 500, 600, 700, 800, 900].map((w) => (
                       <option key={w} value={w}>
@@ -1107,10 +1195,12 @@ function PopupThemeEditorPanelCore({
                   )}
                 </div>
               </div>
+            </PanelCollapsibleContent>
             </div>
             <PanelDivider />
             <div className="space-y-2">
-              <PanelSectionTitle>排版</PanelSectionTitle>
+              <PanelSectionTitle id="deco-typo">排版</PanelSectionTitle>
+              <PanelCollapsibleContent id="deco-typo">
               <div className={panelLabeledRowGridClass}>
                 <span className="text-xs text-slate-600 shrink-0 leading-tight">排向</span>
                 <div className="flex min-w-0 flex-wrap items-center gap-x-3 gap-y-2">
@@ -1255,24 +1345,26 @@ function PopupThemeEditorPanelCore({
               </div>
               <SliderNumberRow
                 label="字间距"
-                min={-2}
-                max={20}
+                min={POPUP_THEME_LETTER_SPACING_MIN}
+                max={POPUP_THEME_LETTER_SPACING_MAX}
                 step={0.5}
                 value={td.letterSpacing ?? 0}
-                onCommit={(n) => pushDeco({ letterSpacing: Math.max(-2, Math.min(20, n)) })}
+                onCommit={(n) => pushDeco({ letterSpacing: clampPopupThemeLetterSpacing(n) })}
               />
               <SliderNumberRow
                 label="行高"
-                min={0.8}
-                max={3}
+                min={POPUP_THEME_LINE_HEIGHT_MIN}
+                max={POPUP_THEME_LINE_HEIGHT_MAX}
                 step={0.05}
                 value={td.lineHeight ?? 1.35}
-                onCommit={(n) => pushDeco({ lineHeight: Math.max(0.8, Math.min(3, n)) })}
+                onCommit={(n) => pushDeco({ lineHeight: clampPopupThemeLineHeight(n) })}
               />
+            </PanelCollapsibleContent>
             </div>
             <PanelDivider />
             <div className="space-y-2">
-              <PanelSectionTitle>变换</PanelSectionTitle>
+              <PanelSectionTitle id="deco-xform">变换</PanelSectionTitle>
+              <PanelCollapsibleContent id="deco-xform">
               <SliderNumberRow
                 label="X位置"
                 min={0}
@@ -1312,6 +1404,7 @@ function PopupThemeEditorPanelCore({
               >
                 重置为默认位置
               </button>
+            </PanelCollapsibleContent>
             </div>
             </div>
           )
@@ -1320,7 +1413,8 @@ function PopupThemeEditorPanelCore({
         const im = decoLayer as ImageThemeLayer
         return (
           <div className="rounded-md border border-teal-200 bg-teal-50/40 p-3 space-y-2">
-            <h4 className="text-sm font-semibold text-teal-900">图片层 · 属性</h4>
+            <PanelBlockTitle id="deco-image">图片层 · 属性</PanelBlockTitle>
+            <PanelCollapsibleContent id="deco-image">
             <p className="break-all text-[11px] text-slate-600">{im.imagePath || '（无路径）'}</p>
             {onPickDecoImage && (
               <button
@@ -1348,12 +1442,14 @@ function PopupThemeEditorPanelCore({
               </select>
             </label>
             <p className="text-[10px] text-slate-500">位置与尺寸请在左侧预览中拖拽。</p>
+            </PanelCollapsibleContent>
           </div>
         )
       })()}
       {(effectivePanelFilter === 'all' || effectivePanelFilter === 'text') && !hidePrimaryTextForms && (
         <div className="space-y-2" data-panel-text-section>
-          <PanelBlockTitle>文字</PanelBlockTitle>
+          <PanelBlockTitle id="bind-main">文字</PanelBlockTitle>
+          <PanelCollapsibleContent id="bind-main">
           {showIdleTextHint && (
             <p className="text-[11px] text-slate-600 leading-relaxed">
               在图层栏选择「文本」「时间」或「日期」后再编辑对应字体与颜色；未选层时不改动根字体参数。
@@ -1738,10 +1834,12 @@ function PopupThemeEditorPanelCore({
               )}
             </div>
           )}
+          </PanelCollapsibleContent>
           {(showContentColumn || showTimeColumn || showDateColumn) && <PanelDivider />}
           {(showContentColumn || showTimeColumn || showDateColumn) && (
             <div className="space-y-2">
-              <PanelSectionTitle>样式效果</PanelSectionTitle>
+              <PanelSectionTitle id="bind-fx">样式效果</PanelSectionTitle>
+              <PanelCollapsibleContent id="bind-fx">
               {showContentColumn && (
                 <div className={panelLabeledRowGridClass}>
                   <span className="text-xs text-slate-600 shrink-0 leading-tight">字重</span>
@@ -1749,7 +1847,7 @@ function PopupThemeEditorPanelCore({
                     <select
                       value={theme.contentFontWeight ?? 600}
                       onChange={(e) => mergedWrappedOnUpdateTheme(themeId, { contentFontWeight: Number(e.target.value) })}
-                      className="min-w-0 flex-1 rounded border border-slate-300 px-2 py-1 text-sm"
+                      className={panelFontWeightSelectClass}
                     >
                       <option value={100}>100</option>
                       <option value={200}>200</option>
@@ -1794,7 +1892,7 @@ function PopupThemeEditorPanelCore({
                     <select
                       value={theme.timeFontWeight ?? 400}
                       onChange={(e) => mergedWrappedOnUpdateTheme(themeId, { timeFontWeight: Number(e.target.value) })}
-                      className="min-w-0 flex-1 rounded border border-slate-300 px-2 py-1 text-sm"
+                      className={panelFontWeightSelectClass}
                     >
                       <option value={100}>100</option>
                       <option value={200}>200</option>
@@ -1839,7 +1937,7 @@ function PopupThemeEditorPanelCore({
                     <select
                       value={theme.dateFontWeight ?? 400}
                       onChange={(e) => mergedWrappedOnUpdateTheme(themeId, { dateFontWeight: Number(e.target.value) })}
-                      className="min-w-0 flex-1 rounded border border-slate-300 px-2 py-1 text-sm"
+                      className={panelFontWeightSelectClass}
                     >
                       <option value={100}>100</option>
                       <option value={200}>200</option>
@@ -2073,6 +2171,7 @@ function PopupThemeEditorPanelCore({
                   )
                 })()
               )}
+            </PanelCollapsibleContent>
             </div>
           )}
 
@@ -2080,7 +2179,8 @@ function PopupThemeEditorPanelCore({
 
           {!isDecoTextSelected && (
             <div className="space-y-2">
-              <PanelSectionTitle>排版</PanelSectionTitle>
+              <PanelSectionTitle id="bind-typo">排版</PanelSectionTitle>
+              <PanelCollapsibleContent id="bind-typo">
             {selectedElements.length === 0 ? (
               decoLayer &&
               ((decoLayer.kind === 'text' && !(decoLayer as TextThemeLayer).bindsReminderBody) ||
@@ -2302,34 +2402,33 @@ function PopupThemeEditorPanelCore({
                     </div>
                     <SliderNumberRow
                       label="字间距"
-                      min={-2}
-                      max={20}
+                      min={POPUP_THEME_LETTER_SPACING_MIN}
+                      max={POPUP_THEME_LETTER_SPACING_MAX}
                       step={0.5}
                       value={lsVal ?? 0}
                       onCommit={(n) =>
-                        mergedWrappedOnUpdateTheme(themeId, { [letterSpacing]: Math.max(-2, Math.min(20, n)) })
+                        mergedWrappedOnUpdateTheme(themeId, { [letterSpacing]: clampPopupThemeLetterSpacing(n) })
                       }
                     />
                     <SliderNumberRow
                       label="行高"
-                      min={0.8}
-                      max={3}
+                      min={POPUP_THEME_LINE_HEIGHT_MIN}
+                      max={POPUP_THEME_LINE_HEIGHT_MAX}
                       step={0.05}
                       value={lhVal}
                       onCommit={(n) =>
-                        mergedWrappedOnUpdateTheme(themeId, { [lineHeight]: Math.max(0.8, Math.min(3, n)) })
+                        mergedWrappedOnUpdateTheme(themeId, { [lineHeight]: clampPopupThemeLineHeight(n) })
                       }
                     />
                   </div>
                 )
               })()
             )}
+              </PanelCollapsibleContent>
               {showDateColumn && (dateOnlySelection || (showBothFontColumns && selectedElements.includes('date'))) && (
-                <div className="space-y-2 rounded-md border border-slate-200 bg-slate-50/80 p-2">
-                  <PanelSectionTitle>日期 · 显示与格式</PanelSectionTitle>
-                  <p className="text-[10px] text-slate-500 leading-relaxed">
-                    使用系统 Intl 格式化；Locale 留空则跟随运行环境。真弹窗为打开瞬间的日期；下方固定预览文案仅用于工坊截图稳定。
-                  </p>
+                <div className="space-y-2">
+                  <PanelSectionTitle id="bind-date">日期 · 显示与格式</PanelSectionTitle>
+                  <PanelCollapsibleContent id="bind-date">
                   <div className="flex flex-wrap gap-1.5">
                     {(
                       [
@@ -2454,26 +2553,7 @@ function PopupThemeEditorPanelCore({
                       </select>
                     </label>
                   </div>
-                  <label className="block text-[11px] text-slate-600 space-y-0.5">
-                    <span>Locale（BCP 47，可选，如 zh-CN、en-US）</span>
-                    <input
-                      type="text"
-                      value={theme.dateLocale ?? ''}
-                      placeholder="默认环境"
-                      onChange={(e) => mergedWrappedOnUpdateTheme(themeId, { dateLocale: e.target.value.trim() || undefined })}
-                      className="w-full rounded border border-slate-300 px-2 py-1 text-xs"
-                    />
-                  </label>
-                  <label className="block text-[11px] text-slate-600 space-y-0.5">
-                    <span>预览固定日期（可选，非空则预览不再跟系统时钟）</span>
-                    <input
-                      type="text"
-                      value={theme.previewDateText ?? ''}
-                      placeholder="留空则实时格式化"
-                      onChange={(e) => mergedWrappedOnUpdateTheme(themeId, { previewDateText: e.target.value.trim() || undefined })}
-                      className="w-full rounded border border-slate-300 px-2 py-1 text-xs"
-                    />
-                  </label>
+                  </PanelCollapsibleContent>
                 </div>
               )}
           </div>
@@ -2483,7 +2563,8 @@ function PopupThemeEditorPanelCore({
 
           {!isDecoTextSelected && (
           <div className="space-y-2">
-            <PanelSectionTitle>变换</PanelSectionTitle>
+            <PanelSectionTitle id="bind-xform">变换</PanelSectionTitle>
+            <PanelCollapsibleContent id="bind-xform">
             {(() => {
               const sel = selectedElements[0]
               if (!sel) return <p className="text-[11px] text-slate-400">点击预览区文字或上方按钮选中元素</p>
@@ -2563,6 +2644,7 @@ function PopupThemeEditorPanelCore({
                 </div>
               )
             })()}
+            </PanelCollapsibleContent>
           </div>
           )}
         </div>
@@ -2570,7 +2652,8 @@ function PopupThemeEditorPanelCore({
 
       {(effectivePanelFilter === 'all' || effectivePanelFilter === 'overlay') && (
         <div className="space-y-2">
-          <PanelBlockTitle>遮罩</PanelBlockTitle>
+          <PanelBlockTitle id="panel-overlay">遮罩</PanelBlockTitle>
+          <PanelCollapsibleContent id="panel-overlay">
           {(() => {
             const overlayMode = theme.overlayMode === 'gradient' ? 'gradient' : 'solid'
             const overlayOpacity = Math.max(0, Math.min(1, theme.overlayOpacity ?? 0.45))
@@ -2893,12 +2976,14 @@ function PopupThemeEditorPanelCore({
               </>
             )
           })()}
+          </PanelCollapsibleContent>
         </div>
       )}
 
       {(effectivePanelFilter === 'all' || effectivePanelFilter === 'background') && (
         <div className="space-y-2">
-          <PanelBlockTitle>背景</PanelBlockTitle>
+          <PanelBlockTitle id="panel-bg">背景</PanelBlockTitle>
+          <PanelCollapsibleContent id="panel-bg">
           <div className={panelLabeledRowGridClass}>
             <span className={panelSubLabelClass}>背景类型</span>
             <select
@@ -3007,6 +3092,87 @@ function PopupThemeEditorPanelCore({
                   }
                 />
               </div>
+              <PanelDivider />
+              <PanelSectionTitle id="panel-bg-xform">变换</PanelSectionTitle>
+              <PanelCollapsibleContent id="panel-bg-xform">
+              <p className="text-[11px] leading-relaxed text-slate-500">
+                水平/垂直为相对画幅宽高的平移（%），0 为壁纸中心与预览中心重合；±50 约可将图层中心移向四边（cover
+                裁切下可见明显位移）。保存后使用新坐标语义。
+              </p>
+              <div className="space-y-2">
+                {(() => {
+                  const pan = resolveBackgroundImagePanForCss(theme)
+                  const rot = theme.backgroundImageTransform?.rotation ?? 0
+                  const sc = theme.backgroundImageTransform?.scale ?? 1
+                  const commitTranslate = (x: number, y: number) =>
+                    mergedWrappedOnUpdateTheme(themeId, {
+                      backgroundImageXYKind: 'translateCenter',
+                      backgroundImageTransform: { x, y, rotation: rot, scale: sc },
+                    })
+                  const commitRotScale = (rotation: number, scale: number) =>
+                    mergedWrappedOnUpdateTheme(themeId, {
+                      backgroundImageXYKind: 'translateCenter',
+                      backgroundImageTransform: {
+                        x: pan.txPct,
+                        y: pan.tyPct,
+                        rotation,
+                        scale,
+                      },
+                    })
+                  return (
+                    <>
+                      <SliderNumberRow
+                        label="水平位移"
+                        min={-50}
+                        max={50}
+                        step={0.5}
+                        value={pan.txPct}
+                        onCommit={(n) => commitTranslate(n, pan.tyPct)}
+                      />
+                      <SliderNumberRow
+                        label="垂直位移"
+                        min={-50}
+                        max={50}
+                        step={0.5}
+                        value={pan.tyPct}
+                        onCommit={(n) => commitTranslate(pan.txPct, n)}
+                      />
+                      <SliderNumberRow
+                        label="旋转"
+                        min={-360}
+                        max={360}
+                        step={1}
+                        value={rot}
+                        onCommit={(n) => commitRotScale(n, sc)}
+                      />
+                      <SliderNumberRow
+                        label="缩放"
+                        min={0.1}
+                        max={5}
+                        step={0.05}
+                        value={sc}
+                        onCommit={(n) => commitRotScale(rot, n)}
+                      />
+                      <button
+                        type="button"
+                        onClick={() =>
+                          mergedWrappedOnUpdateTheme(themeId, {
+                            backgroundImageTransform: undefined,
+                            backgroundImageXYKind: undefined,
+                          })
+                        }
+                        className="text-[11px] text-indigo-600 hover:text-indigo-800"
+                      >
+                        重置为默认位置
+                      </button>
+                    </>
+                  )
+                })()}
+              </div>
+              </PanelCollapsibleContent>
+              <PanelDivider />
+              <PanelSectionTitle id="panel-bg-fx">样式效果</PanelSectionTitle>
+              <PanelCollapsibleContent id="panel-bg-fx">
               {(() => {
                 const bRaw = Math.round(Number(theme.backgroundImageBlurPx))
                 const bgBlur = Number.isFinite(bRaw)
@@ -3139,10 +3305,13 @@ function PopupThemeEditorPanelCore({
                   </div>
                 </>
               )}
+              </PanelCollapsibleContent>
             </div>
           )}
+          </PanelCollapsibleContent>
         </div>
       )}
+            </PanelCollapseContext.Provider>
         </div>
         )}
       </div>

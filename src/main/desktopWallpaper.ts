@@ -1,4 +1,4 @@
-import { app, BrowserWindow, screen } from 'electron'
+import { app, BrowserWindow, screen, type BrowserWindowConstructorOptions } from 'electron'
 import { execFile } from 'node:child_process'
 import { mkdirSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
@@ -11,7 +11,7 @@ import {
   writePopupHtmlToTempFile,
 } from './reminderWindow'
 
-/** 归一化主题并去掉桌面壁纸不需要的绑定主文案、补日期层 */
+/** 归一化主题；必要时补日期层（主文案与装饰层原样保留） */
 export function prepareThemeForDesktopWallpaper(themeRaw: PopupTheme): PopupTheme {
   let t = ensureThemeLayers({ ...themeRaw })
   const desk = stripBindingContentAndEnsureDateForDesktop(t)
@@ -109,6 +109,9 @@ export async function captureDesktopWallpaperSnapshotAndApplySpi(
   const primary = screen.getPrimaryDisplay()
   const { x, y, width, height } = primary.bounds
 
+  const win32Edge: Pick<BrowserWindowConstructorOptions, 'thickFrame' | 'hasShadow'> =
+    process.platform === 'win32' ? { thickFrame: false, hasShadow: false } : {}
+
   const win = new BrowserWindow({
     x,
     y,
@@ -122,6 +125,12 @@ export async function captureDesktopWallpaperSnapshotAndApplySpi(
     minimizable: false,
     maximizable: false,
     fullscreenable: false,
+    focusable: false,
+    hasShadow: false,
+    roundedCorners: false,
+    transparent: false,
+    backgroundColor: '#000000',
+    ...win32Edge,
     webPreferences: { nodeIntegration: false, contextIsolation: true, zoomFactor: 1 },
   })
 

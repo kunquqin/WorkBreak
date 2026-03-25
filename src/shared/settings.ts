@@ -41,6 +41,9 @@ export const BUILTIN_MAIN_POPUP_FALLBACK_BODY = '时间到啦'
  * 休息弹窗 restContent 为空时的兜底，与系统默认休息主题预览文案一致。
  */
 export const BUILTIN_REST_POPUP_FALLBACK_BODY = '休息一下'
+
+/** 休息壁纸「时间」层在工坊 / 预览 / 全屏预览中的占位（mm:ss 倒计时形态）；真弹窗由主进程按本段剩余秒注入 */
+export const REST_POPUP_PREVIEW_TIME_TEXT = '00:30'
 export type PopupBackgroundType = 'solid' | 'image'
 export type PopupOverlayMode = 'solid' | 'gradient'
 export type PopupOverlayGradientDirection =
@@ -132,6 +135,9 @@ export const POPUP_BACKGROUND_IMAGE_BLUR_MAX_PX = 100
 /** 文件夹壁纸交叉淡入淡出时长上限（秒），normalize 钳制用 */
 export const POPUP_FOLDER_CROSSFADE_MAX_SEC = 15
 
+/** 背景图 X/Y 语义：`anchor01` 为旧版 0–100 锚点；`translateCenter` 为相对画幅的百分比位移（-50～50，0=居中） */
+export type BackgroundImageXYKind = 'anchor01' | 'translateCenter'
+
 export interface PopupTheme {
   id: string
   name: string
@@ -159,6 +165,14 @@ export interface PopupTheme {
    * 背景为图片时的高斯模糊（px），0 表示不模糊；与主题面板滑杆上限一致。
    */
   backgroundImageBlurPx?: number
+  /**
+   * 背景图（单图 / 文件夹轮播内层）空间变换。
+   * 与 `backgroundImageXYKind` 配合：新数据 `translateCenter` 下 x/y 为相对画幅宽高的平移百分比（-50～50，0=居中）；
+   * 缺省/旧数据 `anchor01` 下 x/y 为 0–100 锚点（50=居中），渲染时折合为平移。
+   */
+  backgroundImageTransform?: TextTransform
+  /** 缺省按 `anchor01` 理解 x/y；面板保存后为 `translateCenter` */
+  backgroundImageXYKind?: BackgroundImageXYKind
   overlayEnabled: boolean
   overlayColor: string
   overlayOpacity: number
@@ -491,6 +505,7 @@ function defaultRestTheme(): PopupTheme {
     formatVersion: 1,
     target: 'rest',
     previewContentText: BUILTIN_REST_POPUP_FALLBACK_BODY,
+    previewTimeText: REST_POPUP_PREVIEW_TIME_TEXT,
     backgroundType: 'solid',
     backgroundColor: '#000000',
     overlayEnabled: false,
@@ -609,10 +624,53 @@ export function mergeSystemBuiltinPopupThemes(themes: PopupTheme[]): PopupTheme[
       else next.push(desktopSnap)
     }
   }
-  return next
+  return next.map((t) => {
+    if (t.id === SYSTEM_REST_POPUP_THEME_ID && t.target === 'rest' && !(t.previewTimeText?.trim())) {
+      return ensureThemeLayers({ ...t, previewTimeText: REST_POPUP_PREVIEW_TIME_TEXT })
+    }
+    return t
+  })
 }
 
 /** 新建子项 / 下拉缺省时：优先系统默认 id，否则同 target 首条，否则仍返回系统 id（待 normalize 补主题）。 */
+/**
+ * 将主题中的背景 X/Y 解析为 CSS `translate(tx%, ty%)`（相对当前背景层自身宽高，与 100% 宽高画幅一致）。
+ * translateCenter：x/y 直接为 -50～50；anchor01：x/y 为 0～100 锚点，折合 (x-50)、(y-50)。
+ */
+export function resolveBackgroundImagePanForCss(theme: {
+  backgroundImageTransform?: TextTransform | undefined
+  backgroundImageXYKind?: BackgroundImageXYKind
+}): { txPct: number; tyPct: number; rotation: number; scale: number } {
+  const t = theme.backgroundImageTransform
+  const rot = Number(t?.rotation)
+  const sc = Number(t?.scale)
+  const rotation = Number.isFinite(rot) ? rot : 0
+  const scale = Number.isFinite(sc) ? Math.max(0.1, Math.min(5, sc)) : 1
+
+  const kind = theme.backgroundImageXYKind
+  if (kind === 'translateCenter') {
+    const x = Number(t?.x)
+    const y = Number(t?.y)
+    return {
+      txPct: Number.isFinite(x) ? Math.max(-50, Math.min(50, x)) : 0,
+      tyPct: Number.isFinite(y) ? Math.max(-50, Math.min(50, y)) : 0,
+      rotation,
+      scale,
+    }
+  }
+
+  const x = Number(t?.x)
+  const y = Number(t?.y)
+  const ax = Number.isFinite(x) ? Math.max(0, Math.min(100, x)) : 50
+  const ay = Number.isFinite(y) ? Math.max(0, Math.min(100, y)) : 50
+  return {
+    txPct: Math.max(-50, Math.min(50, ax - 50)),
+    tyPct: Math.max(-50, Math.min(50, ay - 50)),
+    rotation,
+    scale,
+  }
+}
+
 export function getDefaultPopupThemeIdForTarget(themes: PopupTheme[], target: PopupThemeTarget): string {
   if (target === 'desktop') {
     if (themes.some((t) => t.id === SYSTEM_DESKTOP_POPUP_THEME_ID)) return SYSTEM_DESKTOP_POPUP_THEME_ID
