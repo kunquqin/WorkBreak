@@ -4,6 +4,36 @@
 
 ## 0.1 文字参数区布局重构（本轮）
 
+- **深色模式下主题预览涂黑（本次修复）**：`index.css` 的深色覆盖曾包含过宽选择器 `html.dark [role="dialog"] div`（并伴随 `rounded-xl` 泛匹配），导致主题编辑预览画布内所有层（含文字层、框选层、遮罩层）被强制刷成深色背景，出现“框选拖过变深色块 / 文字后黑底 / 遮罩不透底”。现已收敛为仅覆盖 `bg-white` 相关类，不再污染预览画布内部图层。建议手测：深色模式下进入壁纸主题编辑，验证框选、文字层与遮罩透明度均恢复正常。
+
+- **深色模式对比度补齐（本次修复）**：`PopupThemeLayersBar` 图层选中行增加深色专用样式（`dark:border-sky-500/55 + dark:bg-slate-600/85 + dark:ring-sky-400/35`），避免“亮底白字”读不清；`ThemeStudio` 顶栏「恢复默认」按钮补深色专用文字与底色（`dark:text-amber-200` 等），提升暗色主题下可读性。
+
+- **深色图层选中再加深 + 弹窗滚动锁（本次修复）**：`PopupThemeLayersBar` 选中行深色态调整为更深底色（`dark:bg-slate-800/95`）；`ThemeStudio` 浮动编辑弹窗在挂载期间对 `html/body` 启用 `overflow: hidden` 与 `overscroll-behavior: none`，关闭时恢复，避免在弹窗内滚动时带动后方页面。
+
+- **`Settings.tsx` 15 个 TS 报错清零（本次修复）**：补 `isTimedSubReminder` 类型守卫并修正 `subReminderConfirmLabel` 的可空 `title`；`fixedStartBlock/fixedEndBlock` 增加空值安全兜底；`setRepeatDropdown` 类型统一为 `Dispatch<SetStateAction<...>>` 允许函数式更新；`CategoryCardOverflowMenu` 定时器 ref 改 `number | null` 适配浏览器 `window.setTimeout`；批量启停逻辑中对 `prevItem/nextItem` 做同源窄化后再访问 `enabled/time`；`addPopupTheme` 补齐必填 `PopupTheme` 字段（如 `contentFontSize`、`time*`），当前 `Settings.tsx` 已无 lints/ts 报错。
+
+- **子项编辑页两项修复（本次）**：`TimePickerModal` 在深色模式下将滚轮选中行数字明确保持深色（并优化非选中数字与中间选中条深色对比），解决“白字叠浅底”可读性问题；`AddSubReminderModal` 新增 `themePreviewEpoch`，当 `popupThemes` 变更（如从全屏主题编辑保存返回）时强制重建休息/结束小预览实例，避免仍显示编辑前快照。
+
+- **时间滚轮选中数字仍发白（补丁）**：根因是 `index.css` 的全局深色覆盖 `html.dark .text-slate-900 { color: #fff !important; }` 抢过组件内 class。已在 `TimePickerModal` 为选中行打 `data-wheel-selected="true"`，并在 `index.css` 末尾增加更定向规则 `html.dark [data-wheel-selected="true"] { color: #0f172a !important; }`（含系统深色分支），确保选中数字在深色模式稳定为深色字。
+
+- **跟随系统模式下子项编辑表头仍偏浅（本次修复）**：`index.css` 的 system-dark 分支此前仅覆盖了 `bg-slate-50`，未补齐 `bg-slate-50/95` 等透明度变体，导致 `AddSubReminderModal` 表头（`bg-slate-50/95`）在“跟随系统 + 系统深色”时漏掉深色覆盖。已在 `@media (prefers-color-scheme: dark)` 中补齐 `bg-white` 泛匹配与 `bg-slate-50/*` 全套变体，使“跟随系统=深色时”与显式深色表现一致。
+
+- **主题编辑参数区可读性（本次修复）**：`PopupThemeEditorPanel` 中移除“背景→变换”下方说明文案；参数标题折叠按钮 hover 增加深色态（`dark:hover:bg-slate-700/70`）。同时在 `index.css` 为 `hover:bg-slate-50/90` 补齐显式深色与 system-dark 覆盖，避免深色主题下 hover 仍偏浅导致标题文字对比不足。
+
+- **设置页顶部「+类型」按钮深色 hover 提亮（本次修复）**：`Settings.tsx` 中「+闹钟类型 / +倒计时类型 / +秒表类型」按钮在深色模式 hover 时增加 `dark:hover:border-white dark:hover:text-white`，仅提亮虚线边框与文字（背景 hover 保持原方案不变）。
+
+- **+类型按钮深色 hover 仍不明显（补丁）**：根因是全局深色 `text-slate-*` / `border-slate-*` 覆盖带 `!important`，压过了组件内 `dark:hover:*`。已为三处按钮加专用类 `wb-add-type-btn`，并在 `index.css` 末尾补 `html.dark .wb-add-type-btn:hover` 与 system-dark 同步规则（`border-color/color: #fff !important`），确保 hover 提亮稳定生效。
+
+- **主题工坊缩略图区深色自适配（本次修复）**：`ThemeStudioThumbnail` 新增运行时暗色判定（显式 `dark`/`light` + system 跟随 `matchMedia`），缩略图默认槽位底色从单一浅灰改为亮/暗两套兜底（`#e2e8f0` / `#1f2937`）；呼吸层新增 `theme-studio-thumb-breathe-wash-dark`（深色基底），并在列表懒挂载占位与已挂载缩略图两条路径都按当前主题切换，确保深色主题切到主题工坊时缩略图图片区与呼吸亮度风格一致。
+
+- **大类/子项头部操作显隐与三点菜单对齐（本次修复）**：`Settings.tsx` 中大类头部将「收起箭头」「拖拽点」「三点菜单」统一为默认隐藏、hover（或菜单打开）才显示；`CategoryCardOverflowMenu` 改为仅点击三点弹出，不再鼠标移入即自动展开。子项侧新增 `SubReminderOverflowMenu`，将原“删除”文字按钮改为三点菜单内删除（秒表子项与闹钟/倒计时子项均覆盖，含内联编辑展开态），并将子项拖拽点改为默认隐藏、hover 才显示。
+
+- **预览比例改为下拉并默认跟随系统（本次实现）**：设置页将预览比例状态改为 `PopupPreviewAspectPreset`（`system` + `16:9/16:10/21:9/32:9/3:2/4:3`），默认 `system`；运行时根据主显示器 `width/height` 选取最接近的预览比例用于渲染。`ThemeStudioEditWorkspace` 顶栏把原 16:9/4:3 双按钮改为下拉；`ThemeStudio`/`ThemePreviewEditor`/`PopupThemeEditorPanel`/`AddSubReminderModal`/`PopupThemeSelectWithHoverPreview` 的比例类型同步扩展，所有缩略图与预览容器统一走比例映射函数。`previewViewportWidth` 在无主屏信息时统一回退 1920。
+- **预览区按比例自适应可用空间（本次修复）**：当主题工坊编辑区切到 `3:2` 等高画幅比例时，`ThemePreviewEditor` 在 `previewWidthMode="fill"` 下改为以父容器实时尺寸（`ResizeObserver`）计算“宽高都不超出”的拟合尺寸（先按宽算高，超高则按高回推宽），并在左侧容器改为 `overflow-hidden` + 居中布局，避免预览把顶部「对齐/比例」工具栏挤出可视区、触发页面上下滚动才能操作。
+- **图片图层属性区重排（本次修复）**：`PopupThemeEditorPanel` 中 `图片层 · 属性` 去掉外层青色边框卡片，改为与文本属性一致的平铺分区；参数顺序调整为 **图片路径（路径输入框 + 更换图片按钮）→ 填充 → 变换**。图片 `变换` 现对齐背景图交互：**水平位移/垂直位移（-50~50）+ 旋转 + 缩放 + 重置**，位移以图片层中心点百分比映射，保持现有预览与真弹窗渲染语义。
+- **预览区新增自动吸附开关（本次实现）**：在 `ThemeStudioEditWorkspace` 的预览工具栏右侧（全屏预览按钮左边）增加「吸附」开关按钮，默认开启。开时 `ThemePreviewEditor` 的 Moveable 启用 `snappable/snapGap/elementGuidelines/horizontalGuidelines/verticalGuidelines`；关时上述吸附能力全部关闭，图层可自由移动不再贴边或贴元素参考线。
+- **深色主题按钮风格统一（本次修复）**：补齐 `ThemePreviewEditor` 顶部对齐/打组按钮与分隔线、`ThemeStudio` 顶部「吸附」按钮、`PopupThemeLayersBar` 的「+ 主文本」按钮在 `dark` 下的边框/底色/文字/hover 规则，统一到现有工具栏按钮体系，避免深色模式下出现浅色态残留和对比不一致。
+
 - **主题工坊浮动编辑**：第二行仅主题名 + 居中「恢复默认/设为桌面壁纸」+ 右侧取消/保存等；**预览比例** 在 **ThemePreviewEditor** 顶栏 **行内居中**（`toolbarCenter`），全屏预览仍 **最右侧**（`toolbarTrailing`）。
 
 - **主题工坊缩略图性能（本次）**：`ThemePreviewEditor` **`readOnly`** 时不注册 `datePreviewTick`；桌面缩略图时间/日期锚定 `DESKTOP_THUMBNAIL_CLOCK_FROZEN_AT`（本地 2020-06-15 12:00），与编辑态相同 locale 格式化；`readOnly` 下文件夹背景不挂 `FolderBgCrossfade`，只用首张图。`npm run build` 已通过。

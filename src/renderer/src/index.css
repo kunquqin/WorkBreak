@@ -1,11 +1,389 @@
+/* ========================
+   App Theme CSS Variables
+   ======================== */
+
+/* 浅色主题（默认） */
+:root,
+.light {
+  --color-bg: #f8fafc;
+  --color-bg-elevated: #ffffff;
+  --color-bg-overlay: #f1f5f9;
+  --color-border: #e2e8f0;
+  --color-border-subtle: #f1f5f9;
+  --color-text-primary: #1e293b;
+  --color-text-secondary: #64748b;
+  --color-text-muted: #94a3b8;
+  --color-button-primary-bg: #3b82f6;
+  --color-button-primary-text: #ffffff;
+  --color-button-secondary-bg: #f8fafc;
+  --color-button-secondary-border: #cbd5e1;
+  --color-accent: #3b82f6;
+}
+
+/* 深色主题 — macOS Big Sur+ 风格 */
+:root.dark,
+.dark {
+  --color-bg: #1e1e1e;
+  --color-bg-elevated: #2d2d2d;
+  --color-bg-overlay: #262626;
+  --color-border: #3d3d3d;
+  --color-border-subtle: #333333;
+  --color-text-primary: #f5f5f5;
+  --color-text-secondary: #a1a1a6;
+  --color-text-muted: #6e6e73;
+  --color-button-primary-bg: #3b82f6;
+  --color-button-primary-text: #ffffff;
+  --color-button-secondary-bg: #2d2d2d;
+  --color-button-secondary-border: #3d3d3d;
+  --color-accent: #3b82f6;
+}
+
+/* 跟随系统 - 当系统是深色时 */
+@media (prefers-color-scheme: dark) {
+  :root:not(.light):not(.dark) {
+    --color-bg: #1e1e1e;
+    --color-bg-elevated: #2d2d2d;
+    --color-bg-overlay: #262626;
+    --color-border: #3d3d3d;
+    --color-border-subtle: #333333;
+    --color-text-primary: #f5f5f5;
+    --color-text-secondary: #a1a1a6;
+    --color-text-muted: #6e6e73;
+    --color-button-primary-bg: #3b82f6;
+    --color-button-primary-text: #ffffff;
+    --color-button-secondary-bg: #2d2d2d;
+    --color-button-secondary-border: #3d3d3d;
+    --color-accent: #3b82f6;
+  }
+}
+
 @tailwind base;
 @tailwind components;
 @tailwind utilities;
 
+/* ========================
+   深色模式覆盖 Tailwind 硬编码颜色
+   ======================== */
+
+/* 当 html 有 .dark class 时（用户明确选择深色） */
+html.dark body {
+  background-color: #1e1e1e !important;
+  color: #f5f5f5 !important;
+}
+
+/* 背景色覆盖 - 使用更具体的选择器 */
+html.dark .bg-white,
+html.dark [class*="bg-white"],
+html.dark [class~="bg-white"] {
+  background-color: #2d2d2d !important;
+}
+html.dark .bg-slate-50 { background-color: #262626 !important; }
+html.dark .bg-slate-50\/95 { background-color: #262626 !important; }
+html.dark .bg-slate-50\/80 { background-color: #262626 !important; }
+html.dark .bg-slate-50\/70 { background-color: #262626 !important; }
+html.dark .bg-slate-50\/60 { background-color: #262626 !important; }
+html.dark .bg-slate-50\/50 { background-color: #262626 !important; }
+html.dark .bg-slate-50\/40 { background-color: #262626 !important; }
+html.dark .bg-slate-50\/30 { background-color: #262626 !important; }
+html.dark .bg-slate-50\/20 { background-color: #262626 !important; }
+html.dark .bg-slate-50\/10 { background-color: #262626 !important; }
+html.dark .bg-slate-50\/0 { background-color: #262626 !important; }
+
+/* ===== 弹窗表头顶部圆角修复 ===== */
+/* embedded 弹窗的表头需要顶部圆角来匹配外层容器 */
+html.dark .rounded-lg {
+  overflow: hidden !important;
+}
+
+html.dark .rounded-lg > [class*="border-b"]:first-child {
+  border-top-left-radius: 0.5rem !important;
+  border-top-right-radius: 0.5rem !important;
+}
+
+/* 弹窗底部元素也需要圆角 */
+html.dark .rounded-lg > [class*="border-t"]:last-child {
+  border-bottom-left-radius: 0.5rem !important;
+  border-bottom-right-radius: 0.5rem !important;
+}
+
+html.dark .bg-slate-100 { background-color: #2d2d2d !important; }
+html.dark .bg-slate-200 { background-color: #3d3d3d !important; }
+html.dark .bg-slate-300 { background-color: #4d4d4d !important; }
+html.dark .bg-slate-400 { background-color: #5d5d5d !important; }
+html.dark .bg-slate-500 { background-color: #6d6d6d !important; }
+html.dark .bg-slate-600 { background-color: #7d7d7d !important; }
+html.dark .bg-slate-700 { background-color: #1e1e1e !important; }
+html.dark .bg-slate-800 { background-color: #1e1e1e !important; }
+html.dark .bg-slate-900 { background-color: #0f172a !important; }
+
+/* 边框色覆盖 */
+html.dark .border-slate-100 { border-color: #333333 !important; }
+html.dark .border-slate-200 { border-color: #3d3d3d !important; }
+html.dark .border-slate-300 { border-color: #4d4d4d !important; }
+html.dark .border-slate-400 { border-color: #5d5d5d !important; }
+
+/* 文字色覆盖 */
+html.dark .text-slate-800 { color: #f5f5f5 !important; }
+html.dark .text-slate-700 { color: #e5e5e5 !important; }
+html.dark .text-slate-600 { color: #d1d5db !important; }
+html.dark .text-slate-500 { color: #a1a1a6 !important; }
+html.dark .text-slate-400 { color: #6e6e73 !important; }
+html.dark .text-slate-300 { color: #cbd5db !important; }
+html.dark .text-slate-200 { color: #e5e7eb !important; }
+html.dark .text-slate-100 { color: #f5f5f5 !important; }
+html.dark .text-slate-900 { color: #ffffff !important; }
+
+/* 主题工坊分页按钮未选中文字 */
+html.dark .text-blue-900 { color: #60a5fa !important; }
+html.dark .text-emerald-900 { color: #34d399 !important; }
+html.dark .text-violet-900 { color: #a78bfa !important; }
+
+/* 主题工坊分页按钮 hover */
+html.dark .hover\:bg-blue-50\/80:hover { background-color: #1e3a5f !important; }
+html.dark .hover\:bg-emerald-50\/80:hover { background-color: #1a3d2e !important; }
+html.dark .hover\:bg-violet-50\/80:hover { background-color: #2d1f4f !important; }
+
+/* violet 文字色覆盖 */
+html.dark .text-violet-800 { color: #c4b5fd !important; }
+
+/* 设为桌面壁纸按钮 hover（bg-violet-50 类，非 slash 变体） */
+html.dark .hover\:bg-violet-50:hover { background-color: #2d1f4f !important; }
+
+/* 右上角 +壁纸 按钮背景覆盖 */
+html.dark .bg-blue-50 { background-color: #1e3a5f !important; }
+html.dark .bg-emerald-50 { background-color: #1a3d2e !important; }
+html.dark .bg-violet-50 { background-color: #2d1f4f !important; }
+
+/* 主题工坊缩略图标题区背景覆盖 */
+html.dark .bg-blue-100 { background-color: #1e3a5f !important; }
+html.dark .bg-emerald-100 { background-color: #1a3d2e !important; }
+html.dark .bg-violet-100 { background-color: #2d1f4f !important; }
+
+/* 主题工坊缩略图标题区边框覆盖 */
+html.dark .border-blue-300 { border-color: #3d5a7f !important; }
+html.dark .border-emerald-300 { border-color: #3a6d4e !important; }
+html.dark .border-violet-300 { border-color: #5d4f7f !important; }
+
+/* 右上角 +壁纸 按钮 hover 覆盖 */
+html.dark .hover\:bg-blue-100:hover { background-color: #2d4a6f !important; }
+html.dark .hover\:bg-emerald-100:hover { background-color: #2a4d3e !important; }
+html.dark .hover\:bg-violet-100:hover { background-color: #3d2f5f !important; }
+
+/* 右上角 +壁纸 按钮边框覆盖 */
+html.dark .border-blue-200 { border-color: #3d5a7f !important; }
+html.dark .border-emerald-200 { border-color: #3a6d4e !important; }
+html.dark .border-violet-200 { border-color: #5d4f7f !important; }
+
+/* 主题工坊 filter tab ring 覆盖 */
+html.dark .ring-blue-200 { --tw-ring-color: #3d5a7f !important; }
+html.dark .ring-emerald-200 { --tw-ring-color: #3a6d4e !important; }
+html.dark .ring-violet-200 { --tw-ring-color: #5d4f7f !important; }
+html.dark .ring-slate-200 { --tw-ring-color: #3d3d3d !important; }
+
+/* hover 状态覆盖 */
+html.dark .hover\:bg-slate-50:hover { background-color: #3d3d3d !important; }
+html.dark .hover\:bg-slate-50\/90:hover { background-color: #3d3d3d !important; }
+html.dark .hover\:bg-slate-100:hover { background-color: #4d4d4d !important; }
+html.dark .hover\:bg-slate-200:hover { background-color: #5d5d5d !important; }
+html.dark .hover\:bg-white:hover { background-color: #3d3d3d !important; }
+
+/* 输入框覆盖 */
+html.dark input[type="text"],
+html.dark input[type="number"],
+html.dark input[type="time"],
+html.dark input[type="date"],
+html.dark input:not([type]),
+html.dark textarea {
+  background-color: #2d2d2d !important;
+  color: #f5f5f5 !important;
+  border-color: #3d3d3d !important;
+}
+
+html.dark input::placeholder {
+  color: #6e6e73 !important;
+}
+
+/* 下拉框覆盖 */
+html.dark select {
+  background-color: #2d2d2d !important;
+  color: #f5f5f5 !important;
+  border-color: #3d3d3d !important;
+}
+
+/* amber 系列覆盖 */
+html.dark .bg-amber-100 { background-color: #3d2d1a !important; }
+html.dark .bg-amber-50 { background-color: #2d2a1a !important; }
+
+/* ========================
+   跟随系统时的覆盖（当系统是深色但用户没有明确选择）
+   ======================== */
+@media (prefers-color-scheme: dark) {
+  html:not(.light):not(.dark) body {
+    background-color: #1e1e1e !important;
+    color: #f5f5f5 !important;
+  }
+
+  /* 背景色覆盖 */
+  html:not(.light):not(.dark) .bg-white,
+  html:not(.light):not(.dark) [class*="bg-white"],
+  html:not(.light):not(.dark) [class~="bg-white"] { background-color: #2d2d2d !important; }
+  html:not(.light):not(.dark) .bg-slate-50 { background-color: #262626 !important; }
+  html:not(.light):not(.dark) .bg-slate-50\/95 { background-color: #262626 !important; }
+  html:not(.light):not(.dark) .bg-slate-50\/80 { background-color: #262626 !important; }
+  html:not(.light):not(.dark) .bg-slate-50\/70 { background-color: #262626 !important; }
+  html:not(.light):not(.dark) .bg-slate-50\/60 { background-color: #262626 !important; }
+  html:not(.light):not(.dark) .bg-slate-50\/50 { background-color: #262626 !important; }
+  html:not(.light):not(.dark) .bg-slate-50\/40 { background-color: #262626 !important; }
+  html:not(.light):not(.dark) .bg-slate-50\/30 { background-color: #262626 !important; }
+  html:not(.light):not(.dark) .bg-slate-50\/20 { background-color: #262626 !important; }
+  html:not(.light):not(.dark) .bg-slate-50\/10 { background-color: #262626 !important; }
+  html:not(.light):not(.dark) .bg-slate-50\/0 { background-color: #262626 !important; }
+
+  /* 弹窗表头顶部圆角修复 */
+  html:not(.light):not(.dark) .rounded-lg > :first-child {
+    border-top-left-radius: 0.5rem !important;
+    border-top-right-radius: 0.5rem !important;
+  }
+
+  /* 弹窗底部元素也需要圆角 */
+  html:not(.light):not(.dark) .rounded-lg > :last-child {
+    border-bottom-left-radius: 0.5rem !important;
+    border-bottom-right-radius: 0.5rem !important;
+  }
+
+  /* 修复 formFooter 区域的圆角问题 */
+  html:not(.light):not(.dark) .rounded-lg [class*="border-t"] {
+    border-top-left-radius: 0 !important;
+    border-top-right-radius: 0 !important;
+  }
+
+  /* 弹窗表头顶部圆角修复 */
+  html:not(.light):not(.dark) .rounded-lg {
+    overflow: hidden !important;
+  }
+
+  html:not(.light):not(.dark) .rounded-lg > [class*="border-b"]:first-child {
+    border-top-left-radius: 0.5rem !important;
+    border-top-right-radius: 0.5rem !important;
+  }
+
+  html:not(.light):not(.dark) .rounded-lg > [class*="border-t"]:last-child {
+    border-bottom-left-radius: 0.5rem !important;
+    border-bottom-right-radius: 0.5rem !important;
+  }
+
+  html:not(.light):not(.dark) .bg-slate-100 { background-color: #2d2d2d !important; }
+  html:not(.light):not(.dark) .bg-slate-200 { background-color: #3d3d3d !important; }
+  html:not(.light):not(.dark) .bg-slate-300 { background-color: #4d4d4d !important; }
+  html:not(.light):not(.dark) .bg-slate-400 { background-color: #5d5d5d !important; }
+  html:not(.light):not(.dark) .bg-slate-500 { background-color: #6d6d6d !important; }
+  html:not(.light):not(.dark) .bg-slate-600 { background-color: #7d7d7d !important; }
+  html:not(.light):not(.dark) .bg-slate-700 { background-color: #1e1e1e !important; }
+  html:not(.light):not(.dark) .bg-slate-800 { background-color: #1e1e1e !important; }
+  html:not(.light):not(.dark) .bg-slate-900 { background-color: #0f172a !important; }
+
+  /* 边框色覆盖 */
+  html:not(.light):not(.dark) .border-slate-100 { border-color: #333333 !important; }
+  html:not(.light):not(.dark) .border-slate-200 { border-color: #3d3d3d !important; }
+  html:not(.light):not(.dark) .border-slate-300 { border-color: #4d4d4d !important; }
+  html:not(.light):not(.dark) .border-slate-400 { border-color: #5d5d5d !important; }
+
+  /* 文字色覆盖 */
+  html:not(.light):not(.dark) .text-slate-800 { color: #f5f5f5 !important; }
+  html:not(.light):not(.dark) .text-slate-700 { color: #e5e5e5 !important; }
+  html:not(.light):not(.dark) .text-slate-600 { color: #d1d5db !important; }
+  html:not(.light):not(.dark) .text-slate-500 { color: #a1a1a6 !important; }
+  html:not(.light):not(.dark) .text-slate-400 { color: #6e6e73 !important; }
+  html:not(.light):not(.dark) .text-slate-300 { color: #cbd5db !important; }
+  html:not(.light):not(.dark) .text-slate-200 { color: #e5e7eb !important; }
+  html:not(.light):not(.dark) .text-slate-100 { color: #f5f5f5 !important; }
+  html:not(.light):not(.dark) .text-slate-900 { color: #ffffff !important; }
+
+  /* 主题工坊分页按钮未选中文字 */
+  html:not(.light):not(.dark) .text-blue-900 { color: #60a5fa !important; }
+  html:not(.light):not(.dark) .text-emerald-900 { color: #34d399 !important; }
+  html:not(.light):not(.dark) .text-violet-900 { color: #a78bfa !important; }
+
+  /* 主题工坊分页按钮 hover */
+  html:not(.light):not(.dark) .hover\:bg-blue-50\/80:hover { background-color: #1e3a5f !important; }
+  html:not(.light):not(.dark) .hover\:bg-emerald-50\/80:hover { background-color: #1a3d2e !important; }
+  html:not(.light):not(.dark) .hover\:bg-violet-50\/80:hover { background-color: #2d1f4f !important; }
+
+  /* violet 文字色覆盖 */
+  html:not(.light):not(.dark) .text-violet-800 { color: #c4b5fd !important; }
+
+  /* 设为桌面壁纸按钮 hover */
+  html:not(.light):not(.dark) .hover\:bg-violet-50:hover { background-color: #2d1f4f !important; }
+
+  /* 右上角 +壁纸 按钮背景覆盖 */
+  html:not(.light):not(.dark) .bg-blue-50 { background-color: #1e3a5f !important; }
+  html:not(.light):not(.dark) .bg-emerald-50 { background-color: #1a3d2e !important; }
+  html:not(.light):not(.dark) .bg-violet-50 { background-color: #2d1f4f !important; }
+
+  /* 右上角 +壁纸 按钮 hover 覆盖 */
+  html:not(.light):not(.dark) .hover\:bg-blue-100:hover { background-color: #2d4a6f !important; }
+  html:not(.light):not(.dark) .hover\:bg-emerald-100:hover { background-color: #2a4d3e !important; }
+  html:not(.light):not(.dark) .hover\:bg-violet-100:hover { background-color: #3d2f5f !important; }
+
+  /* 主题工坊缩略图标题区背景覆盖 */
+  html:not(.light):not(.dark) .bg-blue-100 { background-color: #1e3a5f !important; }
+  html:not(.light):not(.dark) .bg-emerald-100 { background-color: #1a3d2e !important; }
+  html:not(.light):not(.dark) .bg-violet-100 { background-color: #2d1f4f !important; }
+
+  /* 主题工坊缩略图标题区边框覆盖 */
+  html:not(.light):not(.dark) .border-blue-300 { border-color: #3d5a7f !important; }
+  html:not(.light):not(.dark) .border-emerald-300 { border-color: #3a6d4e !important; }
+  html:not(.light):not(.dark) .border-violet-300 { border-color: #5d4f7f !important; }
+
+  /* 右上角 +壁纸 按钮边框覆盖 */
+  html:not(.light):not(.dark) .border-blue-200 { border-color: #3d5a7f !important; }
+  html:not(.light):not(.dark) .border-emerald-200 { border-color: #3a6d4e !important; }
+  html:not(.light):not(.dark) .border-violet-200 { border-color: #5d4f7f !important; }
+
+  /* 主题工坊 filter tab ring 覆盖 */
+  html:not(.light):not(.dark) .ring-blue-200 { --tw-ring-color: #3d5a7f !important; }
+  html:not(.light):not(.dark) .ring-emerald-200 { --tw-ring-color: #3a6d4e !important; }
+  html:not(.light):not(.dark) .ring-violet-200 { --tw-ring-color: #5d4f7f !important; }
+  html:not(.light):not(.dark) .ring-slate-200 { --tw-ring-color: #3d3d3d !important; }
+
+  /* hover 状态覆盖 */
+  html:not(.light):not(.dark) .hover\:bg-slate-50:hover { background-color: #3d3d3d !important; }
+  html:not(.light):not(.dark) .hover\:bg-slate-50\/90:hover { background-color: #3d3d3d !important; }
+  html:not(.light):not(.dark) .hover\:bg-slate-100:hover { background-color: #4d4d4d !important; }
+  html:not(.light):not(.dark) .hover\:bg-slate-200:hover { background-color: #5d5d5d !important; }
+  html:not(.light):not(.dark) .hover\:bg-white:hover { background-color: #3d3d3d !important; }
+
+  /* 输入框覆盖 */
+  html:not(.light):not(.dark) input[type="text"],
+  html:not(.light):not(.dark) input[type="number"],
+  html:not(.light):not(.dark) input[type="time"],
+  html:not(.light):not(.dark) input[type="date"],
+  html:not(.light):not(.dark) input:not([type]),
+  html:not(.light):not(.dark) textarea {
+    background-color: #2d2d2d !important;
+    color: #f5f5f5 !important;
+    border-color: #3d3d3d !important;
+  }
+
+  html:not(.light):not(.dark) input::placeholder {
+    color: #6e6e73 !important;
+  }
+
+  /* 下拉框覆盖 */
+  html:not(.light):not(.dark) select {
+    background-color: #2d2d2d !important;
+    color: #f5f5f5 !important;
+    border-color: #3d3d3d !important;
+  }
+
+  /* amber 系列覆盖 */
+  html:not(.light):not(.dark) .bg-amber-100 { background-color: #3d2d1a !important; }
+  html:not(.light):not(.dark) .bg-amber-50 { background-color: #2d2a1a !important; }
+}
+
 /* 长设置页 + 动态增高（如秒表打点）时，避免浏览器滚动锚定把视口「往上顶」 */
 html {
   overflow-anchor: none;
-  /* 主题工坊内嵌滚动 vs 整页滚动切换时，避免滚动条占位导致内容区宽度抖动 */
   scrollbar-gutter: stable;
 }
 
@@ -14,12 +392,12 @@ html {
   box-shadow: 0 4px 16px -2px rgba(0, 0, 0, 0.08);
 }
 
-/* react-moveable：目标尺寸随贴盒逐帧变化时，控制框勿做 CSS 过渡，避免外框底边「慢慢往下长」的错觉 */
+/* react-moveable：目标尺寸随贴盒逐帧变化时，控制框勿做 CSS 过渡 */
 .moveable-control-box {
   transition: none !important;
 }
 
-/* 去掉 Chromium / WebKit 在原生 color 控件外的灰边与内边距（仅主题拾色块） */
+/* 去掉 color 控件外的灰边与内边距 */
 [data-wb-color-swatch] .wb-color-swatch-input {
   appearance: none;
   -webkit-appearance: none;
@@ -40,24 +418,14 @@ html {
   border-radius: 0.25rem;
 }
 
-/* 主题工坊缩略图：呼吸偏强（周期短 + 洗净叠加更高；仍叠在浅灰槽底上，不是整屏死白） */
+/* 主题工坊缩略图呼吸动画 */
 @keyframes theme-studio-thumb-breathe-wash {
-  0%,
-  100% {
-    opacity: 0.15;
-  }
-  50% {
-    opacity: 1;
-  }
+  0%, 100% { opacity: 0.15; }
+  50% { opacity: 1; }
 }
 @keyframes theme-studio-thumb-breathe-glow {
-  0%,
-  100% {
-    filter: brightness(1);
-  }
-  50% {
-    filter: brightness(1.14);
-  }
+  0%, 100% { filter: brightness(1); }
+  50% { filter: brightness(1.14); }
 }
 .theme-studio-thumb-breathe-wash {
   animation:
@@ -66,3 +434,40 @@ html {
   background: rgba(255, 255, 255, 0.62);
 }
 
+@keyframes theme-studio-thumb-breathe-wash-dark {
+  0%, 100% { opacity: 0.22; }
+  50% { opacity: 0.78; }
+}
+@keyframes theme-studio-thumb-breathe-glow-dark {
+  0%, 100% { filter: brightness(0.98); }
+  50% { filter: brightness(1.06); }
+}
+
+/* 深色主题下缩略图呼吸层：改用深色基底与更柔和亮度呼吸 */
+.theme-studio-thumb-breathe-wash-dark {
+  animation:
+    theme-studio-thumb-breathe-wash-dark 1.15s ease-in-out infinite,
+    theme-studio-thumb-breathe-glow-dark 1.15s ease-in-out infinite;
+  background: rgba(48, 48, 48, 0.52);
+}
+
+/* 时间滚轮：深色模式下选中行必须是深色字，避免被全局 text-slate-900 覆盖成白色 */
+html.dark [data-wheel-selected="true"] {
+  color: #0f172a !important;
+}
+
+/* 设置页顶部 +类型 按钮：深色 hover 明确提亮虚线和文字 */
+html.dark .wb-add-type-btn:hover {
+  border-color: rgba(255, 255, 255, 0.4) !important;
+  color: #ffffff !important;
+}
+
+@media (prefers-color-scheme: dark) {
+  html:not(.light):not(.dark) [data-wheel-selected="true"] {
+    color: #0f172a !important;
+  }
+  html:not(.light):not(.dark) .wb-add-type-btn:hover {
+    border-color: rgba(255, 255, 255, 0.4) !important;
+    color: #ffffff !important;
+  }
+}

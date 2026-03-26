@@ -50,14 +50,43 @@ import { addImageDecorationLayer, mergeContentThemePatchIntoBindingTextLayer } f
 import { ensureThemeLayers } from '../../../shared/settings'
 import { usePopupThemeEditHistory, type PopupThemeEditUpdateMeta } from '../hooks/usePopupThemeEditHistory'
 
-/** 列表缩略图槽位：主题未指定或纯黑底时的浅灰（slate-200），避免未加载时大块纯黑 */
-const THEME_STUDIO_THUMB_SLOT_FALLBACK_BG = '#e2e8f0'
+export type PopupPreviewAspect = '16:9' | '16:10' | '21:9' | '32:9' | '3:2' | '4:3'
+export type PopupPreviewAspectPreset = 'system' | PopupPreviewAspect
 
-function themeStudioThumbSlotBaseBg(theme: Pick<PopupTheme, 'backgroundColor'>): string {
+const POPUP_PREVIEW_ASPECT_RATIO_MAP: Record<PopupPreviewAspect, number> = {
+  '16:9': 16 / 9,
+  '16:10': 16 / 10,
+  '21:9': 21 / 9,
+  '32:9': 32 / 9,
+  '3:2': 3 / 2,
+  '4:3': 4 / 3,
+}
+
+function popupPreviewAspectRatio(aspect: PopupPreviewAspect): number {
+  return POPUP_PREVIEW_ASPECT_RATIO_MAP[aspect]
+}
+
+/** 列表缩略图槽位：主题未指定或纯黑底时的兜底底色，按亮/深色主题自适配。 */
+const THEME_STUDIO_THUMB_SLOT_FALLBACK_BG_LIGHT = '#e2e8f0'
+const THEME_STUDIO_THUMB_SLOT_FALLBACK_BG_DARK = '#242424'
+
+function getIsDarkModeActive(): boolean {
+  if (typeof document === 'undefined') return false
+  const root = document.documentElement
+  if (root.classList.contains('dark')) return true
+  if (root.classList.contains('light')) return false
+  if (typeof window !== 'undefined') {
+    return window.matchMedia('(prefers-color-scheme: dark)').matches
+  }
+  return false
+}
+
+function themeStudioThumbSlotBaseBg(theme: Pick<PopupTheme, 'backgroundColor'>, isDarkMode: boolean): string {
+  const fallback = isDarkMode ? THEME_STUDIO_THUMB_SLOT_FALLBACK_BG_DARK : THEME_STUDIO_THUMB_SLOT_FALLBACK_BG_LIGHT
   const c = theme.backgroundColor?.trim()
-  if (!c) return THEME_STUDIO_THUMB_SLOT_FALLBACK_BG
+  if (!c) return fallback
   const n = c.replace(/\s/g, '').toLowerCase()
-  if (n === '#000' || n === '#000000') return THEME_STUDIO_THUMB_SLOT_FALLBACK_BG
+  if (n === '#000' || n === '#000000') return fallback
   return c
 }
 
@@ -308,9 +337,10 @@ export type ThemeStudioEditWorkspaceProps = {
   surfaceRef: RefObject<HTMLDivElement | null>
   previewViewportWidth: number
   previewImageUrlMap: Record<string, string>
-  popupPreviewAspect: '16:9' | '4:3'
+  popupPreviewAspect: PopupPreviewAspect
+  popupPreviewAspectPreset?: PopupPreviewAspectPreset
   /** 有则显示在预览区顶栏、全屏按钮左侧 */
-  onPopupPreviewAspectChange?: (aspect: '16:9' | '4:3') => void
+  onPopupPreviewAspectChange?: (aspect: PopupPreviewAspectPreset) => void
   onUpdateTheme: (themeId: string, patch: Partial<PopupTheme>) => void
   replaceThemeFull: (theme: PopupTheme) => void
   selectedElements: TextElementKey[]
@@ -326,6 +356,7 @@ export function ThemeStudioEditWorkspace({
   previewViewportWidth,
   previewImageUrlMap,
   popupPreviewAspect,
+  popupPreviewAspectPreset = 'system',
   onPopupPreviewAspectChange,
   onUpdateTheme,
   replaceThemeFull,
@@ -337,6 +368,7 @@ export function ThemeStudioEditWorkspace({
 }: ThemeStudioEditWorkspaceProps) {
   const [selectedDecorationLayerId, setSelectedDecorationLayerId] = useState<string | null>(null)
   const [selectedStructuralLayerId, setSelectedStructuralLayerId] = useState<string | null>(null)
+  const [snapEnabled, setSnapEnabled] = useState(true)
   useEffect(() => {
     setSelectedDecorationLayerId(null)
     setSelectedStructuralLayerId(null)
@@ -397,8 +429,8 @@ export function ThemeStudioEditWorkspace({
           surfaceRef.current?.focus({ preventScroll: true })
         }}
       >
-        <div className="flex min-h-0 flex-1 items-center justify-center overflow-y-auto overflow-x-hidden px-1 pb-2 pt-1">
-          <div className="w-full min-w-0 shrink-0">
+        <div className="flex min-h-0 flex-1 items-center justify-center overflow-hidden px-1 pb-2 pt-1">
+          <div className="flex h-full w-full min-h-0 min-w-0 items-center justify-center">
             <ThemePreviewEditor
               theme={theme}
               onUpdateTheme={mergedWrappedOnUpdateTheme}
@@ -414,38 +446,48 @@ export function ThemeStudioEditWorkspace({
               selectedStructuralLayerId={selectedStructuralLayerId}
               previewWidthMode="fill"
               outerChrome="none"
+              snapEnabled={snapEnabled}
               toolbarCenter={
                 onPopupPreviewAspectChange ? (
                   <div className="flex items-center gap-2">
                     <span className="hidden text-xs text-slate-500 sm:inline">预览比例</span>
-                    <div className="inline-flex shrink-0 rounded-md border border-slate-300 bg-white p-0.5">
-                      <button
-                        type="button"
-                        onClick={() => onPopupPreviewAspectChange('16:9')}
-                        className={`rounded px-2 py-1 text-xs ${
-                          popupPreviewAspect === '16:9'
-                            ? 'bg-slate-800 text-white'
-                            : 'text-slate-600 hover:bg-slate-50'
-                        }`}
-                      >
-                        16:9
-                      </button>
-                      <button
-                        type="button"
-                        onClick={() => onPopupPreviewAspectChange('4:3')}
-                        className={`rounded px-2 py-1 text-xs ${
-                          popupPreviewAspect === '4:3'
-                            ? 'bg-slate-800 text-white'
-                            : 'text-slate-600 hover:bg-slate-50'
-                        }`}
-                      >
-                        4:3
-                      </button>
-                    </div>
+                    <select
+                      value={popupPreviewAspectPreset}
+                      onChange={(e) => onPopupPreviewAspectChange(e.target.value as PopupPreviewAspectPreset)}
+                      className="rounded-md border border-slate-300 bg-white px-2 py-1 text-xs text-slate-700"
+                      title="选择预览比例"
+                    >
+                      <option value="system">跟随系统（{popupPreviewAspect}）</option>
+                      <option value="16:9">16:9</option>
+                      <option value="16:10">16:10</option>
+                      <option value="21:9">21:9</option>
+                      <option value="32:9">32:9</option>
+                      <option value="3:2">3:2</option>
+                      <option value="4:3">4:3</option>
+                    </select>
                   </div>
                 ) : undefined
               }
-              toolbarTrailing={<ThemeFullscreenPreviewToolbarButton theme={theme} />}
+              toolbarTrailing={
+                <div className="flex items-center gap-1.5">
+                  <button
+                    type="button"
+                    onClick={() => setSnapEnabled((v) => !v)}
+                    title={snapEnabled ? '自动吸附：开（点击关闭）' : '自动吸附：关（点击开启）'}
+                    className={`inline-flex h-7 items-center gap-1 rounded border px-2 text-xs transition-colors ${
+                      snapEnabled
+                        ? 'border-indigo-300 bg-indigo-50 text-indigo-700 hover:bg-indigo-100 dark:border-indigo-500/45 dark:bg-indigo-500/20 dark:text-indigo-200 dark:hover:bg-indigo-500/30'
+                        : 'border-slate-300 bg-white text-slate-600 hover:bg-slate-50 dark:border-slate-600 dark:bg-slate-800 dark:text-slate-300 dark:hover:bg-slate-700/70 dark:hover:text-slate-100'
+                    }`}
+                  >
+                    <span aria-hidden className="text-[11px]">
+                      ◈
+                    </span>
+                    <span>吸附</span>
+                  </button>
+                  <ThemeFullscreenPreviewToolbarButton theme={theme} />
+                </div>
+              }
             />
           </div>
         </div>
@@ -486,7 +528,7 @@ export type ThemeStudioThumbnailProps = {
   theme: PopupTheme
   previewImageUrlMap: Record<string, string>
   previewViewportWidth: number
-  popupPreviewAspect: '16:9' | '4:3'
+  popupPreviewAspect: PopupPreviewAspect
   /**
    * dnd-kit DragOverlay 会挂第二份缩略图：列表里已解码过，跳过呼吸/渐显与重复 Image 预加载，避免拖拽时再演一遍动画。
    */
@@ -503,15 +545,13 @@ export function ThemeStudioThumbnail({
   popupPreviewAspect,
   skipRevealSequence = false,
 }: ThemeStudioThumbnailProps) {
+  const [isDarkModeActive, setIsDarkModeActive] = useState<boolean>(() => getIsDarkModeActive())
   const slotRef = useRef<HTMLDivElement>(null)
   const [slotRect, setSlotRect] = useState({ w: 0, h: 0 })
   const [previewRevealed, setPreviewRevealed] = useState(skipRevealSequence)
 
   const vw = Math.max(1, Math.round(previewViewportWidth))
-  const vh = Math.max(
-    1,
-    Math.round(vw / (popupPreviewAspect === '16:9' ? 16 / 9 : 4 / 3)),
-  )
+  const vh = Math.max(1, Math.round(vw / popupPreviewAspectRatio(popupPreviewAspect)))
 
   useLayoutEffect(() => {
     const el = slotRef.current
@@ -574,7 +614,21 @@ export function ThemeStudioThumbnail({
       ? Math.max(slotRect.w / vw, slotRect.h / vh) * 1.02
       : 1
 
-  const slotBg = themeStudioThumbSlotBaseBg(theme)
+  useEffect(() => {
+    if (typeof document === 'undefined' || typeof window === 'undefined') return
+    const media = window.matchMedia('(prefers-color-scheme: dark)')
+    const sync = () => setIsDarkModeActive(getIsDarkModeActive())
+    sync()
+    media.addEventListener('change', sync)
+    const mo = new MutationObserver(sync)
+    mo.observe(document.documentElement, { attributes: true, attributeFilter: ['class'] })
+    return () => {
+      media.removeEventListener('change', sync)
+      mo.disconnect()
+    }
+  }, [])
+
+  const slotBg = themeStudioThumbSlotBaseBg(theme, isDarkModeActive)
   /** 渐显 1s 与呼吸层同步淡出，避免「先卸呼吸 → 露纯色底 → 再显图」的闪一下 */
   const revealTransition = skipRevealSequence ? 'none' : 'opacity 1s ease-out'
   const contentOpacity = skipRevealSequence ? 1 : previewRevealed ? 1 : 0
@@ -585,7 +639,7 @@ export function ThemeStudioThumbnail({
       ref={slotRef}
       className="relative w-full overflow-hidden"
       style={{
-        aspectRatio: popupPreviewAspect === '16:9' ? '16 / 9' : '4 / 3',
+        aspectRatio: `${popupPreviewAspectRatio(popupPreviewAspect)}`,
         backgroundColor: slotBg,
       }}
     >
@@ -614,7 +668,9 @@ export function ThemeStudioThumbnail({
               popupPreviewAspect={popupPreviewAspect}
               selectedElements={[]}
               onSelectElements={noopSelectElements}
-              readOnlyCanvasFallbackBg={THEME_STUDIO_THUMB_SLOT_FALLBACK_BG}
+              readOnlyCanvasFallbackBg={
+                isDarkModeActive ? THEME_STUDIO_THUMB_SLOT_FALLBACK_BG_DARK : THEME_STUDIO_THUMB_SLOT_FALLBACK_BG_LIGHT
+              }
             />
           </div>
           {!skipRevealSequence ? (
@@ -626,7 +682,11 @@ export function ThemeStudioThumbnail({
               }}
               aria-hidden
             >
-              <div className="theme-studio-thumb-breathe-wash absolute inset-0" />
+              <div
+                className={`absolute inset-0 ${
+                  isDarkModeActive ? 'theme-studio-thumb-breathe-wash-dark' : 'theme-studio-thumb-breathe-wash'
+                }`}
+              />
             </div>
           ) : null}
         </>
@@ -639,7 +699,7 @@ type SortableThemeStudioCardProps = {
   theme: PopupTheme
   previewImageUrlMap: Record<string, string>
   previewViewportWidth: number
-  popupPreviewAspect: '16:9' | '4:3'
+  popupPreviewAspect: PopupPreviewAspect
   /** 主题工坊列表滚动容器，供缩略图懒挂载 IntersectionObserver 使用 */
   listScrollRoot: HTMLDivElement | null
   onOpenEdit: (themeId: string) => void
@@ -664,7 +724,7 @@ function ThemeStudioDragOverlayCard({
   theme: PopupTheme
   previewImageUrlMap: Record<string, string>
   previewViewportWidth: number
-  popupPreviewAspect: '16:9' | '4:3'
+  popupPreviewAspect: PopupPreviewAspect
 }) {
   const { footerTone, subTone } = themeStudioListCardFooterClasses(t.target)
   const subLabel =
@@ -877,7 +937,7 @@ function SortableThemeStudioCard({
               aria-label="拖动排序，点击进入编辑"
               onClick={open}
               onKeyDown={onThumbKey}
-              className="w-full cursor-grab touch-none outline-none active:cursor-grabbing focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-slate-400"
+                className="w-full cursor-pointer touch-none outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-slate-400"
             >
               {thumbPreviewMounted ? (
                 <ThemeStudioThumbnail
@@ -890,12 +950,14 @@ function SortableThemeStudioCard({
                 <div
                   className="relative w-full"
                   style={{
-                    aspectRatio: popupPreviewAspect === '16:9' ? '16 / 9' : '4 / 3',
-                    backgroundColor: themeStudioThumbSlotBaseBg(t),
+                    aspectRatio: `${popupPreviewAspectRatio(popupPreviewAspect)}`,
+                    backgroundColor: themeStudioThumbSlotBaseBg(t, getIsDarkModeActive()),
                   }}
                 >
                   <div
-                    className="theme-studio-thumb-breathe-wash pointer-events-none absolute inset-0"
+                    className={`pointer-events-none absolute inset-0 ${
+                      getIsDarkModeActive() ? 'theme-studio-thumb-breathe-wash-dark' : 'theme-studio-thumb-breathe-wash'
+                    }`}
                     aria-hidden
                   />
                 </div>
@@ -1006,7 +1068,7 @@ export type ThemeStudioListViewProps = {
   themes: PopupTheme[]
   previewImageUrlMap: Record<string, string>
   previewViewportWidth: number
-  popupPreviewAspect: '16:9' | '4:3'
+  popupPreviewAspect: PopupPreviewAspect
   onOpenEdit: (themeId: string) => void
   onCommitThemeName: (themeId: string, name: string) => void
   onDuplicateTheme: (themeId: string) => void
@@ -1207,7 +1269,7 @@ export type ThemeStudioEditViewProps = {
   theme: PopupTheme
   previewViewportWidth: number
   previewImageUrlMap: Record<string, string>
-  popupPreviewAspect: '16:9' | '4:3'
+  popupPreviewAspect: PopupPreviewAspect
   onUpdateTheme: (themeId: string, patch: Partial<PopupTheme>) => void
   replaceThemeFull: (theme: PopupTheme) => void
   selectedElements: TextElementKey[]
@@ -1315,9 +1377,10 @@ export type ThemeStudioFloatingEditorProps = {
   onAfterForkRebindSubitem?: (newThemeId: string) => void
   previewViewportWidth: number
   previewImageUrlMap: Record<string, string>
-  popupPreviewAspect: '16:9' | '4:3'
+  popupPreviewAspect: PopupPreviewAspect
+  popupPreviewAspectPreset?: PopupPreviewAspectPreset
   /** 浮动编辑工具栏内切换预览画幅（16:9 / 4:3） */
-  onPopupPreviewAspectChange?: (aspect: '16:9' | '4:3') => void
+  onPopupPreviewAspectChange?: (aspect: PopupPreviewAspectPreset) => void
   getSelectedElements: (id: string) => TextElementKey[]
   setSelectedElements: (id: string, els: TextElementKey[]) => void
   replacePopupTheme: (theme: PopupTheme) => void
@@ -1341,6 +1404,7 @@ export function ThemeStudioFloatingEditor({
   previewViewportWidth,
   previewImageUrlMap,
   popupPreviewAspect,
+  popupPreviewAspectPreset = 'system',
   onPopupPreviewAspectChange,
   getSelectedElements,
   setSelectedElements,
@@ -1489,6 +1553,26 @@ export function ThemeStudioFloatingEditor({
     window.addEventListener('keydown', onKey)
     return () => window.removeEventListener('keydown', onKey)
   }, [tryCloseStable])
+
+  useEffect(() => {
+    // 锁定页面滚动，避免弹窗滚动时带动后面的设置页。
+    const html = document.documentElement
+    const body = document.body
+    const prevHtmlOverflow = html.style.overflow
+    const prevBodyOverflow = body.style.overflow
+    const prevHtmlOverscroll = html.style.overscrollBehavior
+    const prevBodyOverscroll = body.style.overscrollBehavior
+    html.style.overflow = 'hidden'
+    body.style.overflow = 'hidden'
+    html.style.overscrollBehavior = 'none'
+    body.style.overscrollBehavior = 'none'
+    return () => {
+      html.style.overflow = prevHtmlOverflow
+      body.style.overflow = prevBodyOverflow
+      html.style.overscrollBehavior = prevHtmlOverscroll
+      body.style.overscrollBehavior = prevBodyOverscroll
+    }
+  }, [])
 
   const handleToggleDesktopWallpaperFloating = useCallback(async () => {
     const d = draft
@@ -1659,7 +1743,7 @@ export function ThemeStudioFloatingEditor({
               <button
                 type="button"
                 onClick={handleRestoreDefault}
-                className="shrink-0 rounded-md border border-amber-200 bg-amber-50 px-3 py-1.5 text-xs font-medium text-amber-900 hover:bg-amber-100"
+                className="shrink-0 rounded-md border border-amber-200 bg-amber-50 px-3 py-1.5 text-xs font-medium text-amber-800 hover:bg-amber-100 dark:border-amber-700/80 dark:bg-amber-900/30 dark:text-amber-200 dark:hover:bg-amber-900/45"
               >
                 恢复默认
               </button>
@@ -1728,6 +1812,7 @@ export function ThemeStudioFloatingEditor({
             previewViewportWidth={previewViewportWidth}
             previewImageUrlMap={mergedFloatingPreviewMap}
             popupPreviewAspect={popupPreviewAspect}
+            popupPreviewAspectPreset={popupPreviewAspectPreset}
             onPopupPreviewAspectChange={onPopupPreviewAspectChange}
             onUpdateTheme={updateDraft}
             replaceThemeFull={replaceDraftFull}

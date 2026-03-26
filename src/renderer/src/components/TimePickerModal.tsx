@@ -33,10 +33,11 @@ const WheelRow = memo(
       <div
         role="option"
         aria-selected={selected}
+        data-wheel-selected={selected ? 'true' : 'false'}
         data-wheel-row={v}
         data-wheel-index={idx}
         className={`snap-center shrink-0 w-full flex items-center justify-center text-2xl tabular-nums leading-none rounded ${
-          selected ? 'text-slate-900 font-semibold' : 'text-slate-300 font-normal'
+          selected ? 'text-slate-900 dark:text-slate-900 font-semibold' : 'text-slate-300 dark:text-slate-500 font-normal'
         }`}
         style={{ minHeight: ITEM_H, height: ITEM_H }}
       >
@@ -364,10 +365,10 @@ export function WheelColumn({ label, min, max, value, onChange, onLiveChange }: 
 
   return (
     <div className={`flex flex-col items-center min-w-[4.5rem] select-none ${label ? 'gap-1' : ''}`}>
-      {label ? <span className="text-xs text-slate-500 font-medium">{label}</span> : null}
+      {label ? <span className="text-xs text-slate-500 dark:text-slate-400 font-medium">{label}</span> : null}
       <div className="relative">
         <div
-          className="pointer-events-none absolute inset-x-0 top-1/2 -translate-y-1/2 bg-slate-50/90 rounded-md z-0"
+          className="pointer-events-none absolute inset-x-0 top-1/2 -translate-y-1/2 rounded-md z-0 bg-slate-50/90 dark:bg-slate-50/95"
           style={{ height: ITEM_H }}
           aria-hidden
         />

@@ -25,6 +25,9 @@ export type CategoryKind = 'alarm' | 'countdown' | 'stopwatch'
 export type SubReminderMode = 'fixed' | 'interval' | 'stopwatch'
 export type PopupThemeTarget = 'main' | 'rest' | 'desktop'
 
+/** 应用外壳主题设置 */
+export type AppThemeSetting = 'light' | 'dark' | 'system'
+
 /** 系统内置结束弹窗主题 id（normalize 保证存在，子项默认优先绑定） */
 export const SYSTEM_MAIN_POPUP_THEME_ID = 'theme_main_default' as const
 /** 系统内置休息弹窗主题 id */
@@ -360,6 +363,8 @@ export interface AppSettings {
   presetPools: PresetPools
   popupThemes: PopupTheme[]
   entitlements: AppEntitlements
+  /** 应用外壳主题：浅色 / 深色 / 跟随系统。控制设置页和整体配色 */
+  appTheme?: AppThemeSetting
 }
 
 export interface PresetPools {

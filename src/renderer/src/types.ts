@@ -11,6 +11,7 @@ export type {
   AppEntitlements,
   ResetIntervalPayload,
   TextTransform,
+  AppThemeSetting,
 } from '../../shared/settings'
 
 export {

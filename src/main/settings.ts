@@ -12,6 +12,7 @@ import type {
   PopupTheme,
   AppEntitlements,
   TextTransform,
+  AppThemeSetting,
 } from '../shared/settings'
 import { isPopupFontFamilyPresetId, sanitizeSystemFontFamilyName } from '../shared/popupThemeFonts'
 import {
@@ -785,6 +786,7 @@ export function getSettings(): AppSettings {
       presetPools: defaultPresetPools,
       popupThemes: defaultPopupThemes,
       entitlements: defaultEntitlements,
+      appTheme: 'system',
     }
   }
   try {
@@ -797,6 +799,7 @@ export function getSettings(): AppSettings {
         presetPools: normalizePresetPools(data.presetPools, migrated),
         popupThemes: normalizePopupThemes(data.popupThemes),
         entitlements: normalizeEntitlements(data.entitlements),
+        appTheme: normalizeAppTheme(data.appTheme),
       }
       const dir = dirname(path)
       if (!existsSync(dir)) mkdirSync(dir, { recursive: true })
@@ -810,6 +813,7 @@ export function getSettings(): AppSettings {
       presetPools: normalizePresetPools(data.presetPools, normalizedCategories),
       popupThemes: normalizePopupThemes(data.popupThemes),
       entitlements: normalizeEntitlements(data.entitlements),
+      appTheme: normalizeAppTheme(data.appTheme),
     }
     if (process.env.VITE_DEV_SERVER_URL) console.log('[WorkBreak] 已读取设置:', path)
     return out
@@ -820,8 +824,15 @@ export function getSettings(): AppSettings {
       presetPools: defaultPresetPools,
       popupThemes: defaultPopupThemes,
       entitlements: defaultEntitlements,
+      appTheme: 'system',
     }
   }
+}
+
+/** 规范化 appTheme 字段 */
+function normalizeAppTheme(value: unknown): AppThemeSetting {
+  if (value === 'light' || value === 'dark' || value === 'system') return value
+  return 'system'
 }
 
 export function setSettings(settings: Partial<AppSettings>): AppSettings {
@@ -835,6 +846,7 @@ export function setSettings(settings: Partial<AppSettings>): AppSettings {
       : current.presetPools,
     popupThemes: settings.popupThemes !== undefined ? normalizePopupThemes(settings.popupThemes) : current.popupThemes,
     entitlements: settings.entitlements !== undefined ? normalizeEntitlements(settings.entitlements) : current.entitlements,
+    appTheme: settings.appTheme !== undefined ? normalizeAppTheme(settings.appTheme) : current.appTheme,
   }
   const path = getSettingsPath()
   const dir = dirname(path)

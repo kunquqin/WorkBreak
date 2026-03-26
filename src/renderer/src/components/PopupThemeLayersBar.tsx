@@ -177,7 +177,7 @@ function SortableLayerRow({
       <div
         className={`min-w-0 rounded-md border px-2 py-1.5 transition-colors ${
           selected
-            ? 'border-sky-400 bg-sky-50 ring-1 ring-sky-200 shadow-none'
+            ? 'border-sky-400 bg-sky-50 ring-1 ring-sky-200 shadow-none dark:border-sky-500/60 dark:bg-slate-800/95 dark:ring-sky-400/35'
             : `border-slate-200 bg-white ${isDragging ? 'shadow-md' : 'shadow-sm'}`
         } ${isDragging ? 'opacity-90' : ''}`}
       >
@@ -410,7 +410,7 @@ export function PopupThemeLayersBar({
                 <button
                   type="button"
                   title="恢复主文案层（随当前壁纸类型填入默认句）"
-                  className="rounded border border-indigo-300 bg-indigo-50 px-2 py-0.5 text-[11px] font-medium text-indigo-800 hover:bg-indigo-100"
+                  className="rounded border border-indigo-300 bg-indigo-50 px-2 py-0.5 text-[11px] font-medium text-indigo-800 hover:bg-indigo-100 dark:border-indigo-500/45 dark:bg-indigo-500/20 dark:text-indigo-200 dark:hover:bg-indigo-500/30"
                   onClick={() => {
                     const patch = addBindingContentLayer(theme)
                     if (patch) {

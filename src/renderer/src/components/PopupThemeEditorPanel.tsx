@@ -145,7 +145,7 @@ function PanelBlockTitle({ id, children }: { id: string; children: React.ReactNo
   return (
     <button
       type="button"
-      className="flex w-full items-center justify-between gap-2 rounded py-0.5 text-left hover:bg-slate-50/90"
+      className="flex w-full items-center justify-between gap-2 rounded py-0.5 text-left hover:bg-slate-50/90 dark:hover:bg-slate-700/70"
       onClick={() => toggle(id)}
       aria-expanded={open}
     >
@@ -163,7 +163,7 @@ function PanelSectionTitle({ id, children }: { id: string; children: React.React
   return (
     <button
       type="button"
-      className="flex w-full items-center justify-between gap-2 rounded py-0.5 text-left hover:bg-slate-50/90"
+      className="flex w-full items-center justify-between gap-2 rounded py-0.5 text-left hover:bg-slate-50/90 dark:hover:bg-slate-700/70"
       onClick={() => toggle(id)}
       aria-expanded={open}
     >
@@ -349,7 +349,7 @@ export type PopupThemeEditorPanelProps = {
   replaceThemeFull: (theme: PopupTheme) => void
   previewViewportWidth: number
   previewImageUrlMap: Record<string, string>
-  popupPreviewAspect: '16:9' | '4:3'
+  popupPreviewAspect: '16:9' | '16:10' | '21:9' | '32:9' | '3:2' | '4:3'
   selectedElements: TextElementKey[]
   onSelectElements: (keys: TextElementKey[]) => void
   /** 与子项弹窗表单联动：覆盖预览文案；缺省用主题内 preview* 或默认占位 */
@@ -1412,36 +1412,136 @@ function PopupThemeEditorPanelCore({
       {(effectivePanelFilter === 'all' || effectivePanelFilter === 'text') && decoLayer && decoLayer.kind === 'image' && (() => {
         const im = decoLayer as ImageThemeLayer
         return (
-          <div className="rounded-md border border-teal-200 bg-teal-50/40 p-3 space-y-2">
+          <div className="space-y-2">
             <PanelBlockTitle id="deco-image">图片层 · 属性</PanelBlockTitle>
             <PanelCollapsibleContent id="deco-image">
-            <p className="break-all text-[11px] text-slate-600">{im.imagePath || '（无路径）'}</p>
-            {onPickDecoImage && (
-              <button
-                type="button"
-                onClick={() => void onPickDecoImage()}
-                className="rounded border border-slate-300 bg-white px-2 py-1 text-xs text-slate-700 hover:bg-slate-50"
-              >
-                更换图片
-              </button>
-            )}
-            <label className="flex flex-wrap items-center gap-2 text-xs text-slate-600">
-              <span>填充</span>
-              <select
-                value={im.objectFit === 'contain' ? 'contain' : 'cover'}
-                onChange={(e) => {
-                  const p = updateDecorationLayer(theme, im.id, {
-                    objectFit: e.target.value === 'contain' ? 'contain' : 'cover',
-                  } as Partial<ImageThemeLayer>)
-                  if (p) mergedWrappedOnUpdateTheme(themeId, p)
-                }}
-                className="rounded border border-slate-300 px-2 py-1 text-sm"
-              >
-                <option value="cover">覆盖</option>
-                <option value="contain">包含</option>
-              </select>
-            </label>
-            <p className="text-[10px] text-slate-500">位置与尺寸请在左侧预览中拖拽。</p>
+            <div className="space-y-2">
+              <div className={panelLabeledRowGridClass}>
+                <span className={panelSubLabelClass}>图片路径</span>
+                <div className="flex min-w-0 items-center gap-2">
+                  <input
+                    value={im.imagePath ?? ''}
+                    onChange={(e) => {
+                      const p = updateDecorationLayer(theme, im.id, {
+                        imagePath: e.target.value,
+                      } as Partial<ImageThemeLayer>)
+                      if (p) mergedWrappedOnUpdateTheme(themeId, p)
+                    }}
+                    className="min-w-0 flex-1 rounded border border-slate-300 px-2 py-1 text-xs text-slate-700"
+                    placeholder="例如：C:\\images\\wallpaper.jpg"
+                  />
+                  {onPickDecoImage && (
+                    <button
+                      type="button"
+                      onClick={() => void onPickDecoImage()}
+                      className="shrink-0 rounded border border-slate-300 bg-white px-2 py-1 text-xs text-slate-700 hover:bg-slate-50"
+                    >
+                      更换图片
+                    </button>
+                  )}
+                </div>
+              </div>
+              <PanelDivider />
+              <div className={panelLabeledRowGridClass}>
+                <span className={panelSubLabelClass}>填充</span>
+                <select
+                  value={im.objectFit === 'contain' ? 'contain' : 'cover'}
+                  onChange={(e) => {
+                    const p = updateDecorationLayer(theme, im.id, {
+                      objectFit: e.target.value === 'contain' ? 'contain' : 'cover',
+                    } as Partial<ImageThemeLayer>)
+                    if (p) mergedWrappedOnUpdateTheme(themeId, p)
+                  }}
+                  className={panelFontWeightSelectClass}
+                >
+                  <option value="cover">覆盖</option>
+                  <option value="contain">包含</option>
+                </select>
+              </div>
+              <PanelDivider />
+              <PanelSectionTitle id="deco-image-xform">变换</PanelSectionTitle>
+              <PanelCollapsibleContent id="deco-image-xform">
+              <div className="space-y-2">
+                {(() => {
+                  const base = im.transform ?? { x: 50, y: 50, rotation: 0, scale: 1, textBoxWidthPct: 28, textBoxHeightPct: 22 }
+                  const tx = (base.x ?? 50) - 50
+                  const ty = (base.y ?? 50) - 50
+                  const rot = base.rotation ?? 0
+                  const sc = base.scale ?? 1
+                  const w = base.textBoxWidthPct ?? 28
+                  const h = base.textBoxHeightPct ?? 22
+                  const commitTranslate = (x: number, y: number) => {
+                    const p = updateDecorationLayer(theme, im.id, {
+                      transform: { ...base, x: x + 50, y: y + 50, rotation: rot, scale: sc, textBoxWidthPct: w, textBoxHeightPct: h },
+                    } as Partial<ImageThemeLayer>)
+                    if (p) mergedWrappedOnUpdateTheme(themeId, p)
+                  }
+                  const commitRotScale = (rotation: number, scale: number) => {
+                    const p = updateDecorationLayer(theme, im.id, {
+                      transform: {
+                        ...base,
+                        x: tx + 50,
+                        y: ty + 50,
+                        rotation,
+                        scale,
+                        textBoxWidthPct: w,
+                        textBoxHeightPct: h,
+                      },
+                    } as Partial<ImageThemeLayer>)
+                    if (p) mergedWrappedOnUpdateTheme(themeId, p)
+                  }
+                  return (
+                    <>
+                      <SliderNumberRow
+                        label="水平位移"
+                        min={-50}
+                        max={50}
+                        step={0.5}
+                        value={tx}
+                        onCommit={(n) => commitTranslate(n, ty)}
+                      />
+                      <SliderNumberRow
+                        label="垂直位移"
+                        min={-50}
+                        max={50}
+                        step={0.5}
+                        value={ty}
+                        onCommit={(n) => commitTranslate(tx, n)}
+                      />
+                      <SliderNumberRow
+                        label="旋转"
+                        min={-360}
+                        max={360}
+                        step={1}
+                        value={rot}
+                        onCommit={(n) => commitRotScale(n, sc)}
+                      />
+                      <SliderNumberRow
+                        label="缩放"
+                        min={0.1}
+                        max={5}
+                        step={0.05}
+                        value={sc}
+                        onCommit={(n) => commitRotScale(rot, n)}
+                      />
+                      <button
+                        type="button"
+                        onClick={() => {
+                          const p = updateDecorationLayer(theme, im.id, {
+                            transform: { ...base, x: 50, y: 50, rotation: 0, scale: 1, textBoxWidthPct: w, textBoxHeightPct: h },
+                          } as Partial<ImageThemeLayer>)
+                          if (p) mergedWrappedOnUpdateTheme(themeId, p)
+                        }}
+                        className="text-[11px] text-indigo-600 hover:text-indigo-800"
+                      >
+                        重置为默认位置
+                      </button>
+                    </>
+                  )
+                })()}
+              </div>
+              </PanelCollapsibleContent>
+            </div>
             </PanelCollapsibleContent>
           </div>
         )
@@ -3095,10 +3195,6 @@ function PopupThemeEditorPanelCore({
               <PanelDivider />
               <PanelSectionTitle id="panel-bg-xform">变换</PanelSectionTitle>
               <PanelCollapsibleContent id="panel-bg-xform">
-              <p className="text-[11px] leading-relaxed text-slate-500">
-                水平/垂直为相对画幅宽高的平移（%），0 为壁纸中心与预览中心重合；±50 约可将图层中心移向四边（cover
-                裁切下可见明显位移）。保存后使用新坐标语义。
-              </p>
               <div className="space-y-2">
                 {(() => {
                   const pan = resolveBackgroundImagePanForCss(theme)

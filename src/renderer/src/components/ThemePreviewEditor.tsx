@@ -44,6 +44,17 @@ import type { PopupThemeEditUpdateMeta } from '../hooks/usePopupThemeEditHistory
 
 export type TextElementKey = 'content' | 'time' | 'date' | 'countdown'
 
+function popupPreviewAspectRatio(aspect: '16:9' | '16:10' | '21:9' | '32:9' | '3:2' | '4:3'): number {
+  switch (aspect) {
+    case '16:9': return 16 / 9
+    case '16:10': return 16 / 10
+    case '21:9': return 21 / 9
+    case '32:9': return 32 / 9
+    case '3:2': return 3 / 2
+    case '4:3': return 4 / 3
+  }
+}
+
 /**
  * 只读缩略图（主题工坊列表等）下桌面「时间/日期」绑定层锚点：固定本地正午，
  * 与可编辑预览共用同一套 `toLocaleTimeString` / `formatPopupThemeDateString`，避免占位变窄变宽；不启定时器。
@@ -73,7 +84,7 @@ interface ThemePreviewEditorProps {
   onUpdateTheme: (themeId: string, patch: Partial<PopupTheme>, meta?: PopupThemeEditUpdateMeta) => void
   previewViewportWidth: number
   previewImageUrlMap: Record<string, string>
-  popupPreviewAspect: '16:9' | '4:3'
+  popupPreviewAspect: '16:9' | '16:10' | '21:9' | '32:9' | '3:2' | '4:3'
   selectedElements: TextElementKey[]
   onSelectElements: (keys: TextElementKey[]) => void
   /** 覆盖预览文案（如子项表单里的提醒内容 / 休息时间） */
@@ -97,6 +108,8 @@ interface ThemePreviewEditorProps {
    * 与对齐/打组工具栏同一行、渲染在右侧（如全屏预览）。仅 `showToolbar !== false` 时显示。
    */
   toolbarTrailing?: ReactNode
+  /** 是否启用 Moveable 自动吸附（边线/元素/中心线）。默认开启。 */
+  snapEnabled?: boolean
   /**
    * 与全屏弹窗相同的逻辑像素画幅（宽×高）。用于主题工坊缩略图：外层再 CSS scale 压入窄槽，换行与真实弹窗一致。
    */
@@ -656,6 +669,7 @@ export function ThemePreviewEditor({
   readOnlyCanvasFallbackBg,
   toolbarCenter,
   toolbarTrailing,
+  snapEnabled = true,
 }: ThemePreviewEditorProps) {
   /** 未传回调时仍允许画布内联编辑，避免误开 panelFirst 导致无法改字 */
   const useInlineTextEditing = !readOnly && !(panelFirstTextEditing && Boolean(onRequestPanelTextFocus))
@@ -664,6 +678,7 @@ export function ThemePreviewEditor({
       ? theme.backgroundColor?.trim() || readOnlyCanvasFallbackBg
       : theme.backgroundColor?.trim() || '#000000'
   const containerRef = useRef<HTMLDivElement>(null)
+  const previewFitHostRef = useRef<HTMLDivElement>(null)
   const decoRefs = useRef<Record<string, HTMLDivElement | null>>({})
   const contentRef = useRef<HTMLDivElement>(null)
   const timeRef = useRef<HTMLDivElement>(null)
@@ -752,12 +767,41 @@ export function ThemePreviewEditor({
   const [previewContainerWidth, setPreviewContainerWidth] = useState(0)
   /** 与宽度同步测量，供吸附线用；勿在 useMemo 里读 ref，否则首帧常为 null → 贴边无磁力 */
   const [previewContainerHeight, setPreviewContainerHeight] = useState(0)
+  const [previewFillSize, setPreviewFillSize] = useState<{ width: number; height: number } | null>(null)
   const fallbackPreviewScale = Math.min(1, 920 / Math.max(1, previewViewportWidth))
   const previewScale =
     previewContainerWidth > 1
       ? Math.min(1, previewContainerWidth / Math.max(1, previewViewportWidth))
       : fallbackPreviewScale
   const toPreviewPx = (px: number) => Math.max(1, px * previewScale)
+
+  useLayoutEffect(() => {
+    if (fixedPreviewPixelSize || previewWidthMode !== 'fill') {
+      setPreviewFillSize(null)
+      return
+    }
+    const host = previewFitHostRef.current
+    if (!host) return
+    const ratio = popupPreviewAspectRatio(popupPreviewAspect)
+    const apply = () => {
+      const hostW = Math.max(0, Math.floor(host.clientWidth))
+      const hostH = Math.max(0, Math.floor(host.clientHeight))
+      if (hostW <= 0 || hostH <= 0) return
+      let nextW = hostW
+      let nextH = Math.round(nextW / ratio)
+      if (nextH > hostH) {
+        nextH = hostH
+        nextW = Math.round(nextH * ratio)
+      }
+      setPreviewFillSize((prev) =>
+        prev && prev.width === nextW && prev.height === nextH ? prev : { width: nextW, height: nextH },
+      )
+    }
+    apply()
+    const ro = new ResizeObserver(() => apply())
+    ro.observe(host)
+    return () => ro.disconnect()
+  }, [fixedPreviewPixelSize, previewWidthMode, popupPreviewAspect])
 
   /**
    * Moveable 吸附线：须包含预览黑底 **四边**（0 与宽高），否则拖到边缘没有「磁力」。
@@ -3973,8 +4017,11 @@ export function ThemePreviewEditor({
     )
   }
 
-  const outerWrapClass =
-    !showToolbar ? 'w-full' : outerChrome === 'none' ? 'w-full min-w-0' : 'rounded-md border border-slate-200 bg-white p-2'
+  const outerWrapClass = !showToolbar
+    ? 'w-full'
+    : outerChrome === 'none'
+      ? 'w-full min-w-0 h-full flex flex-col'
+      : 'rounded-md border border-slate-200 bg-white p-2'
   /** 主题工坊缩略图：仅此处使用 fixedPreviewPixelSize；底色跟主题，避免露缝时一条纯黑边 */
   const previewBoxClass = fixedPreviewPixelSize
     ? 'relative overflow-hidden rounded-none border-0 bg-transparent'
@@ -3992,20 +4039,28 @@ export function ThemePreviewEditor({
             <div className="flex min-w-0 flex-1 flex-wrap items-center gap-0.5">
               {alignButtons.map(({ mode, icon, title }) => (
                 <button key={mode} type="button" title={title} disabled={!multiSelected} onClick={() => handleAlign(mode)}
-                  className={`rounded p-1 transition-colors ${multiSelected ? 'text-slate-600 hover:bg-indigo-50 hover:text-indigo-700' : 'text-slate-300 cursor-default'}`}>
+                  className={`rounded p-1 transition-colors ${
+                    multiSelected
+                      ? 'text-slate-600 hover:bg-indigo-50 hover:text-indigo-700 dark:text-slate-300 dark:hover:bg-slate-700/70 dark:hover:text-slate-100'
+                      : 'cursor-default text-slate-300 dark:text-slate-600'
+                  }`}>
                   {icon}
                 </button>
               ))}
               {multiSelected && (
                 <>
-                  <div className="mx-1.5 h-4 w-px bg-slate-200" />
+                  <div className="mx-1.5 h-4 w-px bg-slate-200 dark:bg-slate-600" />
                   <button type="button" onClick={() => setGroupMode(v => !v)}
                     title={groupMode ? '打组：围绕整体中心变换' : '解组：围绕各自中心变换'}
-                    className={`flex items-center gap-1 rounded px-1.5 py-0.5 text-[10px] font-medium transition-colors ${groupMode ? 'bg-indigo-50 text-indigo-600 hover:bg-indigo-100' : 'bg-slate-50 text-slate-400 hover:bg-slate-100 hover:text-slate-500'}`}>
+                    className={`flex items-center gap-1 rounded px-1.5 py-0.5 text-[10px] font-medium transition-colors ${
+                      groupMode
+                        ? 'bg-indigo-50 text-indigo-600 hover:bg-indigo-100 dark:border dark:border-indigo-500/45 dark:bg-indigo-500/20 dark:text-indigo-200 dark:hover:bg-indigo-500/30'
+                        : 'bg-slate-50 text-slate-400 hover:bg-slate-100 hover:text-slate-500 dark:bg-slate-700/55 dark:text-slate-300 dark:hover:bg-slate-600/70 dark:hover:text-slate-100'
+                    }`}>
                     {groupMode ? GROUP_ICON : UNGROUP_ICON}
                     {groupMode ? '打组' : '解组'}
                   </button>
-                  <span className="ml-1 text-[10px] text-indigo-500">已选 {selectedElements.length} 个</span>
+                  <span className="ml-1 text-[10px] text-indigo-500 dark:text-indigo-300">已选 {selectedElements.length} 个</span>
                 </>
               )}
             </div>
@@ -4024,19 +4079,28 @@ export function ThemePreviewEditor({
       )}
 
       <div
-        ref={containerRef}
-        data-theme-preview-root
-        className={`${previewBoxClass} ${editingTextKey || editingDecoLayerId ? '' : 'select-none'} ${readOnly ? 'pointer-events-none' : ''}`}
-        style={
-          fixedPreviewPixelSize
-            ? {
-                width: fixedPreviewPixelSize.width,
-                height: fixedPreviewPixelSize.height,
-                backgroundColor: previewDefaultBg,
-              }
-            : { aspectRatio: popupPreviewAspect === '16:9' ? '16 / 9' : '4 / 3' }
-        }
-        onClick={handleContainerClick} onMouseDown={handleContainerMouseDown}>
+        ref={previewFitHostRef}
+        className={fixedPreviewPixelSize || previewWidthMode !== 'fill' ? '' : 'flex min-h-0 min-w-0 flex-1 items-center justify-center'}
+      >
+        <div
+          ref={containerRef}
+          data-theme-preview-root
+          className={`${previewBoxClass} ${editingTextKey || editingDecoLayerId ? '' : 'select-none'} ${readOnly ? 'pointer-events-none' : ''}`}
+          style={
+            fixedPreviewPixelSize
+              ? {
+                  width: fixedPreviewPixelSize.width,
+                  height: fixedPreviewPixelSize.height,
+                  backgroundColor: previewDefaultBg,
+                }
+              : previewWidthMode === 'fill' && previewFillSize
+                ? {
+                    width: previewFillSize.width,
+                    height: previewFillSize.height,
+                  }
+                : { aspectRatio: `${popupPreviewAspectRatio(popupPreviewAspect)}` }
+          }
+          onClick={handleContainerClick} onMouseDown={handleContainerMouseDown}>
 
         {(ensureThemeLayers(theme).layers ?? []).map((L, i) => {
           const zi = i + 1
@@ -4523,7 +4587,7 @@ export function ThemePreviewEditor({
             rotatable={moveableTransformGesturesEnabled}
             scalable={moveableTransformGesturesEnabled ? { keepRatio: true } : false}
             resizable={resizableForTextBounds ? { throttleResize: 0, keepRatio: false } : false}
-            snappable={true}
+            snappable={snapEnabled}
             snapDirections={{ top: true, left: true, bottom: true, right: true, center: true, middle: true }}
             elementSnapDirections={{ top: true, left: true, bottom: true, right: true, center: true, middle: true }}
             /** 0.56+ 以 snapHorizontal/VerticalThreshold 为准，snapThreshold 已弃用；默认仅 5px 贴边不易感知 */
@@ -4531,10 +4595,10 @@ export function ThemePreviewEditor({
             snapHorizontalThreshold={14}
             snapVerticalThreshold={14}
             isDisplaySnapDigit={true}
-            snapGap={true}
-            elementGuidelines={elementGuidelineRefs()}
-            horizontalGuidelines={previewSnapGuidelines.horizontal}
-            verticalGuidelines={previewSnapGuidelines.vertical}
+            snapGap={snapEnabled}
+            elementGuidelines={snapEnabled ? elementGuidelineRefs() : []}
+            horizontalGuidelines={snapEnabled ? previewSnapGuidelines.horizontal : []}
+            verticalGuidelines={snapEnabled ? previewSnapGuidelines.vertical : []}
             throttleDrag={0} throttleRotate={0} throttleScale={0.01}
             rotationPosition="top"
             renderDirections={resizableForTextBounds ? ['nw', 'ne', 'sw', 'se', 'n', 's', 'e', 'w'] : ['nw', 'ne', 'sw', 'se']}
@@ -4856,6 +4920,7 @@ export function ThemePreviewEditor({
             }}
           />
         )}
+        </div>
       </div>
     </div>
   )

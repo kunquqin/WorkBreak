@@ -25,7 +25,7 @@ export type PopupThemeSelectWithHoverPreviewProps = {
   onChange: (themeId: string) => void
   previewImageUrlMap: Record<string, string>
   previewViewportWidth: number
-  popupPreviewAspect: '16:9' | '4:3'
+  popupPreviewAspect: '16:9' | '16:10' | '21:9' | '32:9' | '3:2' | '4:3'
   /** sm：列表行内 / text-xs；md：子项弹窗 */
   size?: 'sm' | 'md'
   disabled?: boolean

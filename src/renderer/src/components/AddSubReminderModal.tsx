@@ -80,7 +80,7 @@ export type SubReminderModalThemeEditorContext = {
   countPopupThemeReferences: (themeId: string, exclude?: { categoryId: string; itemId: string } | null) => number
   updatePopupTheme: (themeId: string, patch: Partial<PopupTheme>) => void
   previewViewportWidth: number
-  popupPreviewAspect: '16:9' | '4:3'
+  popupPreviewAspect: '16:9' | '16:10' | '21:9' | '32:9' | '3:2' | '4:3'
 }
 
 export type AddSubReminderPayload = {
@@ -233,6 +233,8 @@ export function AddSubReminderModal({
   const getPayloadSnapshotRef = useRef<() => string | null>(() => null)
   const [highlightPopupType, setHighlightPopupType] = useState<'rest' | 'main' | null>(null)
   const [previewImageUrlMap, setPreviewImageUrlMap] = useState<Record<string, string>>({})
+  /** 主题库发生更新后，重建小预览实例，避免返回子项页仍显示旧快照。 */
+  const [themePreviewEpoch, setThemePreviewEpoch] = useState(0)
 
   const [miniMainSelected, setMiniMainSelected] = useState<TextElementKey[]>([])
   const [miniRestSelected, setMiniRestSelected] = useState<TextElementKey[]>([])
@@ -439,6 +441,11 @@ export function AddSubReminderModal({
       setPreviewImageUrlMap(Object.fromEntries(entries))
     })
     return () => { disposed = true }
+  }, [open, popupThemes])
+
+  useEffect(() => {
+    if (!open) return
+    setThemePreviewEpoch((n) => n + 1)
   }, [open, popupThemes])
 
   useEffect(() => {
@@ -1014,6 +1021,7 @@ export function AddSubReminderModal({
                         return (
                           <div className="space-y-2">
                             <ThemePreviewEditor
+                              key={`rest-${thLive.id}-${themePreviewEpoch}`}
                               theme={thLive}
                               onUpdateTheme={(id, p) => themeEditorContext.updatePopupTheme(id, p)}
                               previewViewportWidth={themeEditorContext.previewViewportWidth}
@@ -1081,6 +1089,7 @@ export function AddSubReminderModal({
                       return (
                         <div className="space-y-2">
                           <ThemePreviewEditor
+                            key={`main-${thLive.id}-${themePreviewEpoch}`}
                             theme={thLive}
                             onUpdateTheme={(id, p) => themeEditorContext.updatePopupTheme(id, p)}
                             previewViewportWidth={themeEditorContext.previewViewportWidth}
