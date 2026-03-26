@@ -521,7 +521,7 @@ export function PopupThemeLayersBar({
         </div>
       </div>
       {!collapsed && (
-        <div className="min-h-0 flex-1 overflow-y-auto overscroll-contain pr-0.5">
+        <div className="min-h-0 flex-1 overflow-y-auto overscroll-contain px-1">
           <DndContext sensors={sensors} collisionDetection={closestCenter} onDragEnd={handleDragEnd}>
             <SortableContext items={displayLayers.map((l) => l.id)} strategy={verticalListSortingStrategy}>
               <ul className="flex min-w-0 flex-col gap-2 py-0.5">

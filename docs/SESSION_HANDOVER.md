@@ -33,6 +33,7 @@
 - **图片图层属性区重排（本次修复）**：`PopupThemeEditorPanel` 中 `图片层 · 属性` 去掉外层青色边框卡片，改为与文本属性一致的平铺分区；参数顺序调整为 **图片路径（路径输入框 + 更换图片按钮）→ 填充 → 变换**。图片 `变换` 现对齐背景图交互：**水平位移/垂直位移（-50~50）+ 旋转 + 缩放 + 重置**，位移以图片层中心点百分比映射，保持现有预览与真弹窗渲染语义。
 - **预览区新增自动吸附开关（本次实现）**：在 `ThemeStudioEditWorkspace` 的预览工具栏右侧（全屏预览按钮左边）增加「吸附」开关按钮，默认开启。开时 `ThemePreviewEditor` 的 Moveable 启用 `snappable/snapGap/elementGuidelines/horizontalGuidelines/verticalGuidelines`；关时上述吸附能力全部关闭，图层可自由移动不再贴边或贴元素参考线。
 - **深色主题按钮风格统一（本次修复）**：补齐 `ThemePreviewEditor` 顶部对齐/打组按钮与分隔线、`ThemeStudio` 顶部「吸附」按钮、`PopupThemeLayersBar` 的「+ 主文本」按钮在 `dark` 下的边框/底色/文字/hover 规则，统一到现有工具栏按钮体系，避免深色模式下出现浅色态残留和对比不一致。
+- **图层管理区左右裁切感修复（本次）**：`PopupThemeLayersBar` 的图层列表滚动容器从右内边距改为两侧内边距（`pr-0.5` → `px-1`），给每行卡片的边框/阴影留出安全显示空间，避免贴边时出现左右被“截断一条边”的视觉问题。
 
 - **主题工坊浮动编辑**：第二行仅主题名 + 居中「恢复默认/设为桌面壁纸」+ 右侧取消/保存等；**预览比例** 在 **ThemePreviewEditor** 顶栏 **行内居中**（`toolbarCenter`），全屏预览仍 **最右侧**（`toolbarTrailing`）。
 

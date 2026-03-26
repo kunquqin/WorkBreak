@@ -3470,7 +3470,27 @@ export function Settings() {
               + 秒表类型
             </button>
           )}
+          <div className="flex items-center gap-2">
+            <button
+              onClick={save}
+              disabled={saveStatus === 'saving'}
+              className="rounded-lg bg-slate-800 text-white px-4 py-2 text-sm font-medium hover:bg-slate-700 disabled:opacity-50"
+            >
+              {saveStatus === 'saving' ? '保存中…' : '立即保存'}
+            </button>
+            <button
+              type="button"
+              onClick={() => setShowResetConfirm(true)}
+              className="rounded-lg border border-slate-300 px-4 py-2 text-sm font-medium text-slate-700 hover:bg-slate-100"
+              title="将所有提醒的开始点与进度更新为当前时刻"
+            >
+              全部重置
+            </button>
+            {saveStatus === 'ok' && <span className="text-sm font-medium text-green-600">已保存</span>}
+            {saveStatus === 'error' && <span className="text-sm font-medium text-red-600">保存失败</span>}
+          </div>
         </div>
+        {saveError && <p className="text-sm text-red-600 bg-red-50 px-3 py-2 rounded">错误：{saveError}</p>}
 
         <DndContext
           sensors={categorySensors}
@@ -3560,30 +3580,6 @@ export function Settings() {
         </div>
         )}
 
-        {!themeStudioNav && (
-        <div className="space-y-3">
-          <div className="flex items-center gap-3 flex-wrap">
-            <button
-              onClick={save}
-              disabled={saveStatus === 'saving'}
-              className="rounded-lg bg-slate-800 text-white px-4 py-2 text-sm font-medium hover:bg-slate-700 disabled:opacity-50"
-            >
-              {saveStatus === 'saving' ? '保存中…' : '立即保存'}
-            </button>
-            <button
-              type="button"
-              onClick={() => setShowResetConfirm(true)}
-              className="rounded-lg border border-slate-300 px-4 py-2 text-sm font-medium text-slate-700 hover:bg-slate-100"
-              title="将所有提醒的开始点与进度更新为当前时刻"
-            >
-              全部重置
-            </button>
-            {saveStatus === 'ok' && <span className="text-sm font-medium text-green-600">已保存</span>}
-            {saveStatus === 'error' && <span className="text-sm font-medium text-red-600">保存失败</span>}
-          </div>
-          {saveError && <p className="text-sm text-red-600 bg-red-50 px-3 py-2 rounded">错误：{saveError}</p>}
-        </div>
-        )}
       </main>
 
       {showResetConfirm && (
