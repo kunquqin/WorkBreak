@@ -5,6 +5,7 @@ contextBridge.exposeInMainWorld('electronAPI', {
   getSettings: () => ipcRenderer.invoke('getSettings'),
   getSettingsFilePath: () => ipcRenderer.invoke('getSettingsFilePath'),
   getSettingsPathMeta: () => ipcRenderer.invoke('getSettingsPathMeta'),
+  getAppVersion: () => ipcRenderer.invoke('getAppVersion'),
   pickAndSaveSettingsFile: () => ipcRenderer.invoke('pickAndSaveSettingsFile'),
   pickExistingSettingsFile: () => ipcRenderer.invoke('pickExistingSettingsFile'),
   resetSettingsFileToDefault: () => ipcRenderer.invoke('resetSettingsFileToDefault'),

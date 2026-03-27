@@ -13,6 +13,7 @@ declare global {
         defaultPath: string
         isCustom: boolean
       }>
+      getAppVersion: () => Promise<string>
       pickAndSaveSettingsFile: () => Promise<{ success: true } | { success: false; error: string }>
       pickExistingSettingsFile: () => Promise<{ success: true } | { success: false; error: string }>
       resetSettingsFileToDefault: () => Promise<{ success: true } | { success: false; error: string }>

@@ -21,6 +21,7 @@ import {
   saveCurrentSettingsToCustomPath,
   pointSettingsToExistingFile,
   resetSettingsFileToDefaultLocation,
+  applyLaunchAtLoginFromSettings,
   type AppSettings,
 } from './settings'
 import {
@@ -52,8 +53,15 @@ import {
 
 const __dirname = dirname(fileURLToPath(import.meta.url))
 
+/** 与登录项注册一致：仅 Windows 登录启动时带上此参数，用于不弹出主窗口、仅托盘 */
+const WORKBREAK_BOOT_TRAY_ARG = '--workbreak-boot-tray'
+
 // 统一应用名，保证开发/打包后 userData 路径一致，设置才能持久化
 app.setName('workbreak')
+/** Windows 任务栏分组、聚焦与再次启动时唤起主窗体依赖一致 AUMID；须尽早设置 */
+if (process.platform === 'win32') {
+  app.setAppUserModelId('com.workbreak.app')
+}
 
 /**
  * 开发模式：Chromium 缓存与已安装版共用 %APPDATA%\\workbreak 时，易出现
@@ -72,14 +80,63 @@ if (process.env.VITE_DEV_SERVER_URL) {
 
 let mainWindow: BrowserWindow | null = null
 
+/** 为 true 时允许主窗口真正关闭（托盘「退出」/ app.quit），不得再 intercept 为隐藏或弹通知 */
+let isAppQuitting = false
+
 /**
  * 托盘仅 show、或 Windows 上前台与 WebContents 未对齐时，首记指针常只激活窗口、不落到控件上；
  * 显式聚焦页面后，主题名称等输入框可一次点中。
  */
+/** 开机自启动时静默进托盘：Windows 凭 argv；macOS 凭 openAsHidden + wasOpenedAsHidden（见 applyLaunchAtLoginFromSettings） */
+function shouldStartMainWindowHidden(): boolean {
+  if (!app.isPackaged) return false
+  if (process.platform === 'win32') {
+    return process.argv.includes(WORKBREAK_BOOT_TRAY_ARG)
+  }
+  if (process.platform === 'darwin') {
+    try {
+      const st = app.getLoginItemSettings({ path: process.execPath })
+      return Boolean(st.wasOpenedAsHidden)
+    } catch {
+      return false
+    }
+  }
+  return false
+}
+
+function scheduleRestorePersistedDesktopWallpaper(): void {
+  if (process.platform !== 'win32') return
+  const s = getSettings()
+  const id = s.desktopLiveWallpaperThemeId
+  if (!id) return
+  const theme = s.popupThemes.find((t) => t.id === id && t.target === 'desktop')
+  if (!theme) {
+    try {
+      setSettings({ desktopLiveWallpaperThemeId: null })
+    } catch {
+      /* ignore */
+    }
+    return
+  }
+  const copy = structuredClone(theme) as PopupTheme
+  setTimeout(() => {
+    void startDesktopLiveWallpaper(copy).then((result) => {
+      if (!result.success) {
+        console.warn('[WorkBreak] 启动时恢复动态桌面壁纸失败:', result.error)
+      }
+    })
+  }, 900)
+}
+
 function ensureMainWindowFocusedForInput() {
   const win = mainWindow
   if (!win || win.isDestroyed()) return
   win.show()
+  try {
+    if (process.platform === 'win32') win.moveTop()
+  } catch {
+    /* ignore */
+  }
   win.focus()
   try {
     win.webContents.focus()
@@ -217,11 +274,13 @@ function installAppMenu() {
   Menu.setApplicationMenu(Menu.buildFromTemplate(template))
 }
 
-function createWindow() {
-  // 用手写CommonJS，避免 Vite 把 preload 打成 ESM；开发时从源码加载
-  const preloadPath = resolve(__dirname, '../../src/preload/preload.cjs')
-  const preloadExists = existsSync(preloadPath)
-  if (!preloadExists) console.warn('[WorkBreak] preload 路径:', preloadPath, '不存在')
+function createWindow(options?: { startHidden?: boolean }) {
+  const startHidden = Boolean(options?.startHidden)
+  /** 开发：手写 preload.cjs（与 HMR 一致）；打包后 main 在 out/main，须加载 Vite 产物 out/preload/index.cjs */
+  const preloadPath = process.env.VITE_DEV_SERVER_URL
+    ? resolve(__dirname, '../../src/preload/preload.cjs')
+    : join(__dirname, '../preload/index.cjs')
+  if (!existsSync(preloadPath)) console.warn('[WorkBreak] preload 路径不存在:', preloadPath)
 
   /** 开发 HMR / 重复 createWindow：旧窗 close 用了 preventDefault，须先卸监听再 destroy，否则会留下「点×无效」的幽灵窗 */
   if (mainWindow && !mainWindow.isDestroyed()) {
@@ -239,6 +298,9 @@ function createWindow() {
   const win = new BrowserWindow({
     width: 800,
     height: 560,
+    title: 'WorkBreak',
+    /** 等首帧绘制再显示，避免白屏/未就绪时任务栏「无窗体」观感；加载失败仍会通过 did-fail-load 强制 show */
+    show: false,
     webPreferences: {
       preload: preloadPath,
       contextIsolation: true,
@@ -247,6 +309,54 @@ function createWindow() {
     },
   })
   mainWindow = win
+
+  const revealMainWindow = () => {
+    if (win.isDestroyed()) return
+    win.show()
+    try {
+      if (process.platform === 'win32') win.moveTop()
+    } catch {
+      /* ignore */
+    }
+    win.focus()
+  }
+
+  win.once('ready-to-show', () => {
+    if (!startHidden) revealMainWindow()
+  })
+  /** 极少数环境 ready-to-show 过晚或不触发，避免用户以为双击无反应（开机静默启动时不自动弹出） */
+  let revealFallback: ReturnType<typeof setTimeout> | undefined
+  if (!startHidden) {
+    const revealFallbackMs = 12_000
+    revealFallback = setTimeout(() => {
+      if (!win.isDestroyed() && !win.isVisible()) {
+        console.warn('[WorkBreak] ready-to-show 未在预期内触发，强制显示主窗口')
+        revealMainWindow()
+      }
+    }, revealFallbackMs)
+    win.once('show', () => {
+      if (revealFallback) clearTimeout(revealFallback)
+    })
+  }
+
+  win.webContents.on(
+    'did-fail-load',
+    (_event, errorCode, errorDescription, validatedURL, isMainFrame) => {
+      if (!isMainFrame) return
+      console.error('[WorkBreak] 主界面加载失败', errorCode, errorDescription, validatedURL)
+      revealMainWindow()
+      try {
+        dialog.showErrorBox(
+          'WorkBreak 无法加载界面',
+          '请检查是否被杀毒/权限拦截，或重新下载便携版。\n\n' +
+            (errorDescription || String(errorCode)) +
+            (validatedURL ? `\n${validatedURL}` : ''),
+        )
+      } catch {
+        /* ignore */
+      }
+    },
+  )
 
   if (process.env.VITE_DEV_SERVER_URL) {
     win.loadURL(process.env.VITE_DEV_SERVER_URL)
@@ -266,6 +376,7 @@ function createWindow() {
   })
 
   win.on('close', (e) => {
+    if (isAppQuitting) return
     e.preventDefault()
     try {
       if (!win.isDestroyed()) win.hide()
@@ -276,7 +387,8 @@ function createWindow() {
       if (Notification.isSupported()) {
         new Notification({
           title: 'WorkBreak',
-          body: '已最小化到托盘。请点击任务栏右下角（时钟旁）的图标，或点击「↑」展开隐藏图标后找到 WorkBreak。',
+          body: '已收到托盘，点击托盘图标可打开',
+          silent: true,
         }).show()
       }
     } catch (err) {
@@ -292,6 +404,7 @@ function createWindow() {
 }
 
 ;(globalThis as unknown as { workbreakQuit?: () => void }).workbreakQuit = () => {
+  isAppQuitting = true
   closeThemeEditorFullscreenPreview()
   stopDesktopLiveWallpaper()
   destroyTray()
@@ -299,7 +412,7 @@ function createWindow() {
   app.quit()
 }
 
-// 只允许一个实例，避免重复点 bat 或 HMR 重建时弹出多窗口
+// 只允许一个实例：未拿到锁的进程不得注册 whenReady / IPC，否则 quit 前仍可能 createWindow，出现多窗口与多托盘
 const gotLock = app.requestSingleInstanceLock()
 if (!gotLock) {
   app.quit()
@@ -307,33 +420,37 @@ if (!gotLock) {
   app.on('second-instance', () => {
     ensureMainWindowFocusedForInput()
   })
-}
 
-app.whenReady().then(() => {
-  installAppMenu()
-  createWindow()
-  setLiveWallpaperTrayHooks({
-    isActive: isDesktopLiveWallpaperActive,
-    stop: stopDesktopLiveWallpaper,
+  app.whenReady().then(() => {
+    installAppMenu()
+    const startHidden = shouldStartMainWindowHidden()
+    createWindow({ startHidden })
+    setLiveWallpaperTrayHooks({
+      isActive: isDesktopLiveWallpaperActive,
+      stop: stopDesktopLiveWallpaper,
+    })
+    registerDesktopLiveWallpaperQuitHook()
+    applyLaunchAtLoginFromSettings(getSettings())
+    startReminders()
+    scheduleRestorePersistedDesktopWallpaper()
   })
-  registerDesktopLiveWallpaperQuitHook()
-  startReminders()
-})
 
-app.on('before-quit', () => {
-  destroyTray()
-})
+  app.on('before-quit', () => {
+    isAppQuitting = true
+    destroyTray()
+  })
 
-app.on('window-all-closed', () => {
-  if (process.platform !== 'darwin') app.quit()
-})
+  app.on('window-all-closed', () => {
+    if (process.platform !== 'darwin') app.quit()
+  })
 
-app.on('activate', () => {
-  if (mainWindow === null) createWindow()
-  else ensureMainWindowFocusedForInput()
-})
+  app.on('activate', () => {
+    if (mainWindow === null) createWindow()
+    else ensureMainWindowFocusedForInput()
+  })
 
-ipcMain.handle('getSettings', () => getSettings())
+  ipcMain.handle('getAppVersion', () => app.getVersion())
+  ipcMain.handle('getSettings', () => getSettings())
 ipcMain.handle('getSettingsFilePath', () => getSettingsFilePath())
 ipcMain.handle('getSettingsPathMeta', () => getSettingsPathMeta())
 ipcMain.handle('pickAndSaveSettingsFile', async () => {
@@ -500,6 +617,13 @@ ipcMain.handle('startDesktopLiveWallpaper', (_e, theme: PopupTheme) => {
         if (pendingDesktopWallpaperRequestId === requestId) {
           pendingDesktopWallpaperRequestId = null
         }
+        if (result.success) {
+          try {
+            setSettings({ desktopLiveWallpaperThemeId: theme.id })
+          } catch (err) {
+            console.warn('[WorkBreak] 持久化桌面壁纸主题失败', err)
+          }
+        }
         broadcastDesktopLiveWallpaperApplyDone(
           result.success
             ? { requestId, success: true as const }
@@ -529,6 +653,11 @@ ipcMain.handle('stopDesktopLiveWallpaper', () => {
     })
   }
   stopDesktopLiveWallpaper()
+  try {
+    setSettings({ desktopLiveWallpaperThemeId: null })
+  } catch (err) {
+    console.warn('[WorkBreak] 清除桌面壁纸持久化失败', err)
+  }
   return { success: true as const }
 })
 ipcMain.handle('isDesktopLiveWallpaperActive', () => isDesktopLiveWallpaperActive())
@@ -570,7 +699,8 @@ ipcMain.handle('pickPopupImageFolder', async () => {
   return { success: true as const, folderPath, files: listed.files }
 })
 
-ipcMain.handle('listPopupImageFolderFiles', (_e, folderPath: unknown) => {
-  if (typeof folderPath !== 'string') return { success: false as const, error: '路径无效' }
-  return listPopupImageFilesInFolder(folderPath)
-})
+  ipcMain.handle('listPopupImageFolderFiles', (_e, folderPath: unknown) => {
+    if (typeof folderPath !== 'string') return { success: false as const, error: '路径无效' }
+    return listPopupImageFilesInFolder(folderPath)
+  })
+}

@@ -365,6 +365,16 @@ export interface AppSettings {
   entitlements: AppEntitlements
   /** 应用外壳主题：浅色 / 深色 / 跟随系统。控制设置页和整体配色 */
   appTheme?: AppThemeSetting
+  /**
+   * 是否在用户登录系统后自动启动应用；默认关闭。
+   * 正式安装包由主进程同步到系统登录项；开发模式（未打包）仅写入配置，不注册启动项。
+   */
+  launchAtLogin?: boolean
+  /**
+   * 用户上次成功启用的「动态桌面壁纸」主题 id（仅 Windows）；开机后由主进程自动恢复。
+   * 用户主动关闭壁纸时清空。
+   */
+  desktopLiveWallpaperThemeId?: string
 }
 
 export interface PresetPools {
@@ -455,6 +465,14 @@ const defaultAlarmPoolPresets = [
 const defaultCountdownPoolPresets = ['番茄时间到了，起来动一动～', '本轮专注结束', '短暂休息，稍后继续']
 const defaultStopwatchCategoryPresets: string[] = []
 
+/** 旧版 MVP 子项标题快捷池仅有「吃饭 / 活动 / 休息」三词；读到则迁移为当前默认池 */
+export function isObsoleteMealActivityRestTriad(presets: string[]): boolean {
+  const u = [...new Set(presets.map((s) => (typeof s === 'string' ? s.trim() : '')).filter(Boolean))]
+  if (u.length !== 3) return false
+  const set = new Set(u)
+  return set.has('吃饭') && set.has('活动') && set.has('休息')
+}
+
 export function getDefaultPresetPools(): PresetPools {
   return {
     categoryTitle: {
@@ -468,12 +486,12 @@ export function getDefaultPresetPools(): PresetPools {
       stopwatch: ['专注计时', '会议计时', '阅读计时', '训练组间', '自定义'],
     },
     reminderContent: [
-      '起床',
-      '上班',
-      '下班',
-      '吃饭',
-      '睡觉',
       '时间到啦',
+      '本轮专注结束',
+      '切换一下节奏',
+      '喝口水',
+      '远眺放松',
+      '准备下一段',
     ],
     restContent: [
       '休息一下',
@@ -702,7 +720,7 @@ export function getDefaultReminderCategories(): ReminderCategory[] {
   return [
     {
       id: genId(),
-      name: '闹钟',
+      name: '未命名闹钟类型',
       categoryKind: 'alarm',
       presets: [...defaultAlarmPoolPresets],
       titlePresets: [],
@@ -731,7 +749,7 @@ export function getDefaultReminderCategories(): ReminderCategory[] {
     },
     {
       id: genId(),
-      name: '倒计时',
+      name: '未命名倒计时类型',
       categoryKind: 'countdown',
       presets: [...defaultCountdownPoolPresets],
       titlePresets: [],
@@ -749,7 +767,7 @@ export function getDefaultReminderCategories(): ReminderCategory[] {
     },
     {
       id: genId(),
-      name: '秒表',
+      name: '未命名秒表类型',
       categoryKind: 'stopwatch',
       presets: [...defaultStopwatchCategoryPresets],
       titlePresets: [],
@@ -763,7 +781,7 @@ export function getStableDefaultCategories(): ReminderCategory[] {
   return [
     {
       id: 'cat_alarm',
-      name: '闹钟',
+      name: '未命名闹钟类型',
       categoryKind: 'alarm',
       presets: [...defaultAlarmPoolPresets],
       titlePresets: [],
@@ -792,7 +810,7 @@ export function getStableDefaultCategories(): ReminderCategory[] {
     },
     {
       id: 'cat_countdown',
-      name: '倒计时',
+      name: '未命名倒计时类型',
       categoryKind: 'countdown',
       presets: [...defaultCountdownPoolPresets],
       titlePresets: [],
@@ -810,7 +828,7 @@ export function getStableDefaultCategories(): ReminderCategory[] {
     },
     {
       id: 'cat_stopwatch',
-      name: '秒表',
+      name: '未命名秒表类型',
       categoryKind: 'stopwatch',
       presets: [],
       titlePresets: [],

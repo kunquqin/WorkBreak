@@ -4,6 +4,12 @@
 
 ## 0.1 文字参数区布局重构（本轮）
 
+- **便携版多次启动出现多窗口/多托盘、任务管理器多条 WorkBreak（本次修复）**：`requestSingleInstanceLock()` 为 false 时虽 `app.quit()`，但 `whenReady`/生命周期/`ipcMain` 仍在该进程注册，`quit` 完成前可能已执行 `createWindow()`。已将 `whenReady`、`before-quit`、`window-all-closed`、`activate` 与全部 `ipcMain.handle` 移入 `gotLock` 的 `else` 内，副实例不再初始化。另：任务管理器里 5～6 条同名多为 Chromium 主进程/GPU/渲染子进程，属正常；异常是多枚托盘或多个设置窗口。
+
+- **新建/编辑子项标题预设仍显示旧版「吃饭 / 活动 / 休息」（本次修复）**：早期配置写在 `presetPools.subTitle` 或大类 `presets` 里。已在 `shared/settings.ts` 增加 `isObsoleteMealActivityRestTriad`，主进程 `normalizeCategories` / `normalizePresetPools` 读到该三词且仅三项时自动替换为当前默认池；`getDefaultPresetPools().reminderContent` 去掉旧版「起床/上班/吃饭…」套话，改为专注节律向短句。
+
+- **打包版/便携版无 `electronAPI`、设置页误判「浏览器」且子项倒计时条不显示（本次修复）**：`createWindow` 曾把 preload 固定为源码 `src/preload/preload.cjs`，安装包/asar 内无此路径，预加载未注入。已改为开发沿用 `preload.cjs`，生产使用 `out/preload/index.cjs`（相对 `out/main`）。另将 Vite 产物 `preload/index.ts` 与手写 `preload.cjs` 对齐，补齐 `getReminderCountdowns`、`resetReminderProgress`、`setFixedTimeCountdownOverride`、`resetAllReminderProgress`、`restartReminders`、`onMenuUndo`/`onMenuRedo`。
+
 - **深色顶栏分页 + 子项时钟块颜色（本次修复）**：全局 `html.dark` 将 `bg-slate-800/900` 映射为 `#1e1e1e` / `#0f172a`，导致「全部/闹钟…」选中态与顶栏卡 `#1f1f1f` 对比消失、左右时间块发灰蓝。已为分页加 `wb-filter-tab` + `data-active`（与既有筛选按钮深色规则一致）、「主题工坊」加 `wb-settings-studio-tab`；子项时间按钮改为 `wb-subitem-clock-btn`（浅色保留 slate-9/8 语义，深色为近黑底 + hover `#262626`）。顺带补齐 `@media (prefers-color-scheme: dark)` 首轮未闭合导致后续 `html.dark` 被误嵌套的括号。
 
 - **设置页「立即保存 / 全部重置」回顶栏（本次修复）**：相对 `v0.0.21`，当前分支曾将两按钮挪到 `main` 底部；已恢复为与 `+ 闹钟/倒计时/秒表类型` 同一行（`git diff v0.0.21` 对照），`saveError` 仍紧跟该行下方；「立即保存」保留 `wb-save-now-btn` 以便深色样式一致。

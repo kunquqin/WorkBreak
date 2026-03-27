@@ -112,7 +112,7 @@ export function createTray(mainWindow: BrowserWindow) {
   }
   tray = new Tray(trayImage)
 
-  tray.setToolTip('WorkBreak - 可配置提醒')
+  tray.setToolTip('WorkBreak - 点击图标打开设置；点窗口× 会退到托盘（未退出）')
   rebuildTrayMenu()
   const showAndFocus = () => {
     const w = mainWindow

@@ -92,6 +92,7 @@ const defaultSettings: AppSettings = {
   presetPools: getDefaultPresetPools(),
   popupThemes: getDefaultPopupThemes(),
   entitlements: getDefaultEntitlements(),
+  launchAtLogin: false,
 }
 
 /** 列表筛选：全部 / 仅闹钟大类 / 仅倒计时大类 */
@@ -246,6 +247,11 @@ function formatIntervalHms(item: SubReminder & { mode: 'interval' }): string {
 
 function getDefaultCategoryName(kind: CategoryKind): string {
   return kind === 'alarm' ? '未命名闹钟类型' : kind === 'countdown' ? '未命名倒计时类型' : '未命名秒表类型'
+}
+
+/** 大类标题输入框左侧类型提示（固定文案 + 全角冒号） */
+function categoryKindTypeLabelPrefix(kind: CategoryKind): string {
+  return kind === 'alarm' ? '闹钟：' : kind === 'countdown' ? '倒计时：' : '秒表：'
 }
 
 function getDefaultSubTitle(mode: 'fixed' | 'interval' | 'stopwatch'): string {
@@ -913,11 +919,13 @@ function IoSwitch({
   onChange,
   id,
   ariaLabel,
+  disabled,
 }: {
   checked: boolean
   onChange: (v: boolean) => void
   id: string
   ariaLabel?: string
+  disabled?: boolean
 }) {
   return (
     <button
@@ -925,11 +933,16 @@ function IoSwitch({
       type="button"
       role="switch"
       aria-checked={checked}
+      aria-disabled={disabled || undefined}
       aria-label={ariaLabel}
-      onClick={() => onChange(!checked)}
+      disabled={disabled}
+      onClick={() => {
+        if (disabled) return
+        onChange(!checked)
+      }}
       className={`relative h-[22px] w-[38px] shrink-0 rounded-full transition-colors duration-200 ease-out focus:outline-none focus-visible:ring-2 focus-visible:ring-slate-400 focus-visible:ring-offset-2 ${
         checked ? 'bg-green-500' : 'bg-slate-300'
-      }`}
+      } ${disabled ? 'cursor-not-allowed opacity-50' : ''}`}
       title={checked ? '已开启' : '已关闭'}
     >
       <span
@@ -938,6 +951,71 @@ function IoSwitch({
         }`}
       />
     </button>
+  )
+}
+
+/** 用户配置 ·「加载」：在文件夹中打开当前路径，或选择 JSON 并切换到该配置 */
+function UserConfigLoadControl({
+  isElectron,
+  onShowInFolder,
+  onPickExistingFile,
+}: {
+  isElectron: boolean
+  onShowInFolder: () => void
+  onPickExistingFile: () => void
+}) {
+  const [open, setOpen] = useState(false)
+  const wrapRef = useRef<HTMLDivElement>(null)
+
+  useEffect(() => {
+    if (!open) return
+    const onDoc = (e: MouseEvent) => {
+      if (wrapRef.current && !wrapRef.current.contains(e.target as Node)) setOpen(false)
+    }
+    document.addEventListener('mousedown', onDoc)
+    return () => document.removeEventListener('mousedown', onDoc)
+  }, [open])
+
+  return (
+    <div className="relative inline-block" ref={wrapRef}>
+      <button
+        type="button"
+        disabled={!isElectron}
+        onClick={() => isElectron && setOpen((v) => !v)}
+        className="rounded-md border border-slate-300 bg-white px-3 py-1.5 text-sm font-medium text-slate-700 hover:bg-slate-50 disabled:cursor-not-allowed disabled:opacity-50"
+      >
+        加载
+      </button>
+      {open ? (
+        <div
+          role="menu"
+          className="absolute right-0 z-20 mt-1 min-w-[11rem] rounded-md border border-slate-200 bg-white py-1 shadow-lg"
+        >
+          <button
+            type="button"
+            role="menuitem"
+            className="block w-full px-3 py-2 text-left text-sm text-slate-800 hover:bg-slate-50"
+            onClick={() => {
+              setOpen(false)
+              onShowInFolder()
+            }}
+          >
+            在文件夹中显示
+          </button>
+          <button
+            type="button"
+            role="menuitem"
+            className="block w-full px-3 py-2 text-left text-sm text-slate-800 hover:bg-slate-50"
+            onClick={() => {
+              setOpen(false)
+              onPickExistingFile()
+            }}
+          >
+            从文件加载…
+          </button>
+        </div>
+      ) : null}
+    </div>
   )
 }
 
@@ -2188,41 +2266,49 @@ function CategoryCard(props: CategoryCardProps) {
           })
         }}
       >
-        <div className="relative flex min-w-0 flex-1">
-          {editingCategoryTitle ? (
-            <div
-              ref={categoryTitleEditRef}
-              className="w-full"
-              onKeyDown={(e) => {
-                if (e.key === 'Enter' && e.target === categoryTitleEditRef.current?.querySelector('input')) {
-                  finalizeCategoryTitleEdit()
-                }
-              }}
-            >
-              <PresetTextField
-                resetKey={`cat-title-${cat.id}`}
-                value={categoryTitle}
-                onChange={(v) => updateCategory(realCi, { name: v })}
-                presets={getCategoryTitlePresets(cat.categoryKind)}
-                onPresetsChange={(presets) => onCategoryTitlePresetsChange(cat.categoryKind, presets)}
-                mainPlaceholder={defaultCategoryTitle}
-                inputClassName="text-left font-semibold"
-                autoFocusInput
-              />
-            </div>
-          ) : (
-            <div
-              className="flex h-9 w-full cursor-text items-center justify-start rounded pl-2 pr-9 text-sm font-semibold hover:bg-slate-50"
-              onClick={() => setEditingCategoryTitle(true)}
-              title="点击编辑类型标题"
-            >
-              {categoryTitle ? (
-                <span className="truncate text-slate-800">{categoryTitle}</span>
-              ) : (
-                <span className="truncate text-slate-300">{defaultCategoryTitle}</span>
-              )}
-            </div>
-          )}
+        <div className="relative flex min-w-0 flex-1 items-center gap-2">
+          <span
+            className="shrink-0 text-sm font-medium text-slate-600 dark:text-slate-400"
+            title="此大类下的子项类型"
+          >
+            {categoryKindTypeLabelPrefix(cat.categoryKind)}
+          </span>
+          <div className="min-w-0 flex-1">
+            {editingCategoryTitle ? (
+              <div
+                ref={categoryTitleEditRef}
+                className="w-full"
+                onKeyDown={(e) => {
+                  if (e.key === 'Enter' && e.target === categoryTitleEditRef.current?.querySelector('input')) {
+                    finalizeCategoryTitleEdit()
+                  }
+                }}
+              >
+                <PresetTextField
+                  resetKey={`cat-title-${cat.id}`}
+                  value={categoryTitle}
+                  onChange={(v) => updateCategory(realCi, { name: v })}
+                  presets={getCategoryTitlePresets(cat.categoryKind)}
+                  onPresetsChange={(presets) => onCategoryTitlePresetsChange(cat.categoryKind, presets)}
+                  mainPlaceholder={defaultCategoryTitle}
+                  inputClassName="text-left font-semibold"
+                  autoFocusInput
+                />
+              </div>
+            ) : (
+              <div
+                className="flex h-9 w-full cursor-text items-center justify-start rounded pl-2 pr-9 text-sm font-semibold hover:bg-slate-50 dark:hover:bg-slate-800/60"
+                onClick={() => setEditingCategoryTitle(true)}
+                title="点击编辑类型标题"
+              >
+                {categoryTitle ? (
+                  <span className="truncate text-slate-800 dark:text-slate-100">{categoryTitle}</span>
+                ) : (
+                  <span className="truncate text-slate-300 dark:text-slate-500">{defaultCategoryTitle}</span>
+                )}
+              </div>
+            )}
+          </div>
         </div>
         <div className="flex flex-shrink-0 items-center gap-2">
           <div
@@ -2433,6 +2519,7 @@ export function Settings() {
     defaultPath: string
     isCustom: boolean
   } | null>(null)
+  const [appVersion, setAppVersion] = useState<string>('')
   /** 与导航分开提交：避免首帧同步挂载整页 ThemeStudioListView 阻塞绘制，导致顶部分页按钮看似「等缩略图后才变」 */
   const [themeStudioListMounted, setThemeStudioListMounted] = useState(false)
   const [floatingThemeEdit, setFloatingThemeEdit] = useState<
@@ -2529,9 +2616,14 @@ export function Settings() {
     const api = getApi()
     if (!api?.getSettingsPathMeta) {
       setSettingsPathMeta(null)
-      return
+    } else {
+      api.getSettingsPathMeta().then(setSettingsPathMeta).catch(() => setSettingsPathMeta(null))
     }
-    api.getSettingsPathMeta().then(setSettingsPathMeta).catch(() => setSettingsPathMeta(null))
+    if (api?.getAppVersion) {
+      void api.getAppVersion().then(setAppVersion).catch(() => setAppVersion(''))
+    } else {
+      setAppVersion('')
+    }
   }, [formalSettingsOpen])
 
   const reloadFullSettingsFromDisk = useCallback(async () => {
@@ -2707,6 +2799,23 @@ export function Settings() {
     const api = getApi()
     if (api?.setSettings) {
       await api.setSettings({ appTheme: theme })
+    }
+  }, [])
+
+  const handleLaunchAtLoginChange = useCallback(async (enabled: boolean) => {
+    const api = getApi()
+    if (!api?.setSettings) return
+    try {
+      setSaveError('')
+      const r = await api.setSettings({ launchAtLogin: enabled })
+      if (r.success) {
+        suppressAutoSaveAfterHydrateRef.current = true
+        setSettingsState(r.data)
+      } else {
+        setSaveError(r.error)
+      }
+    } catch (e) {
+      setSaveError(e instanceof Error ? e.message : String(e))
     }
   }, [])
 
@@ -3437,133 +3546,108 @@ export function Settings() {
                 onClick={() => setFormalSettingsOpen(false)}
                 className="rounded-md border border-slate-300 bg-white px-3 py-1.5 text-sm font-medium text-slate-700 hover:bg-slate-50"
               >
-                ← 返回提醒与主题
+                ← 返回
               </button>
-              <h2 className="text-lg font-semibold text-slate-800">应用设置</h2>
             </div>
 
             <div className="mx-auto max-w-3xl space-y-6">
               <section className="space-y-3">
-                <h3 className="text-base font-semibold text-slate-800">配置文件</h3>
-                <p className="text-sm text-slate-600">
-                  提醒与主题壁纸等全部保存在一个 JSON 文件中。可改为任意路径（如云同步文件夹）。自定义指向记录在应用用户数据目录下的{' '}
-                  <code className="rounded bg-slate-100 px-1 text-xs">settings-file-location.json</code>
-                  ，请勿手动删除除非您了解其作用。
-                </p>
+                <h3 className="text-base font-semibold text-slate-800">用户配置</h3>
 
                 <div className="space-y-1">
-                  <div className="text-xs font-medium uppercase tracking-wide text-slate-500">当前使用的文件</div>
-                  <code className="block min-w-0 break-all rounded-md border border-slate-200 bg-slate-50 px-3 py-2 text-xs text-slate-800">
-                    {settingsPathMeta?.currentPath ?? '（加载中…）'}
-                  </code>
+                  <label className="text-xs font-medium uppercase tracking-wide text-slate-500" htmlFor="user-config-path">
+                    配置文件路径
+                  </label>
+                  <div className="flex min-w-0 flex-col gap-2 sm:flex-row sm:items-center sm:gap-2">
+                    <input
+                      id="user-config-path"
+                      readOnly
+                      value={settingsPathMeta?.currentPath ?? ''}
+                      placeholder="（加载中…）"
+                      className="box-border min-h-[38px] min-w-0 w-full flex-1 rounded-md border border-slate-200 bg-slate-50 px-3 py-2 font-mono text-xs text-slate-800 outline-none focus:border-slate-400 focus:ring-1 focus:ring-slate-400"
+                    />
+                    <div className="flex shrink-0 flex-wrap items-center gap-2 sm:flex-nowrap">
+                      <UserConfigLoadControl
+                        isElectron={isElectron}
+                        onShowInFolder={() => {
+                          void getApi()?.showSettingsInFolder?.().then((r) => {
+                            if (r && 'success' in r && !r.success && 'error' in r) {
+                              setSaveError(r.error)
+                            }
+                          })
+                        }}
+                        onPickExistingFile={() => {
+                          void getApi()
+                            ?.pickExistingSettingsFile?.()
+                            .then((r) => {
+                              if (!r) return
+                              if (!('success' in r) || !r.success) {
+                                if ('error' in r && r.error && r.error !== '已取消') setSaveError(r.error)
+                                return
+                              }
+                              void reloadFullSettingsFromDisk()
+                            })
+                        }}
+                      />
+                      <button
+                        type="button"
+                        disabled={!isElectron}
+                        onClick={() => {
+                          void getApi()
+                            ?.pickAndSaveSettingsFile?.()
+                            .then((r) => {
+                              if (!r) return
+                              if (!('success' in r) || !r.success) {
+                                if ('error' in r && r.error && r.error !== '已取消') setSaveError(r.error)
+                                return
+                              }
+                              void reloadFullSettingsFromDisk()
+                            })
+                        }}
+                        className="rounded-md border border-slate-800 bg-slate-800 px-3 py-1.5 text-sm font-medium text-white hover:bg-slate-700 disabled:cursor-not-allowed disabled:opacity-50"
+                      >
+                        另存
+                      </button>
+                    </div>
+                  </div>
                 </div>
 
                 {settingsPathMeta?.isCustom ? (
-                  <div className="space-y-1">
-                    <div className="text-xs font-medium uppercase tracking-wide text-slate-500">未自定义时默认路径</div>
-                    <code className="block min-w-0 break-all rounded-md border border-dashed border-slate-200 bg-slate-50/80 px-3 py-2 text-xs text-slate-600">
-                      {settingsPathMeta.defaultPath}
-                    </code>
-                  </div>
+                  <p className="text-xs text-slate-500">
+                    内置默认路径：
+                    <span className="ml-1 break-all font-mono text-slate-600">{settingsPathMeta.defaultPath}</span>
+                  </p>
                 ) : null}
+              </section>
 
-                <div className="flex flex-wrap gap-2">
-                  <button
-                    type="button"
-                    disabled={!settingsPathMeta?.currentPath}
-                    onClick={() => {
-                      void navigator.clipboard?.writeText?.(settingsPathMeta?.currentPath ?? '')
-                    }}
-                    className="rounded-md border border-slate-300 bg-white px-3 py-1.5 text-sm font-medium text-slate-700 hover:bg-slate-50 disabled:cursor-not-allowed disabled:opacity-50"
-                  >
-                    复制当前路径
-                  </button>
-                  {isElectron && (
-                    <button
-                      type="button"
-                      onClick={() => {
-                        void getApi()?.showSettingsInFolder?.().then((r) => {
-                          if (r && 'success' in r && !r.success && 'error' in r) {
-                            setSaveError(r.error)
-                          }
-                        })
-                      }}
-                      className="rounded-md border border-slate-300 bg-white px-3 py-1.5 text-sm font-medium text-slate-700 hover:bg-slate-50"
+              <section className="space-y-3 border-t border-slate-100 pt-6">
+                <div className="flex flex-wrap items-center justify-between gap-3">
+                  <h3 className="text-base font-semibold text-slate-800">开机自启动</h3>
+                  <div className="flex flex-wrap items-center gap-2 sm:gap-3">
+                    <IoSwitch
+                      id="settings-launch-at-login"
+                      checked={settings.launchAtLogin === true}
+                      disabled={!isElectron}
+                      onChange={(v) => void handleLaunchAtLoginChange(v)}
+                      ariaLabel="开机自启动"
+                    />
+                    <span
+                      className={`text-sm font-medium tabular-nums ${
+                        settings.launchAtLogin ? 'text-emerald-700' : 'text-slate-500'
+                      }`}
                     >
-                      在文件夹中显示
-                    </button>
-                  )}
-                  {isElectron && (
-                    <button
-                      type="button"
-                      onClick={() => {
-                        void getApi()
-                          ?.pickAndSaveSettingsFile?.()
-                          .then((r) => {
-                            if (!r) return
-                            if (!('success' in r) || !r.success) {
-                              if ('error' in r && r.error && r.error !== '已取消') setSaveError(r.error)
-                              return
-                            }
-                            void reloadFullSettingsFromDisk()
-                          })
-                      }}
-                      className="rounded-md border border-slate-800 bg-slate-800 px-3 py-1.5 text-sm font-medium text-white hover:bg-slate-700"
-                    >
-                      另存为并改用此路径
-                    </button>
-                  )}
-                  {isElectron && (
-                    <button
-                      type="button"
-                      onClick={() => {
-                        void getApi()
-                          ?.pickExistingSettingsFile?.()
-                          .then((r) => {
-                            if (!r) return
-                            if (!('success' in r) || !r.success) {
-                              if ('error' in r && r.error && r.error !== '已取消') setSaveError(r.error)
-                              return
-                            }
-                            void reloadFullSettingsFromDisk()
-                          })
-                      }}
-                      className="rounded-md border border-slate-300 bg-white px-3 py-1.5 text-sm font-medium text-slate-700 hover:bg-slate-50"
-                    >
-                      改用已有配置文件
-                    </button>
-                  )}
-                  {isElectron && settingsPathMeta?.isCustom ? (
-                    <button
-                      type="button"
-                      onClick={() => {
-                        if (
-                          !window.confirm(
-                            '将先把当前界面上的配置写入「默认路径」，然后改回使用默认路径。原自定义路径下的文件会保留在磁盘上，但应用不再读取它。是否继续？',
-                          )
-                        ) {
-                          return
-                        }
-                        void getApi()
-                          ?.resetSettingsFileToDefault?.()
-                          .then((r) => {
-                            if (!r) return
-                            if (!('success' in r) || !r.success) {
-                              if ('error' in r) setSaveError(r.error)
-                              return
-                            }
-                            void reloadFullSettingsFromDisk()
-                          })
-                      }}
-                      className="rounded-md border border-amber-300 bg-amber-50 px-3 py-1.5 text-sm font-medium text-amber-950 hover:bg-amber-100"
-                    >
-                      恢复默认路径
-                    </button>
-                  ) : null}
+                      {settings.launchAtLogin ? '开启' : '关闭'}
+                    </span>
+                  </div>
                 </div>
+              </section>
 
-                <p className="text-xs text-slate-500">
-                  「另存为并改用」会把当前内存中的完整配置写入所选文件并立即切换；「改用已有」仅切换读取路径，不会覆盖该文件内容。
+              <section className="space-y-2 border-t border-slate-100 pt-6">
+                <p className="text-sm text-slate-700">
+                  <span className="font-medium text-slate-800">当前版本：</span>
+                  <span className="tabular-nums text-slate-600">
+                    {appVersion || (isElectron ? '（读取中…）' : '—')}
+                  </span>
                 </p>
               </section>
             </div>

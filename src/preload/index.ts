@@ -1,6 +1,6 @@
 import { contextBridge, ipcRenderer } from 'electron'
 
-import type { AppSettings, PopupTheme } from '../shared/settings'
+import type { AppSettings, CountdownItem, PopupTheme, ResetIntervalPayload } from '../shared/settings'
 
 contextBridge.exposeInMainWorld('electronAPI', {
   platform: process.platform,
@@ -12,6 +12,7 @@ contextBridge.exposeInMainWorld('electronAPI', {
       defaultPath: string
       isCustom: boolean
     }>,
+  getAppVersion: () => ipcRenderer.invoke('getAppVersion') as Promise<string>,
   pickAndSaveSettingsFile: () =>
     ipcRenderer.invoke('pickAndSaveSettingsFile') as Promise<
       { success: true } | { success: false; error: string }
@@ -33,8 +34,15 @@ contextBridge.exposeInMainWorld('electronAPI', {
   showMainWindow: () => ipcRenderer.invoke('showMainWindow'),
   focusMainWebContents: () => ipcRenderer.invoke('focusMainWebContents'),
   openThemeEditorFullscreenPreview: (theme) => ipcRenderer.invoke('openThemeEditorFullscreenPreview', theme),
+  getReminderCountdowns: () => ipcRenderer.invoke('getReminderCountdowns') as Promise<CountdownItem[]>,
   getPrimaryDisplaySize: () =>
     ipcRenderer.invoke('getPrimaryDisplaySize') as Promise<{ width: number; height: number }>,
+  resetReminderProgress: (key: string, payload?: ResetIntervalPayload) =>
+    ipcRenderer.invoke('resetReminderProgress', key, payload) as Promise<void>,
+  setFixedTimeCountdownOverride: (key: string, time: string) =>
+    ipcRenderer.invoke('setFixedTimeCountdownOverride', key, time) as Promise<void>,
+  resetAllReminderProgress: () => ipcRenderer.invoke('resetAllReminderProgress') as Promise<void>,
+  restartReminders: () => ipcRenderer.invoke('restartReminders') as Promise<void>,
   resolvePreviewImageUrl: (imagePath: string) =>
     ipcRenderer.invoke('resolvePreviewImageUrl', imagePath) as Promise<
       { success: true; url: string } | { success: false; error: string }
@@ -84,4 +92,14 @@ contextBridge.exposeInMainWorld('electronAPI', {
   isDesktopLiveWallpaperActive: () => ipcRenderer.invoke('isDesktopLiveWallpaperActive') as Promise<boolean>,
   getDesktopLiveWallpaperState: () =>
     ipcRenderer.invoke('getDesktopLiveWallpaperState') as Promise<{ active: boolean; themeId: string | null }>,
+  onMenuUndo: (cb: () => void) => {
+    const fn = () => cb()
+    ipcRenderer.on('menu-edit-undo', fn)
+    return () => ipcRenderer.removeListener('menu-edit-undo', fn)
+  },
+  onMenuRedo: (cb: () => void) => {
+    const fn = () => cb()
+    ipcRenderer.on('menu-edit-redo', fn)
+    return () => ipcRenderer.removeListener('menu-edit-redo', fn)
+  },
 })

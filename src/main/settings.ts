@@ -23,6 +23,7 @@ import {
   getDefaultEntitlements,
   ensureThemeLayers,
   mergeSystemBuiltinPopupThemes,
+  isObsoleteMealActivityRestTriad,
   POPUP_BACKGROUND_IMAGE_BLUR_MAX_PX,
   POPUP_FOLDER_CROSSFADE_MAX_SEC,
 } from '../shared/settings'
@@ -300,7 +301,12 @@ function normalizeCategories(cats: unknown): ReminderCategory[] {
           : i.mode === 'stopwatch'
     )
     const name = rawName.trim() || getDefaultCategoryName(categoryKind)
-    return { id, name, categoryKind, presets, titlePresets, items: filteredItems }
+    let presetsOut = presets
+    if (isObsoleteMealActivityRestTriad(presetsOut)) {
+      const tmpl = getStableDefaultCategories().find((x) => x.categoryKind === categoryKind)
+      presetsOut = tmpl ? [...tmpl.presets] : []
+    }
+    return { id, name, categoryKind, presets: presetsOut, titlePresets, items: filteredItems }
   })
 }
 
@@ -315,10 +321,14 @@ function normalizePresetPools(raw: unknown, categories: ReminderCategory[]): Pre
       )
     )
   )
+  const reminderFromCategories =
+    categoryPresetsLegacy.length === 0 || isObsoleteMealActivityRestTriad(categoryPresetsLegacy)
+      ? [...defaultPresetPools.reminderContent]
+      : categoryPresetsLegacy
   const base = {
     categoryTitle: { ...defaultPresetPools.categoryTitle },
     subTitle: { ...defaultPresetPools.subTitle },
-    reminderContent: categoryPresetsLegacy.length > 0 ? categoryPresetsLegacy : [...defaultPresetPools.reminderContent],
+    reminderContent: reminderFromCategories,
     restContent: restPresetsLegacy.length > 0 ? restPresetsLegacy : [...defaultPresetPools.restContent],
   }
   if (!raw || typeof raw !== 'object') return base
@@ -328,12 +338,18 @@ function normalizePresetPools(raw: unknown, categories: ReminderCategory[]): Pre
   const reminderContentRaw = Array.isArray(o.reminderContent) ? uniqStrings(o.reminderContent) : base.reminderContent
   const restContentRaw = Array.isArray(o.restContent) ? uniqStrings(o.restContent) : base.restContent
   const sameList = (a: string[], b: string[]) => a.length === b.length && a.every((x, i) => x === b[i])
-  const reminderContent = sameList(reminderContentRaw, legacyReminderContentDefaults)
-    ? [...defaultPresetPools.reminderContent]
-    : reminderContentRaw
+  let reminderContent = sameList(reminderContentRaw, legacyReminderContentDefaults)
+      ? [...defaultPresetPools.reminderContent]
+      : reminderContentRaw
+  if (isObsoleteMealActivityRestTriad(reminderContent)) {
+    reminderContent = [...defaultPresetPools.reminderContent]
+  }
   const restContent = sameList(restContentRaw, legacyRestContentDefaults)
     ? [...defaultPresetPools.restContent]
     : restContentRaw
+  const subFixed = Array.isArray(subTitle.fixed) ? uniqStrings(subTitle.fixed as unknown[]) : base.subTitle.fixed
+  const subInterval = Array.isArray(subTitle.interval) ? uniqStrings(subTitle.interval as unknown[]) : base.subTitle.interval
+  const subStop = Array.isArray(subTitle.stopwatch) ? uniqStrings(subTitle.stopwatch as unknown[]) : base.subTitle.stopwatch
   return {
     categoryTitle: {
       alarm: Array.isArray(categoryTitle.alarm) ? uniqStrings(categoryTitle.alarm as unknown[]) : base.categoryTitle.alarm,
@@ -341,9 +357,9 @@ function normalizePresetPools(raw: unknown, categories: ReminderCategory[]): Pre
       stopwatch: Array.isArray(categoryTitle.stopwatch) ? uniqStrings(categoryTitle.stopwatch as unknown[]) : base.categoryTitle.stopwatch,
     },
     subTitle: {
-      fixed: Array.isArray(subTitle.fixed) ? uniqStrings(subTitle.fixed as unknown[]) : base.subTitle.fixed,
-      interval: Array.isArray(subTitle.interval) ? uniqStrings(subTitle.interval as unknown[]) : base.subTitle.interval,
-      stopwatch: Array.isArray(subTitle.stopwatch) ? uniqStrings(subTitle.stopwatch as unknown[]) : base.subTitle.stopwatch,
+      fixed: isObsoleteMealActivityRestTriad(subFixed) ? [...defaultPresetPools.subTitle.fixed] : subFixed,
+      interval: isObsoleteMealActivityRestTriad(subInterval) ? [...defaultPresetPools.subTitle.interval] : subInterval,
+      stopwatch: isObsoleteMealActivityRestTriad(subStop) ? [...defaultPresetPools.subTitle.stopwatch] : subStop,
     },
     reminderContent,
     restContent,
@@ -962,6 +978,8 @@ export function getSettings(): AppSettings {
       popupThemes: defaultPopupThemes,
       entitlements: defaultEntitlements,
       appTheme: 'system',
+      launchAtLogin: false,
+      desktopLiveWallpaperThemeId: undefined,
     }
   }
   try {
@@ -969,12 +987,15 @@ export function getSettings(): AppSettings {
     const data = JSON.parse(raw) as Record<string, unknown>
     if (hasLegacyFields(data) && (!Array.isArray(data.reminderCategories) || data.reminderCategories.length === 0)) {
       const migrated = migrateFromLegacy(data)
+      const popupThemesM = normalizePopupThemes(data.popupThemes)
       const next: AppSettings = {
         reminderCategories: migrated,
         presetPools: normalizePresetPools(data.presetPools, migrated),
-        popupThemes: normalizePopupThemes(data.popupThemes),
+        popupThemes: popupThemesM,
         entitlements: normalizeEntitlements(data.entitlements),
         appTheme: normalizeAppTheme(data.appTheme),
+        launchAtLogin: normalizeLaunchAtLogin(data.launchAtLogin),
+        desktopLiveWallpaperThemeId: normalizePersistedDesktopWallpaperThemeId(data.desktopLiveWallpaperThemeId, popupThemesM),
       }
       const dir = dirname(path)
       if (!existsSync(dir)) mkdirSync(dir, { recursive: true })
@@ -983,12 +1004,15 @@ export function getSettings(): AppSettings {
       return next
     }
     const normalizedCategories = normalizeCategories(data.reminderCategories)
+    const popupThemesNorm = normalizePopupThemes(data.popupThemes)
     const out: AppSettings = {
       reminderCategories: normalizedCategories,
       presetPools: normalizePresetPools(data.presetPools, normalizedCategories),
-      popupThemes: normalizePopupThemes(data.popupThemes),
+      popupThemes: popupThemesNorm,
       entitlements: normalizeEntitlements(data.entitlements),
       appTheme: normalizeAppTheme(data.appTheme),
+      launchAtLogin: normalizeLaunchAtLogin(data.launchAtLogin),
+      desktopLiveWallpaperThemeId: normalizePersistedDesktopWallpaperThemeId(data.desktopLiveWallpaperThemeId, popupThemesNorm),
     }
     if (process.env.VITE_DEV_SERVER_URL) console.log('[WorkBreak] 已读取设置:', path)
     return out
@@ -1000,8 +1024,36 @@ export function getSettings(): AppSettings {
       popupThemes: defaultPopupThemes,
       entitlements: defaultEntitlements,
       appTheme: 'system',
+      launchAtLogin: false,
+      desktopLiveWallpaperThemeId: undefined,
     }
   }
+}
+
+/** 仅保留仍存在于主题库且 target 为 desktop 的 id */
+function normalizePersistedDesktopWallpaperThemeId(
+  raw: unknown,
+  themes: PopupTheme[],
+): string | undefined {
+  if (typeof raw !== 'string') return undefined
+  const s = raw.trim()
+  if (!s) return undefined
+  return themes.some((t) => t.id === s && t.target === 'desktop') ? s : undefined
+}
+
+function resolveNextDesktopLiveWallpaperThemeId(
+  partial: unknown,
+  currentId: string | undefined,
+  themes: PopupTheme[],
+): string | undefined {
+  if (partial !== undefined) {
+    if (partial === null) return undefined
+    if (typeof partial !== 'string') return undefined
+    const s = partial.trim()
+    if (!s) return undefined
+    return themes.some((t) => t.id === s && t.target === 'desktop') ? s : undefined
+  }
+  return normalizePersistedDesktopWallpaperThemeId(currentId, themes)
 }
 
 /** 规范化 appTheme 字段 */
@@ -1010,22 +1062,76 @@ function normalizeAppTheme(value: unknown): AppThemeSetting {
   return 'system'
 }
 
-export function setSettings(settings: Partial<AppSettings>): AppSettings {
+function normalizeLaunchAtLogin(value: unknown): boolean {
+  return value === true
+}
+
+/**
+ * 将「开机自启动」同步到操作系统登录项。
+ * 开发模式 `app.isPackaged === false` 时跳过，避免把 Electron 可执行文件写入系统启动项。
+ */
+export function applyLaunchAtLoginFromSettings(settings: AppSettings): void {
+  const enabled = Boolean(settings.launchAtLogin)
+  if (!app.isPackaged) return
+  try {
+    if (process.platform === 'darwin') {
+      app.setLoginItemSettings({
+        openAtLogin: enabled,
+        path: process.execPath,
+        openAsHidden: enabled,
+      })
+    } else if (process.platform === 'win32') {
+      app.setLoginItemSettings({
+        openAtLogin: enabled,
+        path: process.execPath,
+        args: enabled ? ['--workbreak-boot-tray'] : [],
+      })
+    } else {
+      app.setLoginItemSettings({
+        openAtLogin: enabled,
+        path: process.execPath,
+      })
+    }
+  } catch (e) {
+    console.warn('[WorkBreak] setLoginItemSettings 失败', e)
+  }
+}
+
+export function setSettings(
+  settings: Partial<AppSettings> & { desktopLiveWallpaperThemeId?: string | null },
+): AppSettings {
   const current = getSettings()
-  const next: AppSettings = {
-    reminderCategories: settings.reminderCategories !== undefined
+  const nextReminderCategories =
+    settings.reminderCategories !== undefined
       ? normalizeCategories(settings.reminderCategories)
-      : current.reminderCategories,
-    presetPools: settings.presetPools !== undefined
-      ? normalizePresetPools(settings.presetPools, settings.reminderCategories !== undefined ? normalizeCategories(settings.reminderCategories) : current.reminderCategories)
-      : current.presetPools,
-    popupThemes: settings.popupThemes !== undefined ? normalizePopupThemes(settings.popupThemes) : current.popupThemes,
+      : current.reminderCategories
+  const nextPopupThemes =
+    settings.popupThemes !== undefined ? normalizePopupThemes(settings.popupThemes) : current.popupThemes
+  const next: AppSettings = {
+    reminderCategories: nextReminderCategories,
+    presetPools:
+      settings.presetPools !== undefined
+        ? normalizePresetPools(settings.presetPools, nextReminderCategories)
+        : current.presetPools,
+    popupThemes: nextPopupThemes,
     entitlements: settings.entitlements !== undefined ? normalizeEntitlements(settings.entitlements) : current.entitlements,
     appTheme: settings.appTheme !== undefined ? normalizeAppTheme(settings.appTheme) : current.appTheme,
+    launchAtLogin:
+      settings.launchAtLogin !== undefined
+        ? normalizeLaunchAtLogin(settings.launchAtLogin)
+        : normalizeLaunchAtLogin(current.launchAtLogin),
+    desktopLiveWallpaperThemeId: resolveNextDesktopLiveWallpaperThemeId(
+      settings.desktopLiveWallpaperThemeId,
+      current.desktopLiveWallpaperThemeId,
+      nextPopupThemes,
+    ),
   }
   const path = getSettingsPath()
   const dir = dirname(path)
   if (!existsSync(dir)) mkdirSync(dir, { recursive: true })
   writeFileSync(path, JSON.stringify(next, null, 2), 'utf-8')
+  if (settings.launchAtLogin !== undefined) {
+    applyLaunchAtLoginFromSettings(next)
+  }
   return next
 }
