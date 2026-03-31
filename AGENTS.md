@@ -1,6 +1,6 @@
-# WorkBreak — Agent 开发指引
+# 喵息（MeowBreak）— Agent 开发指引
 
-本文档为 AI Agent 与开发者提供产品背景、技术约定和实现边界，便于从零协作开发 WorkBreak 桌面应用。
+本文档为 AI Agent 与开发者提供产品背景、技术约定和实现边界，便于从零协作开发 **喵息 / MeowBreak** 桌面应用。
 
 ---
 
@@ -8,7 +8,7 @@
 
 ### 1.1 名称与描述
 
-- **产品名称**：WorkBreak（工作代号，后续可改）
+- **产品名称**：喵息（英文 **MeowBreak**）；仓库目录名可仍为 `01_WorkBreak`。
 - **一句话描述**：帮助长期对着电脑工作的打工人，按时收到可配置的多种提醒（吃饭、活动、休息等）的桌面应用。
 
 ### 1.2 目标用户与场景
@@ -250,7 +250,7 @@
 - **先看 AGENTS.md**：实现功能前先对齐本文档中的“要做/不做”和目录结构。
 - **MVP 优先**：第一版不实现统计、协作、手机端、AI、日历集成。
 - **结构扩展**：新增功能时，组件进 `components/`，页面进 `pages/`，状态/逻辑进 `stores/`、`hooks/`、`utils/`，保持结构清晰。
-- **命名**：产品对外名称保持 WorkBreak，代码与资源命名可沿用 `workbreak`/`WorkBreak`，与现有 `package.json` 一致。
+- **命名**：产品对外名称 **喵息 / MeowBreak**；`package.json` 的 `name`、`app.setName('workbreak')`、`appId` 等为路径与用户数据兼容可继续沿用 `workbreak`。
 
 ---
 

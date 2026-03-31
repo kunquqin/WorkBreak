@@ -4,6 +4,7 @@ import {
   Menu,
   dialog,
   ipcMain,
+  nativeImage,
   Notification,
   screen,
   shell,
@@ -32,6 +33,7 @@ import {
   resetAllReminderProgress,
   restartReminders,
   syncIntervalTimersAfterSettingsChange,
+  syncFixedTimersAfterSettingsChange,
 } from './reminders'
 import { clearSystemFontListCache, getSystemFontFamilies } from './systemFonts'
 import {
@@ -52,6 +54,33 @@ import {
 } from './desktopWallpaperPlayer'
 
 const __dirname = dirname(fileURLToPath(import.meta.url))
+
+/** 用户界面展示名（`app.setName` 仍为 workbreak，以保留 userData 等路径兼容） */
+const APP_NAME_ZH = '喵息'
+const APP_NAME_EN = 'MeowBreak'
+
+function showAboutDialog() {
+  const v = app.getVersion()
+  void dialog.showMessageBox({
+    type: 'none',
+    title: `关于${APP_NAME_ZH}（${APP_NAME_EN}）`,
+    message: '',
+    detail: [
+      `版本：v${v}`,
+      '开发者：KevinQin',
+      '博客：https://kunquqin.github.io',
+      '邮箱：3790891281@qq.com',
+      '系统：Windows 10及以上',
+      '发布：2026-03-29',
+      '版权：© 2026 KevinQin All Rights Reserved.',
+    ].join('\n'),
+    /**
+     * Windows：不传 `icon` 时仍会套用应用图标，正文左侧出现大图。
+     * 传 `createEmpty()` 可去掉该侧栏（勿传真实应用图，否则又变成大图）。
+     */
+    ...(process.platform === 'win32' ? { icon: nativeImage.createEmpty() } : {}),
+  })
+}
 
 /** 与登录项注册一致：仅 Windows 登录启动时带上此参数，用于不弹出主窗口、仅托盘 */
 const WORKBREAK_BOOT_TRAY_ARG = '--workbreak-boot-tray'
@@ -176,9 +205,12 @@ function installAppMenu() {
   const template: Electron.MenuItemConstructorOptions[] = []
   if (process.platform === 'darwin') {
     template.push({
-      label: app.name,
+      label: APP_NAME_ZH,
       submenu: [
-        { role: 'about' },
+        {
+          label: `关于${APP_NAME_ZH}（${APP_NAME_EN}）`,
+          click: () => showAboutDialog(),
+        },
         { type: 'separator' },
         { role: 'services' },
         { type: 'separator' },
@@ -258,15 +290,8 @@ function installAppMenu() {
       label: 'Help',
       submenu: [
         {
-          label: '关于 WorkBreak',
-          click: () => {
-            dialog.showMessageBox({
-              type: 'info',
-              title: '关于 WorkBreak',
-              message: 'WorkBreak',
-              detail: '桌面提醒应用',
-            })
-          },
+          label: `关于${APP_NAME_ZH}（${APP_NAME_EN}）`,
+          click: () => showAboutDialog(),
         },
       ],
     },
@@ -298,7 +323,7 @@ function createWindow(options?: { startHidden?: boolean }) {
   const win = new BrowserWindow({
     width: 800,
     height: 560,
-    title: 'WorkBreak',
+    title: APP_NAME_ZH,
     /** 等首帧绘制再显示，避免白屏/未就绪时任务栏「无窗体」观感；加载失败仍会通过 did-fail-load 强制 show */
     show: false,
     webPreferences: {
@@ -347,7 +372,7 @@ function createWindow(options?: { startHidden?: boolean }) {
       revealMainWindow()
       try {
         dialog.showErrorBox(
-          'WorkBreak 无法加载界面',
+          `${APP_NAME_ZH} 无法加载界面`,
           '请检查是否被杀毒/权限拦截，或重新下载便携版。\n\n' +
             (errorDescription || String(errorCode)) +
             (validatedURL ? `\n${validatedURL}` : ''),
@@ -386,7 +411,7 @@ function createWindow(options?: { startHidden?: boolean }) {
     try {
       if (Notification.isSupported()) {
         new Notification({
-          title: 'WorkBreak',
+          title: APP_NAME_ZH,
           body: '已收到托盘，点击托盘图标可打开',
           silent: true,
         }).show()
@@ -500,6 +525,7 @@ ipcMain.handle('setSettings', (_e, settings: Partial<AppSettings>) => {
     const next = setSettings(settings)
     if (settings.reminderCategories !== undefined) {
       syncIntervalTimersAfterSettingsChange(prev.reminderCategories, next.reminderCategories)
+      syncFixedTimersAfterSettingsChange(prev.reminderCategories, next.reminderCategories)
     }
     console.log('[WorkBreak] 保存成功:', JSON.stringify(next))
     return { success: true as const, data: next }

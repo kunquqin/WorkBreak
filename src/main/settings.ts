@@ -979,6 +979,7 @@ export function getSettings(): AppSettings {
       entitlements: defaultEntitlements,
       appTheme: 'system',
       launchAtLogin: false,
+      forcedRestMode: false,
       desktopLiveWallpaperThemeId: undefined,
     }
   }
@@ -995,6 +996,7 @@ export function getSettings(): AppSettings {
         entitlements: normalizeEntitlements(data.entitlements),
         appTheme: normalizeAppTheme(data.appTheme),
         launchAtLogin: normalizeLaunchAtLogin(data.launchAtLogin),
+        forcedRestMode: normalizeForcedRestMode(data.forcedRestMode),
         desktopLiveWallpaperThemeId: normalizePersistedDesktopWallpaperThemeId(data.desktopLiveWallpaperThemeId, popupThemesM),
       }
       const dir = dirname(path)
@@ -1012,6 +1014,7 @@ export function getSettings(): AppSettings {
       entitlements: normalizeEntitlements(data.entitlements),
       appTheme: normalizeAppTheme(data.appTheme),
       launchAtLogin: normalizeLaunchAtLogin(data.launchAtLogin),
+      forcedRestMode: normalizeForcedRestMode(data.forcedRestMode),
       desktopLiveWallpaperThemeId: normalizePersistedDesktopWallpaperThemeId(data.desktopLiveWallpaperThemeId, popupThemesNorm),
     }
     if (process.env.VITE_DEV_SERVER_URL) console.log('[WorkBreak] 已读取设置:', path)
@@ -1025,6 +1028,7 @@ export function getSettings(): AppSettings {
       entitlements: defaultEntitlements,
       appTheme: 'system',
       launchAtLogin: false,
+      forcedRestMode: false,
       desktopLiveWallpaperThemeId: undefined,
     }
   }
@@ -1063,6 +1067,10 @@ function normalizeAppTheme(value: unknown): AppThemeSetting {
 }
 
 function normalizeLaunchAtLogin(value: unknown): boolean {
+  return value === true
+}
+
+function normalizeForcedRestMode(value: unknown): boolean {
   return value === true
 }
 
@@ -1120,6 +1128,10 @@ export function setSettings(
       settings.launchAtLogin !== undefined
         ? normalizeLaunchAtLogin(settings.launchAtLogin)
         : normalizeLaunchAtLogin(current.launchAtLogin),
+    forcedRestMode:
+      settings.forcedRestMode !== undefined
+        ? normalizeForcedRestMode(settings.forcedRestMode)
+        : normalizeForcedRestMode(current.forcedRestMode),
     desktopLiveWallpaperThemeId: resolveNextDesktopLiveWallpaperThemeId(
       settings.desktopLiveWallpaperThemeId,
       current.desktopLiveWallpaperThemeId,

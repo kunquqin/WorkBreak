@@ -4,7 +4,7 @@
 
 ## 0.1 文字参数区布局重构（本轮）
 
-- **便携版多次启动出现多窗口/多托盘、任务管理器多条 WorkBreak（本次修复）**：`requestSingleInstanceLock()` 为 false 时虽 `app.quit()`，但 `whenReady`/生命周期/`ipcMain` 仍在该进程注册，`quit` 完成前可能已执行 `createWindow()`。已将 `whenReady`、`before-quit`、`window-all-closed`、`activate` 与全部 `ipcMain.handle` 移入 `gotLock` 的 `else` 内，副实例不再初始化。另：任务管理器里 5～6 条同名多为 Chromium 主进程/GPU/渲染子进程，属正常；异常是多枚托盘或多个设置窗口。
+- **便携版多次启动出现多窗口/多托盘、任务管理器多条同名进程（本次修复）**：`requestSingleInstanceLock()` 为 false 时虽 `app.quit()`，但 `whenReady`/生命周期/`ipcMain` 仍在该进程注册，`quit` 完成前可能已执行 `createWindow()`。已将 `whenReady`、`before-quit`、`window-all-closed`、`activate` 与全部 `ipcMain.handle` 移入 `gotLock` 的 `else` 内，副实例不再初始化。另：任务管理器里 5～6 条同名多为 Chromium 主进程/GPU/渲染子进程，属正常；异常是多枚托盘或多个设置窗口。
 
 - **新建/编辑子项标题预设仍显示旧版「吃饭 / 活动 / 休息」（本次修复）**：早期配置写在 `presetPools.subTitle` 或大类 `presets` 里。已在 `shared/settings.ts` 增加 `isObsoleteMealActivityRestTriad`，主进程 `normalizeCategories` / `normalizePresetPools` 读到该三词且仅三项时自动替换为当前默认池；`getDefaultPresetPools().reminderContent` 去掉旧版「起床/上班/吃饭…」套话，改为专注节律向短句。
 
@@ -18,7 +18,7 @@
 
 - **深色模式下子项下拉与拖拽被裁切（本次修复）**：`index.css` 曾对 `html.dark` 及「跟随系统深色」下**所有** `.rounded-lg` 强制 `overflow: hidden !important`（原意为 embedded 弹窗表头圆角）。设置页闹钟/倒计时子项外层也使用 `rounded-lg`，深色生效后该规则截断「重复星期」「重复次数 ∞–10」等绝对定位下拉，并压过 `CategoryCard` 的 `overflow-visible`，使子项拖拽排序像在分类卡片内被裁切。已移除上述全局 `overflow:hidden`，仅保留针对表头/底角的 `border-radius` 配合规则；需圆角裁切的容器继续在组件上显式使用 `overflow-hidden`（如 `ThemeStudio` 列表壳层）。未重新打包，待测试版确认后再出包。
 
-- **安装版浅色模式部分输入框发浅绿（本次修复）**：根因是部分机器上的 Electron/Chromium 对输入控件触发了 `:-webkit-autofill` 默认底色（浅绿色），导致子项新建/编辑弹窗里仅部分字段变绿且输入后不一定恢复。已在 `src/renderer/src/index.css` 增加全局 autofill 覆盖（浅色/深色/跟随系统深色三套），并为 `PresetTextField` 及 `AddSubReminderModal` 的数字输入补 `autoComplete="off"`，统一消除绿色底色干扰。已执行 `npm run build:win`，重新产出 `release/WorkBreak-0.0.19-Setup.exe` 供跨机器复测。
+- **安装版浅色模式部分输入框发浅绿（本次修复）**：根因是部分机器上的 Electron/Chromium 对输入控件触发了 `:-webkit-autofill` 默认底色（浅绿色），导致子项新建/编辑弹窗里仅部分字段变绿且输入后不一定恢复。已在 `src/renderer/src/index.css` 增加全局 autofill 覆盖（浅色/深色/跟随系统深色三套），并为 `PresetTextField` 及 `AddSubReminderModal` 的数字输入补 `autoComplete="off"`，统一消除绿色底色干扰。已执行 `npm run build:win`，重新产出安装包（当前产品名为 **MeowBreak**，如 `release/MeowBreak-*-Setup.exe`）供跨机器复测。
 
 - **深色模式下主题预览涂黑（本次修复）**：`index.css` 的深色覆盖曾包含过宽选择器 `html.dark [role="dialog"] div`（并伴随 `rounded-xl` 泛匹配），导致主题编辑预览画布内所有层（含文字层、框选层、遮罩层）被强制刷成深色背景，出现“框选拖过变深色块 / 文字后黑底 / 遮罩不透底”。现已收敛为仅覆盖 `bg-white` 相关类，不再污染预览画布内部图层。建议手测：深色模式下进入壁纸主题编辑，验证框选、文字层与遮罩透明度均恢复正常。
 
@@ -489,7 +489,7 @@
 ## 12. 新会话开头可粘贴的交接提示
 
 ```
-【WorkBreak — 新会话交接（package **0.0.17** · 图层 V1 已接主链路）】
+【喵息 MeowBreak — 新会话交接（package **0.0.17** · 图层 V1 已接主链路）】
 
 请先读：
 - AGENTS.md：**4.11–4.16**（含 4.15 图层 V1 规格、4.16 ThemeStudio 重构注意、4.12 休息结束倒计时与主弹窗图层说明）

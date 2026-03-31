@@ -156,6 +156,12 @@ html.dark .rounded-lg > [class*="border-t"]:last-child {
   border-bottom-right-radius: 0.5rem !important;
 }
 
+/* 与跟随系统一致：带 border-t 的条带去顶圆角，避免与外层圆角叠出缺口；勿匹配 border-transparent */
+html.dark .rounded-lg [class*="border-t"]:not([class*="border-transparent"]) {
+  border-top-left-radius: 0 !important;
+  border-top-right-radius: 0 !important;
+}
+
 html.dark .bg-slate-100 { background-color: #2d2d2d !important; }
 html.dark .bg-slate-200 { background-color: #3d3d3d !important; }
 html.dark .bg-slate-300 { background-color: #4d4d4d !important; }

@@ -371,6 +371,10 @@ export interface AppSettings {
    */
   launchAtLogin?: boolean
   /**
+   * 强制休息模式：开启后休息主题弹窗与「休息即将结束」黑底倒计时均不显示关闭按钮且无法用 Esc 关闭，仅随休息流程自动关闭；不影响工作结束弹窗。默认关闭。
+   */
+  forcedRestMode?: boolean
+  /**
    * 用户上次成功启用的「动态桌面壁纸」主题 id（仅 Windows）；开机后由主进程自动恢复。
    * 用户主动关闭壁纸时清空。
    */

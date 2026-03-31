@@ -93,6 +93,7 @@ const defaultSettings: AppSettings = {
   popupThemes: getDefaultPopupThemes(),
   entitlements: getDefaultEntitlements(),
   launchAtLogin: false,
+  forcedRestMode: false,
 }
 
 /** 列表筛选：全部 / 仅闹钟大类 / 仅倒计时大类 */
@@ -1549,6 +1550,24 @@ function SubReminderRow({
                 previewViewportWidth={previewViewportWidth}
                 popupPreviewAspect={popupPreviewAspect}
                 aria-label="选择休息壁纸"
+                listTopAction={
+                  subReminderThemeEditor && onOpenThemeStudioEdit
+                    ? {
+                        label: '+休息壁纸',
+                        onClick: () => {
+                          const id = subReminderThemeEditor.createBlankPopupTheme('rest')
+                          updateItem(categoryIndex, itemIndex, { restPopupThemeId: id })
+                          onOpenThemeStudioEdit({
+                            themeId: id,
+                            categoryId,
+                            itemAnchor: item.id,
+                            popupTarget: 'rest',
+                            isNewDraft: true,
+                          })
+                        },
+                      }
+                    : undefined
+                }
               />
             </label>
           )}
@@ -1563,6 +1582,24 @@ function SubReminderRow({
               previewViewportWidth={previewViewportWidth}
               popupPreviewAspect={popupPreviewAspect}
               aria-label="选择结束壁纸"
+              listTopAction={
+                subReminderThemeEditor && onOpenThemeStudioEdit
+                  ? {
+                      label: '+结束壁纸',
+                      onClick: () => {
+                        const id = subReminderThemeEditor.createBlankPopupTheme('main')
+                        updateItem(categoryIndex, itemIndex, { mainPopupThemeId: id })
+                        onOpenThemeStudioEdit({
+                          themeId: id,
+                          categoryId,
+                          itemAnchor: item.id,
+                          popupTarget: 'main',
+                          isNewDraft: true,
+                        })
+                      },
+                    }
+                  : undefined
+              }
             />
           </label>
         </div>
@@ -2519,7 +2556,6 @@ export function Settings() {
     defaultPath: string
     isCustom: boolean
   } | null>(null)
-  const [appVersion, setAppVersion] = useState<string>('')
   /** 与导航分开提交：避免首帧同步挂载整页 ThemeStudioListView 阻塞绘制，导致顶部分页按钮看似「等缩略图后才变」 */
   const [themeStudioListMounted, setThemeStudioListMounted] = useState(false)
   const [floatingThemeEdit, setFloatingThemeEdit] = useState<
@@ -2618,11 +2654,6 @@ export function Settings() {
       setSettingsPathMeta(null)
     } else {
       api.getSettingsPathMeta().then(setSettingsPathMeta).catch(() => setSettingsPathMeta(null))
-    }
-    if (api?.getAppVersion) {
-      void api.getAppVersion().then(setAppVersion).catch(() => setAppVersion(''))
-    } else {
-      setAppVersion('')
     }
   }, [formalSettingsOpen])
 
@@ -2802,12 +2833,38 @@ export function Settings() {
     }
   }, [])
 
+  /** 跟随系统：OS 深浅切换时同步 html class（样式主要仍由 CSS @media 驱动，此处保证与显式切换路径一致） */
+  useEffect(() => {
+    if (appTheme !== 'system') return
+    const mq = window.matchMedia('(prefers-color-scheme: dark)')
+    const onSchemeChange = () => applyAppThemeClass('system')
+    mq.addEventListener('change', onSchemeChange)
+    return () => mq.removeEventListener('change', onSchemeChange)
+  }, [appTheme])
+
   const handleLaunchAtLoginChange = useCallback(async (enabled: boolean) => {
     const api = getApi()
     if (!api?.setSettings) return
     try {
       setSaveError('')
       const r = await api.setSettings({ launchAtLogin: enabled })
+      if (r.success) {
+        suppressAutoSaveAfterHydrateRef.current = true
+        setSettingsState(r.data)
+      } else {
+        setSaveError(r.error)
+      }
+    } catch (e) {
+      setSaveError(e instanceof Error ? e.message : String(e))
+    }
+  }, [])
+
+  const handleForcedRestModeChange = useCallback(async (enabled: boolean) => {
+    const api = getApi()
+    if (!api?.setSettings) return
+    try {
+      setSaveError('')
+      const r = await api.setSettings({ forcedRestMode: enabled })
       if (r.success) {
         suppressAutoSaveAfterHydrateRef.current = true
         setSettingsState(r.data)
@@ -3279,7 +3336,7 @@ export function Settings() {
     setSaveError('')
   }
 
-  const addPopupTheme = (target: PopupThemeTarget): string => {
+  const addPopupTheme = useCallback((target: PopupThemeTarget): string => {
     const id = genId()
     const defaultName =
       target === 'main' ? '未命名结束壁纸' : target === 'rest' ? '未命名休息壁纸' : '未命名桌面壁纸'
@@ -3327,9 +3384,17 @@ export function Settings() {
       newTheme.previewContentText = ''
       newTheme.formatVersion = 2
     }
-    setPopupThemes(mergeSystemBuiltinPopupThemes([newTheme, ...popupThemes]))
+    setSettingsState((prev) => {
+      const list = Array.isArray(prev.popupThemes) ? prev.popupThemes : getDefaultPopupThemes()
+      return {
+        ...prev,
+        popupThemes: mergeSystemBuiltinPopupThemes([newTheme, ...list]),
+      }
+    })
+    setSaveStatus('idle')
+    setSaveError('')
     return id
-  }
+  }, [])
 
   const appendPopupTheme = useCallback((theme: PopupTheme) => {
     setSettingsState((prev) => {
@@ -3406,8 +3471,9 @@ export function Settings() {
       updatePopupTheme,
       previewViewportWidth: previewViewportWidthStudio,
       popupPreviewAspect,
+      createBlankPopupTheme: (target) => addPopupTheme(target),
     }),
-    [appendPopupTheme, replacePopupTheme, countPopupThemeReferences, updatePopupTheme, previewViewportWidthStudio, popupPreviewAspect],
+    [appendPopupTheme, replacePopupTheme, countPopupThemeReferences, updatePopupTheme, previewViewportWidthStudio, popupPreviewAspect, addPopupTheme],
   )
 
   const removePopupTheme = (themeId: string) => {
@@ -3489,6 +3555,7 @@ export function Settings() {
         itemAnchor: args.itemAnchor,
         popupTarget: args.popupTarget,
       },
+      isNewDraft: args.isNewDraft === true,
     })
   }, [])
 
@@ -3504,9 +3571,23 @@ export function Settings() {
   return (
     <div className="min-h-screen bg-slate-50 text-slate-800">
       <header className="bg-white border-b border-slate-200 px-6 py-4">
-        <div className="flex items-center justify-between">
-          <h1 className="text-xl font-semibold">WorkBreak</h1>
-          <div className="flex items-center gap-2">
+        <div className="flex items-center justify-between gap-3">
+          <div className="flex min-w-0 items-center gap-3">
+            {/* file:// 下绝对路径 /icon.ico 会裂图，须与 index.html 同目录相对引用 */}
+            <img
+              src="./icon.ico"
+              alt=""
+              width={36}
+              height={36}
+              decoding="async"
+              className="h-9 w-9 shrink-0 rounded-[22%] object-cover shadow-sm ring-1 ring-slate-900/10 dark:ring-white/10"
+            />
+            <div className="min-w-0">
+              <h1 className="text-xl font-semibold tracking-tight text-slate-800">喵息</h1>
+              <p className="truncate text-xs text-slate-500">MeowBreak</p>
+            </div>
+          </div>
+          <div className="flex shrink-0 items-center gap-2">
             <button
               type="button"
               onClick={() => {
@@ -3642,13 +3723,29 @@ export function Settings() {
                 </div>
               </section>
 
-              <section className="space-y-2 border-t border-slate-100 pt-6">
-                <p className="text-sm text-slate-700">
-                  <span className="font-medium text-slate-800">当前版本：</span>
-                  <span className="tabular-nums text-slate-600">
-                    {appVersion || (isElectron ? '（读取中…）' : '—')}
-                  </span>
-                </p>
+              <section className="space-y-3 border-t border-slate-100 pt-6">
+                <div className="flex flex-wrap items-center justify-between gap-3">
+                  <div className="flex min-w-0 flex-1 flex-wrap items-baseline gap-x-3 gap-y-1">
+                    <h3 className="shrink-0 text-base font-semibold text-slate-800">强制休息模式</h3>
+                    <p className="text-xs text-slate-500">开启后将无法关闭休息弹窗与休息结束前倒计时</p>
+                  </div>
+                  <div className="flex flex-wrap items-center gap-2 sm:gap-3">
+                    <IoSwitch
+                      id="settings-forced-rest-mode"
+                      checked={settings.forcedRestMode === true}
+                      disabled={!isElectron}
+                      onChange={(v) => void handleForcedRestModeChange(v)}
+                      ariaLabel="强制休息模式"
+                    />
+                    <span
+                      className={`text-sm font-medium tabular-nums ${
+                        settings.forcedRestMode ? 'text-emerald-700' : 'text-slate-500'
+                      }`}
+                    >
+                      {settings.forcedRestMode ? '开启' : '关闭'}
+                    </span>
+                  </div>
+                </div>
               </section>
             </div>
           </div>

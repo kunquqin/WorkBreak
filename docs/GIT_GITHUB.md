@@ -1,4 +1,4 @@
-# WorkBreak 项目 — Git + GitHub 版本管理流程
+# 喵息（MeowBreak）项目 — Git + GitHub 版本管理流程
 
 ## 一、一次性准备（本机 + GitHub）
 
@@ -14,7 +14,7 @@
 ### 2. GitHub 账号与仓库
 
 - 注册/登录：<https://github.com>
-- 在 GitHub 网页上 **New repository** 新建一个空仓库（例如 `WorkBreak`），**不要**勾选 “Add a README”等，保持空仓库。
+- 在 GitHub 网页上 **New repository** 新建一个空仓库（仓库名可与项目代号一致，例如 `WorkBreak`），**不要**勾选 “Add a README”等，保持空仓库。
 
 ---
 
@@ -33,7 +33,7 @@ git status
 git add .
 
 # 4. 第一次提交
-git commit -m "chore: 初始化 WorkBreak 项目（Electron + React + TS + Tailwind）"
+git commit -m "chore: 初始化喵息 MeowBreak 项目（Electron + React + TS + Tailwind）"
 
 # 5. 把默认分支命名为 main（可选，GitHub 默认主分支名）
 git branch -M main

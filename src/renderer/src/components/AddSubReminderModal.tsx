@@ -81,6 +81,8 @@ export type SubReminderModalThemeEditorContext = {
   updatePopupTheme: (themeId: string, patch: Partial<PopupTheme>) => void
   previewViewportWidth: number
   popupPreviewAspect: '16:9' | '16:10' | '21:9' | '32:9' | '3:2' | '4:3'
+  /** 与主题工坊「+休息/结束壁纸」一致的新建空白主题，返回新 id */
+  createBlankPopupTheme: (target: 'main' | 'rest') => string
 }
 
 export type AddSubReminderPayload = {
@@ -108,6 +110,8 @@ export type OpenThemeStudioEditFromSubitemArgs = {
   categoryId: string
   itemAnchor: string
   popupTarget: 'main' | 'rest'
+  /** 与工坊「+壁纸」一致：未保存关闭时从库中移除该草稿 */
+  isNewDraft?: boolean
 }
 
 export type AddSubReminderModalProps = {
@@ -663,6 +667,21 @@ export function AddSubReminderModal({
     })
   }
 
+  const requestCreateWallpaperFromSelect = (target: 'main' | 'rest') => {
+    if (!themeEditorContext?.createBlankPopupTheme || !onOpenThemeStudioEdit || !embeddedThemeStudioContext) return
+    const id = themeEditorContext.createBlankPopupTheme(target)
+    if (target === 'main') setMainPopupThemeId(id)
+    else setRestPopupThemeId(id)
+    setThemePreviewEpoch((e) => e + 1)
+    onOpenThemeStudioEdit({
+      themeId: id,
+      categoryId: embeddedThemeStudioContext.categoryId,
+      itemAnchor: embeddedThemeStudioContext.anchor,
+      popupTarget: target,
+      isNewDraft: true,
+    })
+  }
+
   const modalTitle =
     mode === 'fixed'
       ? variant === 'edit'
@@ -1010,6 +1029,11 @@ export function AddSubReminderModal({
                         previewImageUrlMap={previewImageUrlMap}
                         previewViewportWidth={hoverPreviewVpW}
                         popupPreviewAspect={hoverPreviewAspect}
+                        listTopAction={
+                          themeEditorContext && onOpenThemeStudioEdit && embeddedThemeStudioContext
+                            ? { label: '+休息壁纸', onClick: () => requestCreateWallpaperFromSelect('rest') }
+                            : undefined
+                        }
                       />
                       {themeEditorContext && onOpenThemeStudioEdit && embeddedThemeStudioContext && (
                         <button
@@ -1078,6 +1102,11 @@ export function AddSubReminderModal({
                       previewImageUrlMap={previewImageUrlMap}
                       previewViewportWidth={hoverPreviewVpW}
                       popupPreviewAspect={hoverPreviewAspect}
+                      listTopAction={
+                        themeEditorContext && onOpenThemeStudioEdit && embeddedThemeStudioContext
+                          ? { label: '+结束壁纸', onClick: () => requestCreateWallpaperFromSelect('main') }
+                          : undefined
+                      }
                     />
                     {themeEditorContext && onOpenThemeStudioEdit && embeddedThemeStudioContext && (
                       <button
@@ -1129,7 +1158,11 @@ export function AddSubReminderModal({
   )
 
   const formFooter = (
-        <div className="flex w-full shrink-0 flex-col items-center gap-4 border-t border-slate-200 bg-slate-50 px-4 py-4">
+        <div
+          className={`flex w-full shrink-0 flex-col items-center gap-4 border-t border-slate-200 bg-slate-50 px-4 py-4 ${
+            layout === 'embedded' ? 'rounded-b-lg' : 'rounded-b-xl'
+          }`}
+        >
           <p className="text-xs text-slate-400 text-center w-full">
             {variant === 'edit' ? '点击更新后立即生效。' : '点击开始后立即生效。'}
           </p>
@@ -1156,11 +1189,11 @@ export function AddSubReminderModal({
   if (layout === 'embedded') {
     return (
       <div className="flex w-full flex-col overflow-visible rounded-lg border border-slate-200 bg-white shadow-sm">
-        <div className="shrink-0 border-b border-slate-200 bg-slate-50/95 px-4 py-2.5 text-center text-sm font-medium text-slate-800">{modalTitle}</div>
-        <div className="flex flex-col overflow-visible">
-          {formScroll}
-          {formFooter}
+        <div className="shrink-0 rounded-t-lg border-b border-slate-200 bg-slate-50/95 px-4 py-2.5 text-center text-sm font-medium text-slate-800">
+          {modalTitle}
         </div>
+        <div className="flex min-w-0 flex-col overflow-visible">{formScroll}</div>
+        {formFooter}
       </div>
     )
   }
@@ -1177,7 +1210,7 @@ export function AddSubReminderModal({
         style={{ maxWidth: 'min(1024px, 100vw - 2rem)' }}
         onClick={(e) => e.stopPropagation()}
       >
-        <div className="relative flex min-h-[48px] items-center justify-center border-b border-slate-200 px-4 py-3">
+        <div className="relative flex min-h-[48px] items-center justify-center rounded-t-xl border-b border-slate-200 px-4 py-3">
           <h3 className="w-full text-center font-medium text-slate-800 px-10">{modalTitle}</h3>
           <button
             type="button"

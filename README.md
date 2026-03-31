@@ -1,6 +1,9 @@
-# WorkBreak
+# 喵息（MeowBreak）
 
-帮助打工人按时吃饭、起身活动和休息的桌面提醒应用。
+帮助打工人按时吃饭、起身活动和休息的桌面提醒应用。  
+**中文名：喵息** · **英文名：MeowBreak**
+
+> 说明：npm 包名、`app.setName`、用户数据目录等仍使用 `workbreak` 等技术标识，与已安装版本共用路径兼容；安装包与界面展示名为 **MeowBreak / 喵息**。
 
 ## 技术栈
 
@@ -20,6 +23,14 @@ npm run dev
 npm run build
 npm run start
 ```
+
+## Windows 安装包（electron-builder）
+
+```bash
+npm run build:win
+```
+
+产物默认输出到 `release/`（如 `MeowBreak-0.1.0-Setup.exe`、便携版等）。
 
 ## 若双击「启动开发环境.bat」被 Windows 拦截（拒绝访问）
 

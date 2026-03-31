@@ -31,6 +31,11 @@ export type PopupThemeSelectWithHoverPreviewProps = {
   disabled?: boolean
   id?: string
   'aria-label'?: string
+  /**
+   * 下拉列表顶部第一行（如「+休息壁纸」），样式同标题预设列表底部新建按钮。
+   * 点击后由外层创建主题并打开编辑等；本条内仅负责关闭下拉。
+   */
+  listTopAction?: { label: string; onClick: () => void }
 }
 
 export function PopupThemeSelectWithHoverPreview({
@@ -44,6 +49,7 @@ export function PopupThemeSelectWithHoverPreview({
   disabled = false,
   id,
   'aria-label': ariaLabel,
+  listTopAction,
 }: PopupThemeSelectWithHoverPreviewProps) {
   const [open, setOpen] = useState(false)
   const [hoverTheme, setHoverTheme] = useState<PopupTheme | null>(null)
@@ -51,6 +57,12 @@ export function PopupThemeSelectWithHoverPreview({
   const wrapRef = useRef<HTMLDivElement>(null)
 
   const selected = options.find((t) => t.id === value) ?? options[0]
+  const canOpen = !disabled && (options.length > 0 || Boolean(listTopAction))
+
+  const listTopActionBtnCls =
+    size === 'sm'
+      ? 'flex h-9 w-full items-center justify-center rounded-md border border-dashed border-slate-300 text-xs font-medium leading-none text-slate-600 hover:border-slate-400 hover:bg-slate-50'
+      : 'flex h-9 w-full items-center justify-center rounded-md border border-dashed border-slate-300 text-sm font-medium leading-none text-slate-600 hover:border-slate-400 hover:bg-slate-50'
 
   const triggerCls =
     size === 'sm'
@@ -88,16 +100,16 @@ export function PopupThemeSelectWithHoverPreview({
   }, [])
 
   const onOpenChange = useCallback(() => {
-    if (disabled || options.length === 0) return
+    if (!canOpen) return
     setOpen((v) => !v)
-  }, [disabled, options.length])
+  }, [canOpen])
 
   return (
     <div ref={wrapRef} className="relative min-w-0 flex-1">
       <button
         type="button"
         id={id}
-        disabled={disabled || options.length === 0}
+        disabled={!canOpen}
         aria-label={ariaLabel}
         aria-haspopup="listbox"
         aria-expanded={open}
@@ -109,13 +121,28 @@ export function PopupThemeSelectWithHoverPreview({
           ▾
         </span>
       </button>
-      {open && options.length > 0 && (
+      {open && canOpen && (
         <ul
           role="listbox"
           className="absolute left-0 right-0 top-full z-[60000] mt-1 max-h-60 overflow-auto rounded-md border border-slate-200 bg-white py-1 shadow-lg"
           onPointerMove={onListPointerMove}
           onPointerLeave={() => setHoverTheme(null)}
         >
+          {listTopAction ? (
+            <li className="list-none border-b border-slate-100 px-1.5 pb-1.5 pt-0" role="presentation">
+              <button
+                type="button"
+                className={listTopActionBtnCls}
+                onClick={() => {
+                  listTopAction.onClick()
+                  setOpen(false)
+                  setHoverTheme(null)
+                }}
+              >
+                {listTopAction.label}
+              </button>
+            </li>
+          ) : null}
           {options.map((t) => (
             <li key={t.id} role="option" aria-selected={t.id === value}>
               <button

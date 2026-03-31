@@ -116,14 +116,54 @@ function showReminder(title: string, body: string, theme?: PopupTheme, restPhase
   const timeStr = useRestRemain
     ? formatRemainSecondsAsMmSs((restPhaseEndAtMs - Date.now()) / 1000)
     : `${String(now.getHours()).padStart(2, '0')}:${String(now.getMinutes()).padStart(2, '0')}`
-  reminderLog('弹窗', { title, bodyPreview: (body || '').slice(0, 40), timeStr, restPhaseEndAtMs })
+  const forcedRest = getSettings().forcedRestMode === true
+  const allowUserClose = !(theme?.target === 'rest' && forcedRest)
+  reminderLog('弹窗', { title, bodyPreview: (body || '').slice(0, 40), timeStr, restPhaseEndAtMs, allowUserClose })
   showReminderPopup({
     title,
     body,
     timeStr,
+    allowUserClose,
     ...(theme ? { theme } : {}),
     ...(useRestRemain ? { restPhaseEndAtMs } : {}),
   })
+}
+
+function findFixedItemByKey(key: string): (SubReminder & { mode: 'fixed' }) | null {
+  const s = getSettings()
+  for (const cat of s.reminderCategories) {
+    for (const item of cat.items) {
+      if (`${cat.id}_${item.id}` !== key) continue
+      if (item.mode !== 'fixed') return null
+      return item as SubReminder & { mode: 'fixed' }
+    }
+  }
+  return null
+}
+
+/** 当前配置是否仍会排拆分休息弹窗（禁用/改配后须与挂起的 setTimeout 一致） */
+function fixedSplitRestStillSchedulable(item: SubReminder & { mode: 'fixed' }): boolean {
+  if (item.enabled === false) return false
+  const splitCount = Math.max(1, Math.min(10, item.splitCount ?? 1))
+  const restDurationMs = Math.max(0, item.restDurationSeconds ?? 0) * 1000
+  return splitCount > 1 && restDurationMs > 0
+}
+
+/** timeoutKey = `${key}_${phaseIndex}`，用正则从末尾拆出 key（phaseIndex 为纯数字） */
+function parseFixedRestTimeoutBaseKey(timeoutKey: string): string | null {
+  const m = /^(.*)_(\d+)$/.exec(timeoutKey)
+  return m ? m[1] : null
+}
+
+function intervalTimerKeyStillEnabled(key: string): boolean {
+  const s = getSettings()
+  for (const cat of s.reminderCategories) {
+    for (const item of cat.items) {
+      if (`${cat.id}_${item.id}` !== key) continue
+      return item.mode === 'interval' && item.enabled !== false
+    }
+  }
+  return false
 }
 
 function parseTimeHHmm(hhmm: string): { h: number; m: number } {
@@ -358,6 +398,8 @@ function runFixedTimeCheck() {
           const timeoutKey = `${key}_${i}`
 
           const fireRestBreak = () => {
+            const live = findFixedItemByKey(key)
+            if (!live || !fixedSplitRestStillSchedulable(live)) return
             const latest = fixedRestBreakState.get(key)
             if (!latest || latest.signature !== cycleSignature || latest.firedBreakIndexes.has(i)) return
             reminderLog('固定时间·休息段弹窗', { key, phaseIndex: i })
@@ -393,10 +435,12 @@ function runFixedTimeCheck() {
           if (countdownSec >= 1 && !cur.countdownFiredIndexes.has(i)) {
             const countdownAt = restEndAt - countdownSec * 1000
             const fireRestCountdown = () => {
+              const live = findFixedItemByKey(key)
+              if (!live || !fixedSplitRestStillSchedulable(live)) return
               const latest = fixedRestBreakState.get(key)
               if (!latest || latest.signature !== cycleSignature || latest.countdownFiredIndexes.has(i)) return
               reminderLog('固定时间·休息结束倒计时', { key, phaseIndex: i, countdownSec })
-              showRestEndCountdownPopup(countdownSec)
+              showRestEndCountdownPopup(countdownSec, getSettings().forcedRestMode !== true)
               latest.countdownFiredIndexes.add(i)
             }
             if (nowMs >= countdownAt && nowMs < restEndAt) {
@@ -483,8 +527,12 @@ function scheduleRestEndCountdown(key: string, restDurationMs: number) {
   const countdownSec = Math.min(5, restSec)
   const delayMs = restDurationMs - countdownSec * 1000
   const fireCountdown = () => {
+    if (!intervalTimerKeyStillEnabled(key)) {
+      restEndCountdownTimeouts.delete(key)
+      return
+    }
     reminderLog('休息结束倒计时弹窗', { key, countdownSec })
-    showRestEndCountdownPopup(countdownSec)
+    showRestEndCountdownPopup(countdownSec, getSettings().forcedRestMode !== true)
     restEndCountdownTimeouts.delete(key)
   }
   if (delayMs <= 0) {
@@ -498,6 +546,11 @@ function scheduleRestEndCountdown(key: string, restDurationMs: number) {
 function scheduleNextPhase(key: string) {
   const st = intervalState.get(key)
   if (!st) return
+  if (!intervalTimerKeyStillEnabled(key)) {
+    reminderLog('间隔·已失效，跳过 phase', { key })
+    removeIntervalTimerByKey(key)
+    return
+  }
   const now = Date.now()
 
   if (st.phase === 'work') {
@@ -843,6 +896,49 @@ export function syncIntervalTimersAfterSettingsChange(
     if (nextKeys.has(key)) continue
     reminderLog('syncInterval: 删除子项，清定时器', { key })
     removeIntervalTimerByKey(key)
+  }
+}
+
+/**
+ * setSettings 后同步：固定时间子项关闭拆分休息、禁用或删除时，必须清掉已 schedule 的休息/结束倒计时，
+ * 否则旧 setTimeout 仍会弹窗（间隔倒计时已有 syncIntervalTimersAfterSettingsChange，fixed 此前无对等逻辑）。
+ */
+export function syncFixedTimersAfterSettingsChange(
+  _prevCategories: ReminderCategory[],
+  nextCategories: ReminderCategory[],
+): void {
+  const nextKeysNeedingSplitRest = new Set<string>()
+  for (const cat of nextCategories) {
+    for (const item of cat.items) {
+      if (item.mode !== 'fixed') continue
+      const key = `${cat.id}_${item.id}`
+      if (fixedSplitRestStillSchedulable(item as SubReminder & { mode: 'fixed' })) nextKeysNeedingSplitRest.add(key)
+    }
+  }
+
+  for (const key of [...fixedRestBreakState.keys()]) {
+    if (!nextKeysNeedingSplitRest.has(key)) {
+      reminderLog('syncFixed: 清理拆分休息态', { key })
+      fixedRestBreakState.delete(key)
+      clearFixedRestTimersByKey(key)
+    }
+  }
+
+  for (const tk of [...fixedRestBreakTimeouts.keys()]) {
+    const base = parseFixedRestTimeoutBaseKey(tk)
+    if (!base || !nextKeysNeedingSplitRest.has(base)) {
+      const t = fixedRestBreakTimeouts.get(tk)
+      if (t) clearTimeout(t)
+      fixedRestBreakTimeouts.delete(tk)
+    }
+  }
+  for (const tk of [...fixedRestEndCountdownTimeouts.keys()]) {
+    const base = parseFixedRestTimeoutBaseKey(tk)
+    if (!base || !nextKeysNeedingSplitRest.has(base)) {
+      const t = fixedRestEndCountdownTimeouts.get(tk)
+      if (t) clearTimeout(t)
+      fixedRestEndCountdownTimeouts.delete(tk)
+    }
   }
 }
 

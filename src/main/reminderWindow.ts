@@ -60,6 +60,11 @@ export interface ReminderPopupOptions {
    * 绑定时间层显示剩余 mm:ss、按秒递减，与最后 `min(5,restSec)` 秒黑底倒计时衔接。
    */
   restPhaseEndAtMs?: number
+  /**
+   * 是否允许用户通过右上角关叉或 Esc 关闭弹窗。默认 true。
+   * 强制休息模式下对休息主题弹窗传入 false。
+   */
+  allowUserClose?: boolean
 }
 
 /** 休息弹窗绑定时间层：剩余总秒数 → mm:ss（与预览占位一致） */
@@ -654,7 +659,8 @@ const REMINDER_CLOSE_HTML_SCRIPT = `
 
 /** 无主题或旧逻辑回退：背景在 body，遮罩 + 双文字层 */
 export function buildReminderHtmlLegacy(options: ReminderPopupOptions, htmlDir?: string): string {
-  const { title, body, timeStr, theme, restPhaseEndAtMs } = options
+  const { title, body, timeStr, theme, restPhaseEndAtMs, allowUserClose } = options
+  const showClose = allowUserClose !== false
   const titleEsc = escapeHtml(title)
   const bodyEsc = escapeHtml(resolveThemeBodyText(theme, body))
   const timeEsc = escapeHtml(timeStr)
@@ -713,7 +719,7 @@ export function buildReminderHtmlLegacy(options: ReminderPopupOptions, htmlDir?:
     .content { position: relative; z-index: 2; width: 100%; height: 100%; }
     .line1 { ${contentPos} box-sizing: border-box; padding: ${BINDING_TEXT_PADDING_PX}px; display:flex; flex-direction:column; justify-content:${contentVA}; font-family: ${contentFontFamilyCss}; font-size: ${contentFont}px; color: ${contentColor}; ${tyContent} font-weight: ${contentWeight}; font-style: ${contentItalic}; text-decoration: ${contentUnderline}; ${textBoxLayoutCss(theme?.contentTransform, 'content', contentVert)} ${layerTextEffectsCss(theme, 'content')} }
     .line2 { ${timePos} box-sizing: border-box; padding: ${BINDING_TEXT_PADDING_PX}px ${BINDING_SHORT_LAYER_PAD_INLINE_PX}px; display: flex; align-items: ${timeVA}; justify-content: ${flexJustifyForTextAlign(theme?.timeTextAlign ?? theme?.textAlign ?? 'center')}; font-family: ${timeFontFamilyCss}; font-size: ${timeFont}px; color: ${timeColor}; ${tyTime} font-weight: ${timeWeight}; font-style: ${timeItalic}; text-decoration: ${timeUnderline}; ${textBoxLayoutCss(theme?.timeTransform, 'time', timeVert)} ${layerTextEffectsCss(theme, 'time')} }
-    ${REMINDER_CLOSE_CSS}
+    ${showClose ? REMINDER_CLOSE_CSS : ''}
   </style>
 </head>
 <body>
@@ -729,7 +735,7 @@ export function buildReminderHtmlLegacy(options: ReminderPopupOptions, htmlDir?:
     <div class="line2">${timeHtml}</div>
   </div>
   ${useRestRemain ? buildRestRemainCountdownScript(restPhaseEndAtMs!) : ''}
-  ${REMINDER_CLOSE_HTML_SCRIPT}
+  ${showClose ? REMINDER_CLOSE_HTML_SCRIPT : ''}
 </body>
 </html>`
 }
@@ -913,7 +919,8 @@ function renderLayerFragment(
 }
 
 function buildReminderHtmlWithLayers(options: ReminderPopupOptions, theme: PopupTheme, htmlDir: string): string {
-  const { title, timeStr, liveDesktopWallpaper, restPhaseEndAtMs } = options
+  const { title, timeStr, liveDesktopWallpaper, restPhaseEndAtMs, allowUserClose } = options
+  const showClose = allowUserClose !== false
   const liveDesktop = Boolean(liveDesktopWallpaper)
   const titleEsc = escapeHtml(title)
   const timeEsc = escapeHtml(timeStr)
@@ -944,7 +951,7 @@ function buildReminderHtmlWithLayers(options: ReminderPopupOptions, theme: Popup
     * { box-sizing: border-box; margin: 0; padding: 0; }
     html, body { width: 100%; height: 100%; min-height: 100%; margin: 0; color: #fff; font-family: system-ui, sans-serif; overflow: hidden; background: #000000; border-radius: 0; }
     .stage { position: fixed; inset: 0; width: 100%; height: 100%; overflow: hidden; border-radius: 0; }
-    ${REMINDER_CLOSE_CSS}
+    ${showClose ? REMINDER_CLOSE_CSS : ''}
   </style>
 </head>
 <body>
@@ -952,7 +959,7 @@ function buildReminderHtmlWithLayers(options: ReminderPopupOptions, theme: Popup
 ${stageInner}
   </div>
   ${liveScript}
-  ${REMINDER_CLOSE_HTML_SCRIPT}
+  ${showClose ? REMINDER_CLOSE_HTML_SCRIPT : ''}
 </body>
 </html>`
 }
@@ -1134,29 +1141,10 @@ export async function showThemeEditorFullscreenPreview(options: ReminderPopupOpt
 /* ─── 休息即将结束：倒计时弹窗 ─── */
 
 /** 休息段最后 N 秒：与休息主题硬切，固定黑底白字，不读主题壁纸/遮罩/排版 */
-function buildRestEndCountdownHtml(countdownSec: number): string {
+function buildRestEndCountdownHtml(countdownSec: number, allowUserClose: boolean): string {
   const sec = Math.max(1, Math.min(countdownSec, 99))
-  return `<!DOCTYPE html>
-<html lang="zh-CN">
-<head>
-  <meta charset="UTF-8" />
-  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>休息即将结束</title>
-  <style>
-    * { box-sizing: border-box; margin: 0; padding: 0; }
-    html, body { width: 100%; height: 100%; color: #fff; font-family: system-ui, "Segoe UI", sans-serif; overflow: hidden; background: #000000; border-radius: 0; }
-    .stack {
-      position: absolute; left: 50%; top: 50%; transform: translate(-50%, -50%);
-      z-index: 1; display: flex; flex-direction: column; align-items: center; justify-content: center;
-      gap: clamp(10px, 2.2vmin, 28px); text-align: center; padding: 2vmin;
-    }
-    .title { font-size: clamp(30px, 5.5vmin, 64px); font-weight: 600; line-height: 1.25; color: #ffffff; }
-    .countdown {
-      font-size: clamp(104px, 28vmin, 340px); font-weight: 700; line-height: 1; color: #ffffff;
-      font-variant-numeric: tabular-nums;
-      transition: scale 0.15s ease-out, opacity 0.15s ease-out;
-    }
-    .countdown.tick { scale: 1.15; opacity: 0.7; }
+  const closeCss = allowUserClose
+    ? `
     .close-floating {
       position: fixed;
       top: clamp(12px, 2vw, 28px);
@@ -1190,24 +1178,18 @@ function buildRestEndCountdownHtml(countdownSec: number): string {
     }
     .close-floating:hover {
       background: rgba(0, 0, 0, 0.84);
-    }
-  </style>
-</head>
-<body>
-  <div class="stack">
-    <div class="title">休息即将结束</div>
-    <div class="countdown" id="cd">${sec}</div>
-  </div>
-  <button class="close-floating" id="closeBtn" aria-label="关闭弹窗">
+    }`
+    : ''
+  const closeBtnHtml = allowUserClose
+    ? `<button class="close-floating" id="closeBtn" aria-label="关闭弹窗">
     <svg viewBox="0 0 24 24" aria-hidden="true">
       <line x1="6" y1="6" x2="18" y2="18"></line>
       <line x1="18" y1="6" x2="6" y2="18"></line>
     </svg>
-  </button>
-  <script>
-    (function(){
-      var remaining = ${sec};
-      var el = document.getElementById('cd');
+  </button>`
+    : ''
+  const closeScript = allowUserClose
+    ? `
       var closeBtn = document.getElementById('closeBtn');
       var hideTimer = null;
       function showClose() {
@@ -1218,6 +1200,47 @@ function buildRestEndCountdownHtml(countdownSec: number): string {
           closeBtn.classList.remove('show');
         }, 1300);
       }
+      window.addEventListener('mousemove', showClose, { passive: true });
+      window.addEventListener('keydown', function(e) {
+        if (e.key === 'Escape') window.close();
+      });
+      if (closeBtn) closeBtn.onclick = function() { window.close(); };`
+    : ''
+  return `<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>休息即将结束</title>
+  <style>
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    html, body { width: 100%; height: 100%; color: #fff; font-family: system-ui, "Segoe UI", sans-serif; overflow: hidden; background: #000000; border-radius: 0; }
+    .stack {
+      position: absolute; left: 50%; top: 50%; transform: translate(-50%, -50%);
+      z-index: 1; display: flex; flex-direction: column; align-items: center; justify-content: center;
+      gap: clamp(10px, 2.2vmin, 28px); text-align: center; padding: 2vmin;
+    }
+    .title { font-size: clamp(30px, 5.5vmin, 64px); font-weight: 600; line-height: 1.25; color: #ffffff; }
+    .countdown {
+      font-size: clamp(104px, 28vmin, 340px); font-weight: 700; line-height: 1; color: #ffffff;
+      font-variant-numeric: tabular-nums;
+      transition: scale 0.15s ease-out, opacity 0.15s ease-out;
+    }
+    .countdown.tick { scale: 1.15; opacity: 0.7; }
+    ${closeCss}
+  </style>
+</head>
+<body>
+  <div class="stack">
+    <div class="title">休息即将结束</div>
+    <div class="countdown" id="cd">${sec}</div>
+  </div>
+  ${closeBtnHtml}
+  <script>
+    (function(){
+      var remaining = ${sec};
+      var el = document.getElementById('cd');
+      ${closeScript}
       function tick() {
         remaining--;
         if (remaining <= 0) {
@@ -1230,11 +1253,6 @@ function buildRestEndCountdownHtml(countdownSec: number): string {
         setTimeout(function(){ el.classList.remove('tick'); }, 150);
         setTimeout(tick, 1000);
       }
-      window.addEventListener('mousemove', showClose, { passive: true });
-      window.addEventListener('keydown', function(e) {
-        if (e.key === 'Escape') window.close();
-      });
-      if (closeBtn) closeBtn.onclick = function() { window.close(); };
       setTimeout(tick, 1000);
     })();
   </script>
@@ -1245,9 +1263,10 @@ function buildRestEndCountdownHtml(countdownSec: number): string {
 /**
  * 休息即将结束倒计时弹窗：全屏固定黑底白字，大数字从 countdownSec 倒数到 0 后自动关闭。
  * 复用同一个 reminderPopupWindow 单例（覆盖当前休息提醒弹窗内容）。
+ * @param allowUserClose 为 false 时不显示关叉、不可用 Esc 关闭（与「强制休息模式」一致）。
  */
-export function showRestEndCountdownPopup(countdownSec: number) {
-  const html = buildRestEndCountdownHtml(countdownSec)
+export function showRestEndCountdownPopup(countdownSec: number, allowUserClose = true) {
+  const html = buildRestEndCountdownHtml(countdownSec, allowUserClose)
   const htmlPath = writePopupHtmlToTempFile('rest-countdown-popup.html', html)
   const fallbackPath = writePopupHtmlToTempFile('rest-countdown-popup-fallback.html', html)
   enqueuePopupLoad(htmlPath, fallbackPath)

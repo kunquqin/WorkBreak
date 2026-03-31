@@ -32,7 +32,7 @@ export function writeDesktopWallpaperHtmlFiles(theme: PopupTheme): {
     hour12: false,
   })
   const options = {
-    title: 'WorkBreak',
+    title: '喵息',
     body: '',
     timeStr,
     theme,

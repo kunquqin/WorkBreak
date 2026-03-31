@@ -1,9 +1,9 @@
 {
   "name": "workbreak",
-  "productName": "WorkBreak",
+  "productName": "MeowBreak",
   "version": "0.1.0",
   "type": "module",
-  "description": "WorkBreak｜专注工作与健康休息提醒",
+  "description": "喵息 MeowBreak｜专注工作与健康休息提醒",
   "main": "out/main/index.js",
   "author": "",
   "license": "MIT",
@@ -16,7 +16,7 @@
   },
   "build": {
     "appId": "com.workbreak.app",
-    "productName": "WorkBreak",
+    "productName": "MeowBreak",
     "directories": {
       "output": "release"
     },
